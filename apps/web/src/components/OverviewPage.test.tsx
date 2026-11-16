@@ -8,12 +8,41 @@ import { OverviewPage } from "./OverviewPage.js";
 
 it("shows the actual Agent and machine, project totals, and on-demand reserved capacity", async () => {
   const task = taskFixture({ id: "work", title: "Shared implementation", status: "running" });
-  const run = runFixture({ id: "run", task_id: task.id, status: "running", agent_instance_id: "instance_mock_coder", computer_id: "computer_local_mock" });
-  const view = controlViewFixture({ tasks: [{ task, latest_run: run, execution_lease: null, execution_request: null, queue_metadata: null, last_assignment: null }] });
+  const run = runFixture({
+    id: "run",
+    task_id: task.id,
+    status: "running",
+    agent_instance_id: "instance_mock_coder",
+    computer_id: "computer_local_mock",
+  });
+  const view = controlViewFixture({
+    tasks: [
+      {
+        task,
+        latest_run: run,
+        execution_lease: null,
+        execution_request: null,
+        queue_metadata: null,
+        last_assignment: null,
+      },
+    ],
+  });
   view.summary.total_tasks = 125;
   view.summary.tasks_by_status.running = 1;
-  const getProjectControlView = vi.fn().mockImplementation(async (_id: string, options: { capacity?: boolean }) => options.capacity ? { ...view, capacity: { ...view.capacity, source: "reservation_snapshot", occupied: 2 } } : view);
-  renderWithProviders(<OverviewPage />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), getProjectControlView, listDaemons: async () => ({ daemons: [] }) }) });
+  const getProjectControlView = vi
+    .fn()
+    .mockImplementation(async (_id: string, options: { capacity?: boolean }) =>
+      options.capacity
+        ? { ...view, capacity: { ...view.capacity, source: "reservation_snapshot", occupied: 2 } }
+        : view,
+    );
+  renderWithProviders(<OverviewPage />, {
+    client: fakeApi({
+      bootstrap: async () => bootstrapFixture(),
+      getProjectControlView,
+      listDaemons: async () => ({ daemons: [] }),
+    }),
+  });
   expect(await screen.findAllByText("Shared implementation")).not.toHaveLength(0);
   expect(screen.getByText("Mock Coder")).toBeInTheDocument();
   expect(screen.getAllByText(/Local Mock/).length).toBeGreaterThan(0);

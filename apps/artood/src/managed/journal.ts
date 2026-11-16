@@ -395,8 +395,12 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
     nonempty(input.physicalReceiptId, "physical receipt ID");
     if (input.settlementScope !== undefined && input.settlementScope !== "scheduler-unused-permit.v1")
       throw new Error("Unknown explicit closed delivery settlement scope");
-    return { runId, key: input.launchKey, physicalReceiptId: input.physicalReceiptId,
-      ...(input.settlementScope ? { settlementScope: input.settlementScope } : {}) };
+    return {
+      runId,
+      key: input.launchKey,
+      physicalReceiptId: input.physicalReceiptId,
+      ...(input.settlementScope ? { settlementScope: input.settlementScope } : {}),
+    };
   };
   const stateFor = (permit: FreshLaunchPermit): PermitState => {
     worker.assertAvailable();
@@ -507,8 +511,10 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
     )
       throw new Error("Fresh journal admission differs from its original launch");
     const permit = Object.freeze({}) as FreshLaunchPermit;
-    const schedulerLaunchWindow = process.platform === "win32" && deadlineTickMs !== undefined
-      ? Object.freeze({ version: 1 as const, clock: "windows-qpc-ms.v1" as const, deadline_ms: deadlineTickMs }) : undefined;
+    const schedulerLaunchWindow =
+      process.platform === "win32" && deadlineTickMs !== undefined
+        ? Object.freeze({ version: 1 as const, clock: "windows-qpc-ms.v1" as const, deadline_ms: deadlineTickMs })
+        : undefined;
     const identity = binding
       ? Object.freeze({
           launchKey: key,
@@ -538,7 +544,13 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
       recordedClosed: false,
       startClaimed: false,
     });
-    return Object.freeze({ kind: "fresh", permit, run, payload, ...(schedulerLaunchWindow ? { schedulerLaunchWindow } : {}) });
+    return Object.freeze({
+      kind: "fresh",
+      permit,
+      run,
+      payload,
+      ...(schedulerLaunchWindow ? { schedulerLaunchWindow } : {}),
+    });
   }
   async function admitStart(
     request: { expectedNamespace: string; runId: string; idempotencyKey: string; payload: RunStartPayload },
@@ -593,7 +605,11 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
       : {}),
     ...(ready.schemaVersion === 5 || ready.schemaVersion === 6 ? { schedulerPreparationVersion: 1 as const } : {}),
     ...(ready.schemaVersion === 6
-      ? { schedulerStartGrantStorageVersion: 1 as const, schedulerStartGrantAdmissionVersion: 1 as const, schedulerUnusedPermitVersion: 1 as const }
+      ? {
+          schedulerStartGrantStorageVersion: 1 as const,
+          schedulerStartGrantAdmissionVersion: 1 as const,
+          schedulerUnusedPermitVersion: 1 as const,
+        }
       : {}),
     async prepareSchedulerStart(request) {
       const runId = query(request);
@@ -655,7 +671,14 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
       if (result.run.schedulerStartGrant?.grantDigest !== grant.digest)
         throw new Error("Scheduler admission reply changed its original grant");
       freeze(result.run);
-      return freshAdmission(result.run, nonce, snapshot.launch.payload, undefined, current.assertCurrent, current.deadlineTickMs);
+      return freshAdmission(
+        result.run,
+        nonce,
+        snapshot.launch.payload,
+        undefined,
+        current.assertCurrent,
+        current.deadlineTickMs,
+      );
     },
     admitStart(request) {
       return admitStart(request);
@@ -693,15 +716,25 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
     },
     settleUnusedSchedulerPermit(permit) {
       const state = stateFor(permit);
-      if (ready.schemaVersion !== 6 || !state.schedulerGrant || state.mode !== "per-run"
-        || state.startClaimed || state.recordedStarted || state.recordedClosed || state.admission || state.handle)
+      if (
+        ready.schemaVersion !== 6 ||
+        !state.schedulerGrant ||
+        state.mode !== "per-run" ||
+        state.startClaimed ||
+        state.recordedStarted ||
+        state.recordedClosed ||
+        state.admission ||
+        state.handle
+      )
         throw new Error("One original unused genuine scheduler producer permit is required");
       // Irreversible before the first await. Concurrent bridge calls, storage
       // failure and a lost receipt can never restore physical start authority.
-      state.startClaimed = true; state.payload = undefined;
+      state.startClaimed = true;
+      state.payload = undefined;
       return serialize(permit, async (current) => {
         const run = await worker.call<JournalRun>("scheduler_permit_unused", inputFor(current));
-        update(current, run); current.recordedClosed = true;
+        update(current, run);
+        current.recordedClosed = true;
         return run;
       });
     },
@@ -730,7 +763,11 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
         state.bridgeAdapter = adapter;
         state.bridgeWorktree = new WeakRef(worktree);
         state.inspect = inspect;
-        state.admission = createOwnedRunAdmission(state.identity, state.assertLaunchCurrent, state.schedulerLaunchWindow);
+        state.admission = createOwnedRunAdmission(
+          state.identity,
+          state.assertLaunchCurrent,
+          state.schedulerLaunchWindow,
+        );
         const current = await worker.call<JournalRun | null>("lookup", { runId: state.runId });
         if (!current || current.stopRequested || current.phase !== "launch_intent")
           throw new Error("Journal startup was stopped before the trusted producer invocation");
@@ -877,7 +914,12 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
           parsed.type === "run.lifecycle" && ["completed", "failed", "cancelled"].includes(parsed.payload.phase);
         if (parsed.type === "run.lifecycle" && parsed.payload.phase === "started" && !state.recordedStarted)
           throw new Error("Started events require our authenticated recorded producer handle");
-        if (terminal || parsed.type === "run.workspace.retained" || parsed.type === "run.owned-result.verification" || parsed.type === "scheduler.permit_unused")
+        if (
+          terminal ||
+          parsed.type === "run.workspace.retained" ||
+          parsed.type === "run.owned-result.verification" ||
+          parsed.type === "scheduler.permit_unused"
+        )
           throw new Error(
             "Evidence/terminal/retention events must be committed atomically through physical settlement",
           );

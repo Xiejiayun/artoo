@@ -18,15 +18,23 @@ function event(partial: Partial<EventEnvelope> & Pick<EventEnvelope, "type">): E
 
 describe("invalidationsForEvent", () => {
   it("refreshes the saved project Squad after a membership edit", () => {
-    expect(invalidationsForEvent("project:proj_artoo", event({ type: "project.squad.updated", project_id: "proj_artoo" }))).toContainEqual(["project-squad", "proj_artoo"]);
+    expect(
+      invalidationsForEvent("project:proj_artoo", event({ type: "project.squad.updated", project_id: "proj_artoo" })),
+    ).toContainEqual(["project-squad", "proj_artoo"]);
   });
-  it.each(["task.created", "task.updated", "run.started", "run.completed", "run.failed", "run.cancelled", "approval.resolved"] as const)(
-    "refreshes every page of the project's control snapshot on %s", (type) => {
-      const keys = invalidationsForEvent("project:proj_artoo", event({ type, project_id: "proj_artoo" }));
-      expect(keys).toContainEqual(["project-control-view", "proj_artoo"]);
-      expect(keys).not.toContainEqual(["project-control-view", "other_project"]);
-    },
-  );
+  it.each([
+    "task.created",
+    "task.updated",
+    "run.started",
+    "run.completed",
+    "run.failed",
+    "run.cancelled",
+    "approval.resolved",
+  ] as const)("refreshes every page of the project's control snapshot on %s", (type) => {
+    const keys = invalidationsForEvent("project:proj_artoo", event({ type, project_id: "proj_artoo" }));
+    expect(keys).toContainEqual(["project-control-view", "proj_artoo"]);
+    expect(keys).not.toContainEqual(["project-control-view", "other_project"]);
+  });
   it.each([
     "task.created",
     "task.updated",

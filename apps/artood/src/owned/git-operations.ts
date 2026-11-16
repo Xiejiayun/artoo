@@ -19,9 +19,11 @@ export interface GitReadOptions {
 }
 
 export function snapshotGitOptions(options: GitReadOptions): Readonly<GitReadOptions> {
-  return Object.freeze({ ...options,
+  return Object.freeze({
+    ...options,
     ...(options.windowsLaunchWindow ? { windowsLaunchWindow: Object.freeze({ ...options.windowsLaunchWindow }) } : {}),
-    environment: Object.freeze({ ...(options.environment ?? process.env) }) });
+    environment: Object.freeze({ ...(options.environment ?? process.env) }),
+  });
 }
 
 export function assertNotAborted(options: GitReadOptions): void {

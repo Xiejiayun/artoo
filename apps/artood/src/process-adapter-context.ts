@@ -2,8 +2,11 @@ import type { AgentInstanceConfig } from "@artoo/protocol";
 
 function requestedAgentReviewInstructions(config: AgentInstanceConfig): string[] {
   if (!config.runStart.context_pack.payload?.agent_review_subject) return [];
-  return ["", "## User-requested Agent review",
-    "Provide review comments on agent_review_subject's frozen source Run and artifact checksums using the node-verified dependency snapshots. Report findings, missing evidence and limitations. Completing this opinion task does not accept or modify the source task, grant access to its workspace, or grant verification, merge or publication authority. Follow this task's policy and node-granted tools."];
+  return [
+    "",
+    "## User-requested Agent review",
+    "Provide review comments on agent_review_subject's frozen source Run and artifact checksums using the node-verified dependency snapshots. Report findings, missing evidence and limitations. Completing this opinion task does not accept or modify the source task, grant access to its workspace, or grant verification, merge or publication authority. Follow this task's policy and node-granted tools.",
+  ];
 }
 
 function importedValidationInstructions(config: AgentInstanceConfig): string[] {

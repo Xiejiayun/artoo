@@ -118,9 +118,10 @@ export function createSchedulerStartWindows(assertAvailable: () => void, tick = 
         invalid = false;
       let invalidCause: unknown;
       const assertCurrent = () => {
-        if (invalid) throw invalidCause instanceof SchedulerStartWindowExpired
-          ? new SchedulerStartWindowExpired("Scheduler start window is permanently invalid", { cause: invalidCause })
-          : new Error("Scheduler start window is permanently invalid", { cause: invalidCause });
+        if (invalid)
+          throw invalidCause instanceof SchedulerStartWindowExpired
+            ? new SchedulerStartWindowExpired("Scheduler start window is permanently invalid", { cause: invalidCause })
+            : new Error("Scheduler start window is permanently invalid", { cause: invalidCause });
         try {
           assertAvailable();
           state.signal.throwIfAborted();
@@ -130,7 +131,8 @@ export function createSchedulerStartWindows(assertAvailable: () => void, tick = 
           if (now >= deadline) throw new SchedulerStartWindowExpired("Scheduler start deadline expired");
           previous = now;
         } catch (error) {
-          invalid = true; invalidCause = error;
+          invalid = true;
+          invalidCause = error;
           throw error;
         }
       };

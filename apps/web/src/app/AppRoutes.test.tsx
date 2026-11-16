@@ -3,14 +3,7 @@ import { act, screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  bootstrapFixture,
-  fakeApi,
-  renderWithProviders,
-  roomFixture,
-  runFixture,
-  taskFixture,
-} from "../test/utils.js";
+import { bootstrapFixture, fakeApi, renderWithProviders, roomFixture, runFixture, taskFixture } from "../test/utils.js";
 import { AppRoutes } from "./AppRoutes.js";
 
 function appClient() {
@@ -48,7 +41,9 @@ function appClient() {
 describe("AppRoutes", () => {
   it("exposes the human Review workbench without replacing the Release destination", async () => {
     renderWithProviders(<AppRoutes />, { client: appClient(), route: "/review" });
-    await act(async () => { await vi.dynamicImportSettled(); });
+    await act(async () => {
+      await vi.dynamicImportSettled();
+    });
     expect(await screen.findByRole("heading", { name: "Review", level: 1 })).toBeInTheDocument();
     const views = within(screen.getByRole("navigation", { name: "Project views" }));
     expect(views.getByRole("link", { name: "Review" })).toHaveAttribute("aria-current", "page");
@@ -68,11 +63,11 @@ describe("AppRoutes", () => {
     renderWithProviders(<AppRoutes />, { client: appClient(), route: "/skills" });
     // This verifies the actual lazy route, after Vitest transforms its module.
     // Cold module transformation is not the page's network/render deadline.
-    await act(async () => { await vi.dynamicImportSettled(); });
+    await act(async () => {
+      await vi.dynamicImportSettled();
+    });
     expect(await screen.findByRole("heading", { name: "Skills", level: 1 })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Skill manifest contract" })).toHaveTextContent(
-      "v1alpha1",
-    );
+    expect(screen.getByRole("region", { name: "Skill manifest contract" })).toHaveTextContent("v1alpha1");
   });
 
   it("opens a board task in the drawer and retains the full workspace destination", async () => {

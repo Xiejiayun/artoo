@@ -6,7 +6,7 @@
 export const queryKeys = {
   bootstrap: ["bootstrap"] as const,
   agentConfiguration: (id: string) => ["agent-configuration", id] as const,
-  projectSquad: (id?: string) => id ? ["project-squad", id] as const : ["project-squad"] as const,
+  projectSquad: (id?: string) => (id ? (["project-squad", id] as const) : (["project-squad"] as const)),
   computerAdmission: (id: string) => ["computer-admission", id] as const,
   schedulingPolicy: (kind: string, id: string) => ["scheduling-policy", kind, id] as const,
   session: ["session"] as const,
@@ -47,7 +47,8 @@ export const queryKeys = {
   moderationMembers: ["moderation", "members"] as const,
   myContentReports: (before?: string) => ["moderation", "my-reports", before] as const,
   tasks: (projectId: string) => ["tasks", projectId] as const,
-  projectControlView: (projectId?: string) => projectId ? ["project-control-view", projectId] as const : ["project-control-view"] as const,
+  projectControlView: (projectId?: string) =>
+    projectId ? (["project-control-view", projectId] as const) : (["project-control-view"] as const),
   task: (taskId: string) => ["task", taskId] as const,
   taskAgentReviews: (taskId: string) => ["task-agent-reviews", taskId] as const,
   delegationTrees: (projectId: string) => ["delegation-trees", projectId] as const,

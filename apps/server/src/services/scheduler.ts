@@ -1,4 +1,14 @@
-import { agentInstances, agentRuntimes, agents, computers, computerAdmissions, devices, runs, skillInstalls, tasks } from "@artoo/db";
+import {
+  agentInstances,
+  agentRuntimes,
+  agents,
+  computers,
+  computerAdmissions,
+  devices,
+  runs,
+  skillInstalls,
+  tasks,
+} from "@artoo/db";
 import {
   SkillManifestSchema,
   deriveResourceLifecycle,
@@ -163,7 +173,12 @@ async function scheduleTaskWithReservation(
   preparedRunId?: string,
 ): Promise<SchedulerOutcome> {
   const requestedOpinion = await schedulerTaskAgentReview(ctx, tx, opts.shadowTaskId, preparedRunId);
-  const [opinionSource] = requestedOpinion ? await tx.select().from(runs).where(and(eq(runs.id, requestedOpinion.sourceRunId), eq(runs.organizationId, ctx.organizationId))) : [];
+  const [opinionSource] = requestedOpinion
+    ? await tx
+        .select()
+        .from(runs)
+        .where(and(eq(runs.id, requestedOpinion.sourceRunId), eq(runs.organizationId, ctx.organizationId)))
+    : [];
   if (opts.cleanValidationRunId) {
     const [owner] = await tx
       .select()
@@ -347,7 +362,20 @@ async function scheduleTaskWithReservation(
   const enabledSkillInstalls = await loadEnabledSkillInstallStates(tx, ctx, opts.projectId);
   // Drain changes future admission only. Existing exact reservations keep their
   // original lifecycle and can finish without losing a process owner.
-  const retainingReservation = !!(preparedRunId || opts.cleanValidationRunId || opts.cleanValidationReviewId || opts.recoveryValidationRunId || opts.recoveryValidationReviewId || opts.importedValidationRunId || opts.importedValidationReviewId || opts.importedDesignRunId || opts.importedDesignReviewId || opts.importedExecutionRunId || opts.importedExecutionReviewId || opts.importedExecutionRepairRunId);
+  const retainingReservation = !!(
+    preparedRunId ||
+    opts.cleanValidationRunId ||
+    opts.cleanValidationReviewId ||
+    opts.recoveryValidationRunId ||
+    opts.recoveryValidationReviewId ||
+    opts.importedValidationRunId ||
+    opts.importedValidationReviewId ||
+    opts.importedDesignRunId ||
+    opts.importedDesignReviewId ||
+    opts.importedExecutionRunId ||
+    opts.importedExecutionReviewId ||
+    opts.importedExecutionRepairRunId
+  );
   const rows = await tx
     .select({
       instanceId: agentInstances.id,
@@ -377,7 +405,10 @@ async function scheduleTaskWithReservation(
       and(eq(agentInstances.computerId, computers.id), eq(computers.organizationId, ctx.organizationId)),
     )
     .innerJoin(agents, and(eq(agentInstances.agentId, agents.id), eq(agents.organizationId, ctx.organizationId)))
-    .leftJoin(computerAdmissions, and(eq(computerAdmissions.computerId, computers.id), eq(computerAdmissions.organizationId, ctx.organizationId)))
+    .leftJoin(
+      computerAdmissions,
+      and(eq(computerAdmissions.computerId, computers.id), eq(computerAdmissions.organizationId, ctx.organizationId)),
+    )
     .leftJoin(
       agentRuntimes,
       and(
@@ -457,10 +488,15 @@ async function scheduleTaskWithReservation(
   }
 
   const eligible = rows
-    .filter(r => !requestedOpinion || r.agentId === requestedOpinion.reviewerAgentId
-      && !!opinionSource && ctx.supportsDependencyInputs?.(r.computerId) === true
-      && !!ctx.getPairedNodeSession?.(r.computerId)
-      && taskAgentReviewWorkspaceIsolated(opinionSource, r.computerId, r.workspaceRoot, r.computerOs))
+    .filter(
+      (r) =>
+        !requestedOpinion ||
+        (r.agentId === requestedOpinion.reviewerAgentId &&
+          !!opinionSource &&
+          ctx.supportsDependencyInputs?.(r.computerId) === true &&
+          !!ctx.getPairedNodeSession?.(r.computerId) &&
+          taskAgentReviewWorkspaceIsolated(opinionSource, r.computerId, r.workspaceRoot, r.computerOs)),
+    )
     .filter(
       (r) =>
         deriveResourceLifecycle(r.computerLastHeartbeatAt, r.computerCreatedAt, now, false, expiryMs).state !==

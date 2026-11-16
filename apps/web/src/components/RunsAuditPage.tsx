@@ -28,7 +28,13 @@ export function RunsAuditPage(): React.ReactNode {
   const toast = useToast();
   const [params] = useSearchParams();
   const goals = useGoalContext(false, params.has("goal"));
-  const { taskId: selectedTaskId, selectTask: setSelectedTaskId, contextError, contextLoading, retryContext } = useTaskContext();
+  const {
+    taskId: selectedTaskId,
+    selectTask: setSelectedTaskId,
+    contextError,
+    contextLoading,
+    retryContext,
+  } = useTaskContext();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
 
@@ -57,7 +63,13 @@ export function RunsAuditPage(): React.ReactNode {
   const bundle = useQuery({
     queryKey: selectedTaskId === null ? ["auditBundle", "none"] : queryKeys.auditBundle(selectedTaskId),
     queryFn: () => api.getTaskAuditBundle(selectedTaskId as string),
-    enabled: selectedTaskId !== null && !contextLoading && !contextError && !goals.contextLoading && !goals.contextError && (!goals.requested || !!goals.goal),
+    enabled:
+      selectedTaskId !== null &&
+      !contextLoading &&
+      !contextError &&
+      !goals.contextLoading &&
+      !goals.contextError &&
+      (!goals.requested || !!goals.goal),
   });
 
   if (bootstrap.isLoading) {
@@ -93,10 +105,14 @@ export function RunsAuditPage(): React.ReactNode {
   const evidenceTask = bundle.data?.bundle.task;
   // The control projection also links independently owned review tasks to their
   // originating Goal. That observation supplies scope, never review authority.
-  const evidenceGoalId = evidenceTask?.goal_id ?? (control.isError ? undefined : observations.get(evidenceTask?.id ?? "")?.task.goal_id);
-  const evidenceInScope = !!evidenceTask && evidenceTask.id === selectedTaskId && evidenceTask.project_id === projectId
-    && evidenceTask.organization_id === bootstrap.data?.organization.id
-    && (!goals.requested || (!!goals.goal && evidenceGoalId === goals.goal.id));
+  const evidenceGoalId =
+    evidenceTask?.goal_id ?? (control.isError ? undefined : observations.get(evidenceTask?.id ?? "")?.task.goal_id);
+  const evidenceInScope =
+    !!evidenceTask &&
+    evidenceTask.id === selectedTaskId &&
+    evidenceTask.project_id === projectId &&
+    evidenceTask.organization_id === bootstrap.data?.organization.id &&
+    (!goals.requested || (!!goals.goal && evidenceGoalId === goals.goal.id));
 
   return (
     <div className="runs-audit insights-page">
@@ -114,12 +130,34 @@ export function RunsAuditPage(): React.ReactNode {
           </Button>
         )}
       </header>
-      <ActionError error={tasks.error ?? download.error ?? contextError ?? goals.contextError ?? (goals.requested ? goals.goals.error : null)} />
+      <ActionError
+        error={
+          tasks.error ??
+          download.error ??
+          contextError ??
+          goals.contextError ??
+          (goals.requested ? goals.goals.error : null)
+        }
+      />
       {contextError && <Button onClick={retryContext}>Retry linked task</Button>}
       {goals.contextError && <Button onClick={goals.retryContext}>Retry linked goal</Button>}
       {(contextLoading || goals.contextLoading) && <p role="status">Opening linked execution context…</p>}
-      {goals.requested && <div className="action-row"><p>Goal: {goals.goal?.title ?? "Resolving shared goal…"}</p><Button size="sm" onClick={() => goals.selectGoal(null)}>Show all project goals</Button></div>}
-      {control.isError && <p role="status">Execution observations unavailable. <Button size="sm" onClick={() => void control.refetch()}>Retry observations</Button></p>}
+      {goals.requested && (
+        <div className="action-row">
+          <p>Goal: {goals.goal?.title ?? "Resolving shared goal…"}</p>
+          <Button size="sm" onClick={() => goals.selectGoal(null)}>
+            Show all project goals
+          </Button>
+        </div>
+      )}
+      {control.isError && (
+        <p role="status">
+          Execution observations unavailable.{" "}
+          <Button size="sm" onClick={() => void control.refetch()}>
+            Retry observations
+          </Button>
+        </p>
+      )}
       <div className="runs-audit-body">
         <nav className="audit-task-picker" aria-label="Tasks">
           <div className="insights-picker-tools">
@@ -136,7 +174,9 @@ export function RunsAuditPage(): React.ReactNode {
             </Select>
           </div>
           <p className="insights-help">
-            {matching.length} loaded {matching.length === 1 ? "task" : "tasks"}{goals.requested ? " in selected goal" : ""}{control.view ? ` · ${control.view.summary.total_tasks} in project` : ""}
+            {matching.length} loaded {matching.length === 1 ? "task" : "tasks"}
+            {goals.requested ? " in selected goal" : ""}
+            {control.view ? ` · ${control.view.summary.total_tasks} in project` : ""}
           </p>
           {tasks.isLoading && <p role="status">Loading tasks…</p>}
           {tasks.isError && (
@@ -164,7 +204,9 @@ export function RunsAuditPage(): React.ReactNode {
                   onClick={() => setSelectedTaskId(task.id)}
                 >
                   <span className="title">{task.title}</span>
-                  {!control.isError && observations.has(task.id) && <ControlTaskFacts entry={observations.get(task.id)!} bootstrap={bootstrap.data} />}
+                  {!control.isError && observations.has(task.id) && (
+                    <ControlTaskFacts entry={observations.get(task.id)!} bootstrap={bootstrap.data} />
+                  )}
                   <span className="insights-row-meta">
                     <StatusBadge status={task.status} />
                     <time dateTime={task.updated_at}>{taskUpdatedLabel(task.updated_at)}</time>
@@ -173,7 +215,11 @@ export function RunsAuditPage(): React.ReactNode {
               </li>
             ))}
           </ul>
-          {control.hasNextPage && <Button loading={control.isFetchingNextPage} onClick={() => void control.fetchNextPage()}>Load more tasks</Button>}
+          {control.hasNextPage && (
+            <Button loading={control.isFetchingNextPage} onClick={() => void control.fetchNextPage()}>
+              Load more tasks
+            </Button>
+          )}
         </nav>
 
         <section className="audit-bundle" aria-label="Task execution">
@@ -195,11 +241,36 @@ export function RunsAuditPage(): React.ReactNode {
               action={<Button onClick={() => void bundle.refetch()}>Retry evidence</Button>}
             />
           ) : null}
-          {bundle.data !== undefined && !contextLoading && !contextError && !goals.contextLoading && !goals.contextError && !evidenceInScope && (
-            <EmptyState title="This task is outside the current execution scope" description="Choose a task in this project's selected goal, or show all project goals." />
-          )}
-          {bundle.data !== undefined && evidenceInScope && !contextLoading && !contextError && !goals.contextLoading && !goals.contextError ? (
-            <><TaskExecutionConsole key={bundle.data.bundle.task.id} bundle={bundle.data.bundle} bootstrap={bootstrap.data} /><section aria-label="Audit bundle"><details className="cowork-audit-detail" open><summary>Full task audit & evidence</summary><AuditBundleView bundle={bundle.data.bundle} bootstrap={bootstrap.data} /></details></section></>
+          {bundle.data !== undefined &&
+            !contextLoading &&
+            !contextError &&
+            !goals.contextLoading &&
+            !goals.contextError &&
+            !evidenceInScope && (
+              <EmptyState
+                title="This task is outside the current execution scope"
+                description="Choose a task in this project's selected goal, or show all project goals."
+              />
+            )}
+          {bundle.data !== undefined &&
+          evidenceInScope &&
+          !contextLoading &&
+          !contextError &&
+          !goals.contextLoading &&
+          !goals.contextError ? (
+            <>
+              <TaskExecutionConsole
+                key={bundle.data.bundle.task.id}
+                bundle={bundle.data.bundle}
+                bootstrap={bootstrap.data}
+              />
+              <section aria-label="Audit bundle">
+                <details className="cowork-audit-detail" open>
+                  <summary>Full task audit & evidence</summary>
+                  <AuditBundleView bundle={bundle.data.bundle} bootstrap={bootstrap.data} />
+                </details>
+              </section>
+            </>
           ) : null}
         </section>
       </div>

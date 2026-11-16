@@ -9,9 +9,15 @@ import { readOwnedResultProfileDescriptors } from "../owned-worktree-verificatio
 import { createSchedulerClaimLoop } from "./scheduler-claim-loop.js";
 import { createDependencyArtifactInputLoader } from "../dependency-artifact-inputs.js";
 
-export interface ManagedNodeRunnerOptions extends Omit<NodeClientOptions, "transport" | "managedJournal" | "nodeId" | "scheduler"> {
-  url: string; hello: NodeHello; journal: Journal; WebSocketImpl?: typeof WebSocket;
-  heartbeat?: () => NodeHeartbeat; heartbeatIntervalMs?: number; reconnectDelayMs?: number;
+export interface ManagedNodeRunnerOptions
+  extends Omit<NodeClientOptions, "transport" | "managedJournal" | "nodeId" | "scheduler"> {
+  url: string;
+  hello: NodeHello;
+  journal: Journal;
+  WebSocketImpl?: typeof WebSocket;
+  heartbeat?: () => NodeHeartbeat;
+  heartbeatIntervalMs?: number;
+  reconnectDelayMs?: number;
   /** Explicit local choice; absent retains the managed-only composition. */
   mixed?: { readonly allowNewAllocations: boolean };
   /** Administrator-local opt-in; remote hello metadata cannot enable starts. */
@@ -34,42 +40,83 @@ export interface ManagedNodeRunner {
 
 /** Qualified Node composition. Its caller separately owns the journal lifetime. */
 export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): ManagedNodeRunner {
-  if (!options.workspace?.allowedRoots?.length
-    || (options.mixed?.allowNewAllocations !== false && !options.workspace.worktreeBaseRepo)) {
+  if (
+    !options.workspace?.allowedRoots?.length ||
+    (options.mixed?.allowNewAllocations !== false && !options.workspace.worktreeBaseRepo)
+  ) {
     throw new Error("Managed node requires explicit local workspace configuration");
   }
-  const adapters = options.registry ? options.registry.runtimes().map((entry) => options.registry!.resolve(entry.runtime)) : [options.adapter];
-  if (!adapters.length || adapters.some((adapter) => !adapter || !isOwnedRunAdapter(adapter))) throw new Error("Managed allocation feature requires genuine owned process adapters");
-  if (options.scheduler && (options.mixed?.allowNewAllocations === false || options.journal.schedulerPreparationVersion !== 1
-    || options.journal.schedulerStartGrantStorageVersion !== 1 || options.journal.schedulerStartGrantAdmissionVersion !== 1
-    || !options.journal.prepareSchedulerStart || !options.journal.admitSchedulerStart))
+  const adapters = options.registry
+    ? options.registry.runtimes().map((entry) => options.registry!.resolve(entry.runtime))
+    : [options.adapter];
+  if (!adapters.length || adapters.some((adapter) => !adapter || !isOwnedRunAdapter(adapter)))
+    throw new Error("Managed allocation feature requires genuine owned process adapters");
+  if (
+    options.scheduler &&
+    (options.mixed?.allowNewAllocations === false ||
+      options.journal.schedulerPreparationVersion !== 1 ||
+      options.journal.schedulerStartGrantStorageVersion !== 1 ||
+      options.journal.schedulerStartGrantAdmissionVersion !== 1 ||
+      !options.journal.prepareSchedulerStart ||
+      !options.journal.admitSchedulerStart)
+  )
     throw new Error("Scheduler claims require an explicitly upgraded v6 journal and fresh allocations enabled");
-  let lossDeadline: number | undefined, lossCause: Error | undefined, lossTimer: ReturnType<typeof setTimeout> | undefined;
-  let failure: Error | undefined, failureWork: Promise<void> | undefined, failureClose: Promise<void> | undefined, stopWork: Promise<void> | undefined;
+  let lossDeadline: number | undefined,
+    lossCause: Error | undefined,
+    lossTimer: ReturnType<typeof setTimeout> | undefined;
+  let failure: Error | undefined,
+    failureWork: Promise<void> | undefined,
+    failureClose: Promise<void> | undefined,
+    stopWork: Promise<void> | undefined;
   let stoppingLossClose: Promise<void> | undefined;
-  let starting: Promise<void> | undefined, stopping = false;
+  let starting: Promise<void> | undefined,
+    stopping = false;
   let claimLoop: ReturnType<typeof createSchedulerClaimLoop> | undefined;
   const claimWork = new Set<Promise<void>>();
   let resolveFailure!: (error: Error) => void;
-  const failed = new Promise<Error>((resolve) => { resolveFailure = resolve; });
+  const failed = new Promise<Error>((resolve) => {
+    resolveFailure = resolve;
+  });
   // Receipt negotiation is independent of fresh-allocation capability. A
   // prepared opt-out keeps its qualified session and historical recovery.
-  const descriptors = options.ownedResultProfiles ? readOwnedResultProfileDescriptors(options.ownedResultProfiles, options.hello.node_id) : undefined;
-  const dependencyInputs = options.scheduler ? createDependencyArtifactInputLoader(options.url, options.hello.node_id) : undefined;
-  if (descriptors && (options.journal.ownedResultFinalizationVersion !== 1 || !options.journal.admitOwnedResultStart
-    || !options.journal.settleOwnedResultProcess || options.mixed?.allowNewAllocations === false)) {
+  const descriptors = options.ownedResultProfiles
+    ? readOwnedResultProfileDescriptors(options.ownedResultProfiles, options.hello.node_id)
+    : undefined;
+  const dependencyInputs = options.scheduler
+    ? createDependencyArtifactInputLoader(options.url, options.hello.node_id)
+    : undefined;
+  if (
+    descriptors &&
+    (options.journal.ownedResultFinalizationVersion !== 1 ||
+      !options.journal.admitOwnedResultStart ||
+      !options.journal.settleOwnedResultProcess ||
+      options.mixed?.allowNewAllocations === false)
+  ) {
     throw new Error("Owned result advertisement requires the explicit journal extension and fresh allocation support");
   }
   const { owned_result_profiles: _untrustedProfiles, ...ordinaryHello } = options.hello;
-  const hello: NodeHello = { ...ordinaryHello,
-    execution_features: options.mixed?.allowNewAllocations === false ? [] : ["workspace-allocation.per-run-v1", ...(descriptors ? ["owned-result-run.v1" as const] : [])],
-    ...(descriptors ? { owned_result_profiles: [...descriptors] } : {}) };
-  const link = createManagedWebSocketTransport({ url: options.url, namespace: options.journal.namespace, hello,
-    ...(options.scheduler ? { schedulerStart: true, schedulerLease: true, schedulerRun: true, schedulerClaim: true } : {}),
+  const hello: NodeHello = {
+    ...ordinaryHello,
+    execution_features:
+      options.mixed?.allowNewAllocations === false
+        ? []
+        : ["workspace-allocation.per-run-v1", ...(descriptors ? ["owned-result-run.v1" as const] : [])],
+    ...(descriptors ? { owned_result_profiles: [...descriptors] } : {}),
+  };
+  const link = createManagedWebSocketTransport({
+    url: options.url,
+    namespace: options.journal.namespace,
+    hello,
+    ...(options.scheduler
+      ? { schedulerStart: true, schedulerLease: true, schedulerRun: true, schedulerClaim: true }
+      : {}),
     WebSocketImpl: options.WebSocketImpl,
     allowLegacyRuns: options.mixed !== undefined,
-    heartbeat: options.heartbeat ?? (options.registry ? createRegistryHeartbeat({ nodeId: hello.node_id, registry: options.registry }) : undefined),
-    heartbeatIntervalMs: options.heartbeatIntervalMs, reconnectDelayMs: options.reconnectDelayMs,
+    heartbeat:
+      options.heartbeat ??
+      (options.registry ? createRegistryHeartbeat({ nodeId: hello.node_id, registry: options.registry }) : undefined),
+    heartbeatIntervalMs: options.heartbeatIntervalMs,
+    reconnectDelayMs: options.reconnectDelayMs,
     onSessionLost(error, previous) {
       claimLoop?.stop();
       client.invalidateManagedStartupSession(previous, error);
@@ -77,65 +124,126 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
         // lose() has not scheduled its reconnect yet. Close synchronously so a
         // requested Stop cannot create another generation and a synthetic fatal.
         if (!stoppingLossClose) {
-          try { stoppingLossClose = link.close(); }
-          catch (cause) { stoppingLossClose = Promise.reject(cause); }
-          void stoppingLossClose.catch((cause: unknown) => latchFailure(cause instanceof Error ? cause : new Error(String(cause))));
+          try {
+            stoppingLossClose = link.close();
+          } catch (cause) {
+            stoppingLossClose = Promise.reject(cause);
+          }
+          void stoppingLossClose.catch((cause: unknown) =>
+            latchFailure(cause instanceof Error ? cause : new Error(String(cause))),
+          );
         }
         return;
       }
       if (failure || lossDeadline !== undefined) return;
-      lossCause = error; lossDeadline = monotonicMs() + 30000;
+      lossCause = error;
+      lossDeadline = monotonicMs() + 30000;
       lossTimer = setTimeout(expireLoss, 30000);
     },
     onSessionUsable(session) {
       if (stopping || failure) return false;
-      if (lossDeadline !== undefined && monotonicMs() >= lossDeadline) { expireLoss(); return false; }
-      clearTimeout(lossTimer); lossTimer = undefined; lossDeadline = undefined; lossCause = undefined;
+      if (lossDeadline !== undefined && monotonicMs() >= lossDeadline) {
+        expireLoss();
+        return false;
+      }
+      clearTimeout(lossTimer);
+      lossTimer = undefined;
+      lossDeadline = undefined;
+      lossCause = undefined;
       if (options.scheduler) {
         claimLoop?.stop();
-        const loop = createSchedulerClaimLoop({ channel: link.openSchedulerClaimSession(),
-          assertCurrent: () => { link.channel.assertCurrentSession(session); },
-          start: (input) => client.startSchedulerRequest(input) });
-        claimLoop = loop; claimWork.add(loop.done);
-        void loop.done.catch((cause: unknown) => {
-          if (!stopping) fail(cause instanceof Error ? cause : new Error("Scheduler claim loop failed"));
-        }).finally(() => { claimWork.delete(loop.done); });
+        const loop = createSchedulerClaimLoop({
+          channel: link.openSchedulerClaimSession(),
+          assertCurrent: () => {
+            link.channel.assertCurrentSession(session);
+          },
+          start: (input) => client.startSchedulerRequest(input),
+        });
+        claimLoop = loop;
+        claimWork.add(loop.done);
+        void loop.done
+          .catch((cause: unknown) => {
+            if (!stopping) fail(cause instanceof Error ? cause : new Error("Scheduler claim loop failed"));
+          })
+          .finally(() => {
+            claimWork.delete(loop.done);
+          });
       }
       return true;
     },
     onFatal: fail,
   });
-  const client = createNodeClient({ ...options, nodeId: hello.node_id, transport: link.transport,
-    scheduler: options.scheduler ? { open: () => ({ start: link.openSchedulerStartSession(),
-      lease: link.openSchedulerLeaseSession(), run: link.openSchedulerRunSession() }), prepareInputs: dependencyInputs } : undefined,
-    managedJournal: { journal: options.journal, channel: link.channel,
-      ...(options.mixed ? { mixed: { allowNewAllocations: options.mixed.allowNewAllocations,
-        bindRun: (runId: string, mode: RunDeliveryMode) => link.bindRun(runId, mode) } } : {}) } });
+  const client = createNodeClient({
+    ...options,
+    nodeId: hello.node_id,
+    transport: link.transport,
+    scheduler: options.scheduler
+      ? {
+          open: () => ({
+            start: link.openSchedulerStartSession(),
+            lease: link.openSchedulerLeaseSession(),
+            run: link.openSchedulerRunSession(),
+          }),
+          prepareInputs: dependencyInputs,
+        }
+      : undefined,
+    managedJournal: {
+      journal: options.journal,
+      channel: link.channel,
+      ...(options.mixed
+        ? {
+            mixed: {
+              allowNewAllocations: options.mixed.allowNewAllocations,
+              bindRun: (runId: string, mode: RunDeliveryMode) => link.bindRun(runId, mode),
+            },
+          }
+        : {}),
+    },
+  });
   function latchFailure(cause: Error): void {
-    if (!failure) { failure = cause; resolveFailure(cause); }
+    if (!failure) {
+      failure = cause;
+      resolveFailure(cause);
+    }
   }
   function fail(cause: Error): void {
     if (failure) return;
-    latchFailure(cause); clearTimeout(lossTimer);
+    latchFailure(cause);
+    clearTimeout(lossTimer);
     // The async method latches every owned run's cause and cancels its waits
     // synchronously before its first awaited genuine stop/database operation.
     failureWork = client.failManagedConnection(cause);
     void failureWork.catch(() => {}); // Joined by stop(); never treated as success.
-    try { failureClose = link.close(); }
-    catch (error) { failureClose = Promise.reject(error); }
+    try {
+      failureClose = link.close();
+    } catch (error) {
+      failureClose = Promise.reject(error);
+    }
     void failureClose.catch(() => {}); // Joined by stop(), including a failed socket close.
   }
   function expireLoss(): void {
     if (lossDeadline === undefined || stopping || failure) return;
-    if (monotonicMs() < lossDeadline) { lossTimer = setTimeout(expireLoss, lossDeadline - monotonicMs()); return; }
+    if (monotonicMs() < lossDeadline) {
+      lossTimer = setTimeout(expireLoss, lossDeadline - monotonicMs());
+      return;
+    }
     fail(new DeliveryStopped(`Managed session-loss grace expired: ${lossCause?.message ?? "peer unavailable"}`));
   }
   return {
-    link, failed,
-    requestStop(runId) { return client.requestManagedRunStop(runId); },
-    startSchedulerRequest(input) { return client.startSchedulerRequest(input); },
-    get failure() { return failure; },
-    get lossDeadlineTickMs() { return lossDeadline; },
+    link,
+    failed,
+    requestStop(runId) {
+      return client.requestManagedRunStop(runId);
+    },
+    startSchedulerRequest(input) {
+      return client.startSchedulerRequest(input);
+    },
+    get failure() {
+      return failure;
+    },
+    get lossDeadlineTickMs() {
+      return lossDeadline;
+    },
     start() {
       if (stopping || failure) return Promise.reject(failure ?? new DeliveryStopped("Managed node was stopped"));
       if (starting) return starting;
@@ -145,20 +253,28 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
         link.start();
       } catch (cause) {
         const error = cause instanceof Error ? cause : new Error(String(cause));
-        fail(error); ready = Promise.reject(error);
+        fail(error);
+        ready = Promise.reject(error);
       }
       starting = ready.catch(async (cause: unknown) => {
         const error = cause instanceof Error ? cause : new Error(String(cause));
         if (!stopping) fail(error); // Closing during an intentional Stop rejects ready too.
-        try { await failureWork; }
-        catch (cleanup) { throw new AggregateError([error, cleanup], `${error.message}; managed producer cleanup also failed`, { cause: error }); }
+        try {
+          await failureWork;
+        } catch (cleanup) {
+          throw new AggregateError([error, cleanup], `${error.message}; managed producer cleanup also failed`, {
+            cause: error,
+          });
+        }
         throw error;
       });
       return starting;
     },
     stop() {
       if (stopWork) return stopWork;
-      stopping = true; clearTimeout(lossTimer); claimLoop?.stop();
+      stopping = true;
+      clearTimeout(lossTimer);
+      claimLoop?.stop();
       stopWork = (async () => {
         const errors: Error[] = [];
         const remember = (cause: unknown): void => {
@@ -166,7 +282,13 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
           if (!errors.includes(error)) errors.push(error);
           latchFailure(error);
         };
-        const join = async (work: () => Promise<void>): Promise<void> => { try { await work(); } catch (error) { remember(error); } };
+        const join = async (work: () => Promise<void>): Promise<void> => {
+          try {
+            await work();
+          } catch (error) {
+            remember(error);
+          }
+        };
         if (!link.connected) await join(() => link.close());
         let graceClose: Promise<void> | undefined;
         const grace = setTimeout(() => {
@@ -175,19 +297,28 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
         }, 8000);
         try {
           await join(() => client.stop(true));
-          await join(async () => { dependencyInputs?.close(); });
+          await join(async () => {
+            dependencyInputs?.close();
+          });
           // Closing releases remaining receipt waiters even when physical Stop
           // reported uncertainty. Join them before the caller closes SQLite.
           await join(() => link.close());
-          await join(async () => { await Promise.all([...claimWork]); });
+          await join(async () => {
+            await Promise.all([...claimWork]);
+          });
           if (failureWork) await join(() => failureWork!);
           if (failureClose) await join(() => failureClose!);
           if (stoppingLossClose) await join(() => stoppingLossClose!);
           await join(() => client.stop());
           if (graceClose) await join(() => graceClose!);
-        } finally { clearTimeout(grace); }
+        } finally {
+          clearTimeout(grace);
+        }
         if (errors.length === 1) throw errors[0];
-        if (errors.length) throw new AggregateError(errors, `${errors[0]?.message}; additional managed runner cleanup failures`, { cause: errors[0] });
+        if (errors.length)
+          throw new AggregateError(errors, `${errors[0]?.message}; additional managed runner cleanup failures`, {
+            cause: errors[0],
+          });
       })();
       return stopWork;
     },

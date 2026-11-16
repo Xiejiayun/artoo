@@ -1,6 +1,13 @@
 import { observeWindowsStopStage, recordWindowsStopDiagnostic } from "./windows-stop-diagnostics.js";
 import type { NodeHeartbeat, NodeHello, RuntimeAdapter } from "@artoo/protocol";
-import { APPLICATION_VERIFICATION_FEATURE_V1, PRODUCT_DESIGN_REVISION_FEATURE_V1, SOURCE_CLEAN_RESTART_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1, PRODUCT_RELEASE_CLEAN_FEATURE_V1 } from "@artoo/domain";
+import {
+  APPLICATION_VERIFICATION_FEATURE_V1,
+  PRODUCT_DESIGN_REVISION_FEATURE_V1,
+  SOURCE_CLEAN_RESTART_FEATURE_V1,
+  IMPORTED_CLEAN_VALIDATION_FEATURE_V1,
+  IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1,
+  PRODUCT_RELEASE_CLEAN_FEATURE_V1,
+} from "@artoo/domain";
 
 import type { AdapterRegistry } from "./adapter-registry.js";
 import type { ArtifactUploader } from "./artifact-upload.js";
@@ -9,22 +16,47 @@ import { createNodeClient } from "./node-client.js";
 import { createDependencyArtifactInputLoader, hasTransferableDependencyInputs } from "./dependency-artifact-inputs.js";
 import { createWebSocketTransport } from "./ws-transport.js";
 import type { GitExecutor, WorkspaceConfig } from "./workspace-binding.js";
-import { VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE, VERIFICATION_CAPABILITIES_FEATURE, MEASUREMENT_PLAN_FEATURE, MEASUREMENT_PLAN_V2_FEATURE,
-  verificationSupported, prepareVerificationProfiles, attachWindowsVerificationBackend, readWindowsVerificationBackend,
-  productDesignRevisionVerificationSupported, applicationVerificationSupported, type VerificationProfile } from "./verification.js";
-import { PRODUCT_RELEASE_FEATURE, PRODUCT_RELEASE_HEALTH_FEATURE, PRODUCT_RELEASE_ACCEPTANCE_FEATURE, prepareReleaseProfiles, readReleaseCapabilities, releaseProfileExecutionSupported, type ReleaseProfile } from "./product-release.js";
+import {
+  VERIFICATION_FEATURE,
+  PRODUCT_STAGE_VERIFICATION_FEATURE,
+  VERIFICATION_CAPABILITIES_FEATURE,
+  MEASUREMENT_PLAN_FEATURE,
+  MEASUREMENT_PLAN_V2_FEATURE,
+  verificationSupported,
+  prepareVerificationProfiles,
+  attachWindowsVerificationBackend,
+  readWindowsVerificationBackend,
+  productDesignRevisionVerificationSupported,
+  applicationVerificationSupported,
+  type VerificationProfile,
+} from "./verification.js";
+import {
+  PRODUCT_RELEASE_FEATURE,
+  PRODUCT_RELEASE_HEALTH_FEATURE,
+  PRODUCT_RELEASE_ACCEPTANCE_FEATURE,
+  prepareReleaseProfiles,
+  readReleaseCapabilities,
+  releaseProfileExecutionSupported,
+  type ReleaseProfile,
+} from "./product-release.js";
 import { PRODUCT_RELEASE_RETRY_FEATURE_V1 } from "@artoo/domain";
 import { assertWindowsProcessBackend, type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import type { PreparedWindowsReleaseStorage } from "./windows-release-storage.js";
 import { prepareProductSourceNode } from "./product-source-node.js";
 import { prepareProductSourceConfiguration } from "./product-source-config.js";
-import { prepareWindowsDaemonSupervisorAuthority, type PreparedWindowsDaemonSupervisorAuthority } from "./windows-supervisor-authority.js";
+import {
+  prepareWindowsDaemonSupervisorAuthority,
+  type PreparedWindowsDaemonSupervisorAuthority,
+} from "./windows-supervisor-authority.js";
 import type { PreparedCleanDaemonConfiguration } from "./windows-clean-local-configuration.js";
 import type { ResearchOptions } from "./research.js";
 import type { SourceCommandDiagnostic } from "./source-command-diagnostics.js";
 import { APPLICATION_PUBLICATION_FEATURE_V1 } from "@artoo/domain";
-import { prepareApplicationPublicationProfile, readApplicationPublicationProfile,
-  type ApplicationPublicationProfileSelection } from "./application-publication-profile.js";
+import {
+  prepareApplicationPublicationProfile,
+  readApplicationPublicationProfile,
+  type ApplicationPublicationProfileSelection,
+} from "./application-publication-profile.js";
 
 /**
  * The artood node daemon: wires a {@link createWebSocketTransport} (real WS to
@@ -66,7 +98,10 @@ export interface ArtoodNodeOptions {
   /** Trusted local sink; supervised launch binds this to its original daemon output. */
   sourceCommandDiagnostic?: (value: SourceCommandDiagnostic) => unknown;
   /** Administrator-selected protected configurations. Never accepted from hello or task text. */
-  applicationPublicationProfiles?: readonly { verificationProfileId: string; selection: ApplicationPublicationProfileSelection }[];
+  applicationPublicationProfiles?: readonly {
+    verificationProfileId: string;
+    selection: ApplicationPublicationProfileSelection;
+  }[];
 }
 
 export interface ArtoodNode {
@@ -84,29 +119,50 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
   const sourceFile = options.productSourceConfigFile;
   if (options.prepareCleanLifecycle && (!options.requireSupervisorLifetime || !sourceFile))
     throw Error("Clean lifecycle preparation requires the dedicated native supervised startup");
-  if (sourceFile !== undefined && (!sourceFile || !windowsBackend || !options.workspace?.allowedRoots?.length || options.hello.managed_receipts)) {
+  if (
+    sourceFile !== undefined &&
+    (!sourceFile || !windowsBackend || !options.workspace?.allowedRoots?.length || options.hello.managed_receipts)
+  ) {
     throw new Error("Product source configuration requires ordinary native Windows execution and complete write roots");
   }
   if (windowsBackend !== undefined) {
     if (process.platform !== "win32") throw new Error("Windows process installation is supported only on Windows");
-    if (options.hello.managed_receipts !== undefined) throw new Error("Windows process installation cannot be combined with managed execution");
+    if (options.hello.managed_receipts !== undefined)
+      throw new Error("Windows process installation cannot be combined with managed execution");
     assertWindowsProcessBackend(windowsBackend);
   }
-  const verificationProfiles = prepareVerificationProfiles(options.verificationProfiles, options.workspace?.allowedRoots);
-  if (windowsBackend !== undefined) for (const profile of verificationProfiles) attachWindowsVerificationBackend(profile, windowsBackend);
-  const advertisedVerificationProfiles = verificationSupported() ? verificationProfiles
+  const verificationProfiles = prepareVerificationProfiles(
+    options.verificationProfiles,
+    options.workspace?.allowedRoots,
+  );
+  if (windowsBackend !== undefined)
+    for (const profile of verificationProfiles) attachWindowsVerificationBackend(profile, windowsBackend);
+  const advertisedVerificationProfiles = verificationSupported()
+    ? verificationProfiles
     : process.platform === "win32" && windowsBackend !== undefined
-      ? verificationProfiles.filter(profile => readWindowsVerificationBackend(profile) === windowsBackend) : [];
+      ? verificationProfiles.filter((profile) => readWindowsVerificationBackend(profile) === windowsBackend)
+      : [];
   const releaseProfiles = prepareReleaseProfiles(options.releaseProfiles, verificationProfiles, {
-    windowsStorage: options.windowsReleaseStorage, writableRoots: options.workspace?.allowedRoots,
+    windowsStorage: options.windowsReleaseStorage,
+    writableRoots: options.workspace?.allowedRoots,
   });
   const advertisedReleaseProfiles = releaseProfiles.filter(releaseProfileExecutionSupported);
-  if (options.applicationPublicationProfiles?.length && (!windowsBackend || options.acknowledgeRunEvents !== true || options.hello.managed_receipts))
-    throw Error("Application publication requires native Windows, ordinary paired execution and committed event receipts");
-  const applicationPublicationProfiles = (options.applicationPublicationProfiles ?? []).map(selected => {
-    const verifier = advertisedVerificationProfiles.find(profile => profile.id === selected.verificationProfileId);
-    if (!verifier || !windowsBackend) throw Error("Application publication requires its configured original application verifier");
-    return prepareApplicationPublicationProfile(selected.selection, { nodeId: options.hello.node_id, verifier, backend: windowsBackend });
+  if (
+    options.applicationPublicationProfiles?.length &&
+    (!windowsBackend || options.acknowledgeRunEvents !== true || options.hello.managed_receipts)
+  )
+    throw Error(
+      "Application publication requires native Windows, ordinary paired execution and committed event receipts",
+    );
+  const applicationPublicationProfiles = (options.applicationPublicationProfiles ?? []).map((selected) => {
+    const verifier = advertisedVerificationProfiles.find((profile) => profile.id === selected.verificationProfileId);
+    if (!verifier || !windowsBackend)
+      throw Error("Application publication requires its configured original application verifier");
+    return prepareApplicationPublicationProfile(selected.selection, {
+      nodeId: options.hello.node_id,
+      verifier,
+      backend: windowsBackend,
+    });
   });
   const hello: NodeHello = structuredClone(options.hello);
   hello.dependency_inputs = Object.freeze({ version: 1 });
@@ -117,49 +173,104 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
   delete hello.owned_result_profiles;
   delete hello.product_source_routing;
   delete hello.application_publication_profiles;
-  const configuredFeatures = (hello.execution_features ?? []).filter((feature) => ![VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE, VERIFICATION_CAPABILITIES_FEATURE,
-    MEASUREMENT_PLAN_FEATURE, MEASUREMENT_PLAN_V2_FEATURE, PRODUCT_RELEASE_FEATURE, PRODUCT_RELEASE_HEALTH_FEATURE, PRODUCT_RELEASE_ACCEPTANCE_FEATURE, PRODUCT_RELEASE_RETRY_FEATURE_V1,
-      PRODUCT_DESIGN_REVISION_FEATURE_V1, APPLICATION_VERIFICATION_FEATURE_V1, APPLICATION_PUBLICATION_FEATURE_V1,
-      "owned-result-run.v1", "product-source-transfer.v1", "product-source-transfer.v2", "product-source-transfer.measurement-v2.v1",
-      "product-source-operations.v1", "product-research-revision.v1", "imported-product-review.v1", "imported-design-continuation.v1", "imported-design-review.v1", "imported-execution.v1", "imported-execution-review.v1", "imported-validation.v1",
-      "product.source.recovery.v1", SOURCE_CLEAN_RESTART_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1, PRODUCT_RELEASE_CLEAN_FEATURE_V1,
-      "imported-recovery-validation.v1", "imported-recovery-validation-review.v1"].includes(feature));
+  const configuredFeatures = (hello.execution_features ?? []).filter(
+    (feature) =>
+      ![
+        VERIFICATION_FEATURE,
+        PRODUCT_STAGE_VERIFICATION_FEATURE,
+        VERIFICATION_CAPABILITIES_FEATURE,
+        MEASUREMENT_PLAN_FEATURE,
+        MEASUREMENT_PLAN_V2_FEATURE,
+        PRODUCT_RELEASE_FEATURE,
+        PRODUCT_RELEASE_HEALTH_FEATURE,
+        PRODUCT_RELEASE_ACCEPTANCE_FEATURE,
+        PRODUCT_RELEASE_RETRY_FEATURE_V1,
+        PRODUCT_DESIGN_REVISION_FEATURE_V1,
+        APPLICATION_VERIFICATION_FEATURE_V1,
+        APPLICATION_PUBLICATION_FEATURE_V1,
+        "owned-result-run.v1",
+        "product-source-transfer.v1",
+        "product-source-transfer.v2",
+        "product-source-transfer.measurement-v2.v1",
+        "product-source-operations.v1",
+        "product-research-revision.v1",
+        "imported-product-review.v1",
+        "imported-design-continuation.v1",
+        "imported-design-review.v1",
+        "imported-execution.v1",
+        "imported-execution-review.v1",
+        "imported-validation.v1",
+        "product.source.recovery.v1",
+        SOURCE_CLEAN_RESTART_FEATURE_V1,
+        IMPORTED_CLEAN_VALIDATION_FEATURE_V1,
+        IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1,
+        PRODUCT_RELEASE_CLEAN_FEATURE_V1,
+        "imported-recovery-validation.v1",
+        "imported-recovery-validation-review.v1",
+      ].includes(feature),
+  );
   if (advertisedVerificationProfiles.length) {
     configuredFeatures.push(VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE);
-    if (advertisedVerificationProfiles.some((profile) => profile.capabilities)) configuredFeatures.push(VERIFICATION_CAPABILITIES_FEATURE);
-    if (advertisedVerificationProfiles.some((profile) => profile.measurement_plan_policy?.version === 1)) configuredFeatures.push(MEASUREMENT_PLAN_FEATURE);
-    if (advertisedVerificationProfiles.some((profile) => profile.measurement_plan_policy?.version === 2)) configuredFeatures.push(MEASUREMENT_PLAN_V2_FEATURE);
-    if (advertisedVerificationProfiles.some(productDesignRevisionVerificationSupported)) configuredFeatures.push(PRODUCT_DESIGN_REVISION_FEATURE_V1);
-    if (advertisedVerificationProfiles.some(applicationVerificationSupported)) configuredFeatures.push(APPLICATION_VERIFICATION_FEATURE_V1);
-    hello.verification_profiles = advertisedVerificationProfiles.map((profile) => Object.freeze({
-      profile_id: profile.id, project_id: profile.project_id, workspace_root: profile.workspace_root,
-      ...(profile.capabilities ? { capabilities: profile.capabilities } : {}),
-    }));
+    if (advertisedVerificationProfiles.some((profile) => profile.capabilities))
+      configuredFeatures.push(VERIFICATION_CAPABILITIES_FEATURE);
+    if (advertisedVerificationProfiles.some((profile) => profile.measurement_plan_policy?.version === 1))
+      configuredFeatures.push(MEASUREMENT_PLAN_FEATURE);
+    if (advertisedVerificationProfiles.some((profile) => profile.measurement_plan_policy?.version === 2))
+      configuredFeatures.push(MEASUREMENT_PLAN_V2_FEATURE);
+    if (advertisedVerificationProfiles.some(productDesignRevisionVerificationSupported))
+      configuredFeatures.push(PRODUCT_DESIGN_REVISION_FEATURE_V1);
+    if (advertisedVerificationProfiles.some(applicationVerificationSupported))
+      configuredFeatures.push(APPLICATION_VERIFICATION_FEATURE_V1);
+    hello.verification_profiles = advertisedVerificationProfiles.map((profile) =>
+      Object.freeze({
+        profile_id: profile.id,
+        project_id: profile.project_id,
+        workspace_root: profile.workspace_root,
+        ...(profile.capabilities ? { capabilities: profile.capabilities } : {}),
+      }),
+    );
     Object.freeze(hello.verification_profiles);
   }
   if (advertisedReleaseProfiles.length) {
     configuredFeatures.push(PRODUCT_RELEASE_FEATURE, PRODUCT_RELEASE_RETRY_FEATURE_V1);
-    if (advertisedReleaseProfiles.some((profile) => profile.monitoring)) configuredFeatures.push(PRODUCT_RELEASE_HEALTH_FEATURE);
-    if (advertisedReleaseProfiles.some((profile) => profile.criterion_acceptance)) configuredFeatures.push(PRODUCT_RELEASE_ACCEPTANCE_FEATURE);
+    if (advertisedReleaseProfiles.some((profile) => profile.monitoring))
+      configuredFeatures.push(PRODUCT_RELEASE_HEALTH_FEATURE);
+    if (advertisedReleaseProfiles.some((profile) => profile.criterion_acceptance))
+      configuredFeatures.push(PRODUCT_RELEASE_ACCEPTANCE_FEATURE);
     hello.release_profiles = advertisedReleaseProfiles.map((profile) => {
       const capabilities = readReleaseCapabilities(profile);
-      return Object.freeze({ profile_id: profile.id, project_id: profile.project_id, workspace_root: profile.verifier.workspace_root,
-        verification_profile_id: profile.verifier.id, target_kind: "static_site" as const, ...(capabilities ? { capabilities } : {}) });
+      return Object.freeze({
+        profile_id: profile.id,
+        project_id: profile.project_id,
+        workspace_root: profile.verifier.workspace_root,
+        verification_profile_id: profile.verifier.id,
+        target_kind: "static_site" as const,
+        ...(capabilities ? { capabilities } : {}),
+      });
     });
     Object.freeze(hello.release_profiles);
   }
   if (applicationPublicationProfiles.length) {
     configuredFeatures.push(APPLICATION_PUBLICATION_FEATURE_V1);
-    hello.application_publication_profiles = applicationPublicationProfiles.map(profile => {
+    hello.application_publication_profiles = applicationPublicationProfiles.map((profile) => {
       const saved = readApplicationPublicationProfile(profile);
-      return Object.freeze({ profile_id: saved.config.id, project_id: saved.config.project_id, computer_id: saved.config.computer_id,
-        verification_profile_id: saved.config.verification_profile_id, capabilities: saved.capabilities });
+      return Object.freeze({
+        profile_id: saved.config.id,
+        project_id: saved.config.project_id,
+        computer_id: saved.config.computer_id,
+        verification_profile_id: saved.config.verification_profile_id,
+        capabilities: saved.capabilities,
+      });
     });
-    if (new Set(hello.application_publication_profiles.map(profile => profile.profile_id)).size !== applicationPublicationProfiles.length)
+    if (
+      new Set(hello.application_publication_profiles.map((profile) => profile.profile_id)).size !==
+      applicationPublicationProfiles.length
+    )
       throw Error("Application publication profile identities must be unique");
     Object.freeze(hello.application_publication_profiles);
   }
-  if (hello.execution_features !== undefined || configuredFeatures.length) hello.execution_features = configuredFeatures;
+  if (hello.execution_features !== undefined || configuredFeatures.length)
+    hello.execution_features = configuredFeatures;
   if (hello.execution_features) Object.freeze(hello.execution_features);
   Object.freeze(hello.machine);
   if (hello.managed_receipts) Object.freeze(hello.managed_receipts);
@@ -169,18 +280,29 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
   let client: ReturnType<typeof createNodeClient> | null = null;
   let source: ReturnType<typeof prepareProductSourceNode> | undefined;
   let cleanLifecycle: PreparedCleanDaemonConfiguration | undefined;
-  let sourceAttempted = false, sessionInvalidated = false;
+  let sourceAttempted = false,
+    sessionInvalidated = false;
   let shutdown: Promise<void> | undefined;
   let resolveExecution: (() => void) | undefined, rejectExecution: ((error: Error) => void) | undefined;
-  const executionReady = sourceFile === undefined || !options.requireSupervisorLifetime ? undefined : new Promise<void>((resolve, reject) => {
-    resolveExecution = resolve; rejectExecution = reject;
-  });
+  const executionReady =
+    sourceFile === undefined || !options.requireSupervisorLifetime
+      ? undefined
+      : new Promise<void>((resolve, reject) => {
+          resolveExecution = resolve;
+          rejectExecution = reject;
+        });
   // Ordinary callers need not wait for this optional lifecycle signal.
   void executionReady?.catch(() => {});
   let reportFailure!: (error: Error) => void;
-  const failed = sourceFile === undefined ? undefined : new Promise<Error>(resolve => {
-    reportFailure = error => { rejectExecution?.(error); resolve(error); };
-  });
+  const failed =
+    sourceFile === undefined
+      ? undefined
+      : new Promise<Error>((resolve) => {
+          reportFailure = (error) => {
+            rejectExecution?.(error);
+            resolve(error);
+          };
+        });
 
   function stop(): Promise<void> {
     if (shutdown) return shutdown;
@@ -189,19 +311,28 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
     shutdown = (async () => {
       const activeTransport = transport;
       if (!activeTransport?.connected) await observeWindowsStopStage("transport_close", () => activeTransport?.close());
-      const deadline = setTimeout(() => { void activeTransport?.close(); }, 8000);
+      const deadline = setTimeout(() => {
+        void activeTransport?.close();
+      }, 8000);
       try {
         await client?.stop(true);
-        dependencyInputs?.close(); dependencyInputs = undefined;
+        dependencyInputs?.close();
+        dependencyInputs = undefined;
         // Failure or uncertain closure keeps the runtime owner and workspace claims.
         recordWindowsStopDiagnostic("source_close", "entered");
-        try { source?.close(); recordWindowsStopDiagnostic("source_close", "completed"); }
-        catch (error) { recordWindowsStopDiagnostic("source_close", "failed", error); throw error; }
+        try {
+          source?.close();
+          recordWindowsStopDiagnostic("source_close", "completed");
+        } catch (error) {
+          recordWindowsStopDiagnostic("source_close", "failed", error);
+          throw error;
+        }
         source = undefined;
       } finally {
         clearTimeout(deadline);
         await observeWindowsStopStage("transport_close", () => activeTransport?.close());
-        client = null; transport = null;
+        client = null;
+        transport = null;
       }
     })();
     return shutdown;
@@ -211,13 +342,16 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
     ...(failed ? { failed } : {}),
     ...(executionReady ? { executionReady } : {}),
     async start(): Promise<void> {
-      if (applicationPublicationProfiles.length && sessionInvalidated) throw Error("Application publication session ended; construct a new node for a new paired session");
-      if (sourceFile !== undefined && sessionInvalidated) throw new Error("Product source session ended; construct a new node after recovery");
+      if (applicationPublicationProfiles.length && sessionInvalidated)
+        throw Error("Application publication session ended; construct a new node for a new paired session");
+      if (sourceFile !== undefined && sessionInvalidated)
+        throw new Error("Product source session ended; construct a new node after recovery");
       if (transport !== null && client !== null) {
         await transport.ready;
         return;
       }
-      if (sourceFile !== undefined && sourceAttempted) throw new Error("Product source session ended; construct a new node after recovery");
+      if (sourceFile !== undefined && sourceAttempted)
+        throw new Error("Product source session ended; construct a new node after recovery");
       shutdown = undefined;
       sessionInvalidated = false;
       // A local installation changed between construction and start must not
@@ -225,7 +359,8 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
       if (windowsBackend !== undefined) {
         assertWindowsProcessBackend(windowsBackend);
         for (const profile of advertisedVerificationProfiles) {
-          if (readWindowsVerificationBackend(profile) !== windowsBackend) throw new Error("Windows verification binding changed before startup");
+          if (readWindowsVerificationBackend(profile) !== windowsBackend)
+            throw new Error("Windows verification binding changed before startup");
         }
       }
       if (sourceFile !== undefined) {
@@ -233,18 +368,34 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
         try {
           // An internal selector is not authority. Reject an ordinary source
           // configuration before its preparation could acquire owner.lock.
-          if (options.requireSupervisorLifetime && !prepareProductSourceConfiguration({ file: sourceFile,
-            allowedRoots: options.workspace!.allowedRoots! }).config.recovery) throw Error("Supervised execution requires recovery configuration");
-          source = prepareProductSourceNode({ file: sourceFile, url: options.url, nodeId: hello.node_id,
-            allowedRoots: options.workspace!.allowedRoots!, windowsBackend: windowsBackend!, profiles: verificationProfiles,
-            releaseProfiles, research: options.research, acknowledgeRunEvents: options.acknowledgeRunEvents === true });
+          if (
+            options.requireSupervisorLifetime &&
+            !prepareProductSourceConfiguration({ file: sourceFile, allowedRoots: options.workspace!.allowedRoots! })
+              .config.recovery
+          )
+            throw Error("Supervised execution requires recovery configuration");
+          source = prepareProductSourceNode({
+            file: sourceFile,
+            url: options.url,
+            nodeId: hello.node_id,
+            allowedRoots: options.workspace!.allowedRoots!,
+            windowsBackend: windowsBackend!,
+            profiles: verificationProfiles,
+            releaseProfiles,
+            research: options.research,
+            acknowledgeRunEvents: options.acknowledgeRunEvents === true,
+          });
           const prepared = source;
           if (prepared.recoveryRequired) {
-            const supervisor = await prepareWindowsDaemonSupervisorAuthority(windowsBackend!, { requireLifetime: options.requireSupervisorLifetime === true });
-            if (sessionInvalidated || source !== prepared) throw Error("Source startup stopped during native qualification");
+            const supervisor = await prepareWindowsDaemonSupervisorAuthority(windowsBackend!, {
+              requireLifetime: options.requireSupervisorLifetime === true,
+            });
+            if (sessionInvalidated || source !== prepared)
+              throw Error("Source startup stopped during native qualification");
             prepared.qualifyRecovery(supervisor);
             cleanLifecycle = options.prepareCleanLifecycle?.(supervisor);
-          } else if (options.requireSupervisorLifetime) throw Error("Supervised execution requires recovery configuration");
+          } else if (options.requireSupervisorLifetime)
+            throw Error("Supervised execution requires recovery configuration");
         } catch (error) {
           rejectExecution?.(error instanceof Error ? error : Error("Source startup failed"));
           throw error;
@@ -255,10 +406,10 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
       // scheduling). An explicit `heartbeat` option overrides this escape hatch.
       const heartbeat =
         options.heartbeat ??
-        (options.registry
-          ? createRegistryHeartbeat({ nodeId: hello.node_id, registry: options.registry })
-          : undefined);
-      const connectionHello: NodeHello = source ? { ...hello, execution_features: [...(hello.execution_features ?? [])] } : hello;
+        (options.registry ? createRegistryHeartbeat({ nodeId: hello.node_id, registry: options.registry }) : undefined);
+      const connectionHello: NodeHello = source
+        ? { ...hello, execution_features: [...(hello.execution_features ?? [])] }
+        : hello;
       try {
         transport = createWebSocketTransport({
           url: options.url,
@@ -269,18 +420,37 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
           reconnectDelayMs: options.reconnectDelayMs,
           reconnect: source === undefined && applicationPublicationProfiles.length === 0,
           onFatalDisconnect: () => {
-            if (sourceFile === undefined) { void client?.stop(true); return; }
+            if (sourceFile === undefined) {
+              void client?.stop(true);
+              return;
+            }
             sessionInvalidated = true;
-            reportFailure(new Error("Product source connection ended; in-process continuation authority cannot resume on a new session"));
-            void stop().catch(error => { reportFailure(error instanceof Error ? error : new Error("Product source shutdown failed")); });
+            reportFailure(
+              new Error(
+                "Product source connection ended; in-process continuation authority cannot resume on a new session",
+              ),
+            );
+            void stop().catch((error) => {
+              reportFailure(error instanceof Error ? error : new Error("Product source shutdown failed"));
+            });
           },
-          onConnected: () => { void client?.replayReleaseHealth().catch(() => {}); },
-          onDisconnected: () => { client?.invalidatePendingStartupReplay?.(); },
-          onPublicationSessionEnded: () => { sessionInvalidated = true; client?.invalidateApplicationPublicationSession(); },
-          WebSocketImpl: options.WebSocketImpl
+          onConnected: () => {
+            void client?.replayReleaseHealth().catch(() => {});
+          },
+          onDisconnected: () => {
+            client?.invalidatePendingStartupReplay?.();
+          },
+          onPublicationSessionEnded: () => {
+            sessionInvalidated = true;
+            client?.invalidateApplicationPublicationSession();
+          },
+          WebSocketImpl: options.WebSocketImpl,
         });
         // Observe early connection rejection even if controller construction fails.
-        const connectionReady = transport.ready.then(() => ({ ok: true as const }), error => ({ ok: false as const, error }));
+        const connectionReady = transport.ready.then(
+          () => ({ ok: true as const }),
+          (error) => ({ ok: false as const, error }),
+        );
         client = createNodeClient({
           nodeId: hello.node_id,
           transport,
@@ -292,52 +462,105 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
           prepareDependencyInputs: async (payload, signal) => {
             if (!hasTransferableDependencyInputs(payload)) return;
             const original = transport?.currentDependencyInputSession();
-            if (!original || sessionInvalidated) throw new Error("Dependency inputs require the current announced paired connection");
+            if (!original || sessionInvalidated)
+              throw new Error("Dependency inputs require the current announced paired connection");
             dependencyInputs ??= createDependencyArtifactInputLoader(options.url, hello.node_id);
-            await dependencyInputs(payload, { nodeId: hello.node_id, sessionId: original.id }, AbortSignal.any([signal, original.signal]));
+            await dependencyInputs(
+              payload,
+              { nodeId: hello.node_id, sessionId: original.id },
+              AbortSignal.any([signal, original.signal]),
+            );
             if (sessionInvalidated || transport?.currentDependencyInputSession() !== original)
               throw new Error("Dependency input preparation lost its original paired connection");
           },
-          verificationProfiles, releaseProfiles,
-          ...(applicationPublicationProfiles.length ? { applicationPublication: { profiles: applicationPublicationProfiles,
-            getSession: () => sessionInvalidated ? undefined : transport?.currentPublicationSession() } } : {}),
+          verificationProfiles,
+          releaseProfiles,
+          ...(applicationPublicationProfiles.length
+            ? {
+                applicationPublication: {
+                  profiles: applicationPublicationProfiles,
+                  getSession: () => (sessionInvalidated ? undefined : transport?.currentPublicationSession()),
+                },
+              }
+            : {}),
           sourceCommandDiagnostic: options.sourceCommandDiagnostic,
-          startupReplaySession: () => sessionInvalidated || !transport?.connected ? undefined : transport.currentSessionIdentity(),
+          startupReplaySession: () =>
+            sessionInvalidated || !transport?.connected ? undefined : transport.currentSessionIdentity(),
           releaseRetrySession: () => {
             if (sessionInvalidated || !transport?.connected) return undefined;
-            source?.assertCurrent(); return transport.currentSessionIdentity();
+            source?.assertCurrent();
+            return transport.currentSessionIdentity();
           },
-          ...(source ? {
-            ...(source.recoveryConfiguration ? { productSourceRecovery: { configuration: source.recoveryConfiguration, features: source.features,
-              ...(cleanLifecycle ? { cleanLifecycle } : {}),
-              replaySession: () => sessionInvalidated || !transport?.connected ? undefined : transport.currentSessionIdentity(),
-              isCurrent: () => {
-                if (sessionInvalidated || !transport?.connected || !source) return false;
-                source.assertCurrent(); return true;
-              },
-              onFailure: (error: Error) => {
-                sessionInvalidated = true; reportFailure(error);
-                void stop().catch(cause => { reportFailure(cause instanceof Error ? cause : new Error("Recovery shutdown failed")); });
-              },
-              ...(executionReady ? { onReady: () => {
-                if (sessionInvalidated || !transport?.connected || !source) throw Error("Source readiness lost its original session");
-                resolveExecution?.();
-              } } : {}),
-              activate: (runtime: Parameters<ReturnType<typeof prepareProductSourceNode>["activateRecovery"]>[0]) => {
-                if (sessionInvalidated || !transport?.connected || !source) throw Error("Recovery activation lost the current source session");
-                return source.activateRecovery(runtime);
-              } } } : { productSourceRuntime: source.runtime }),
-            ...(source.semanticClient ? { productSourceOperations: { client: source.semanticClient,
-              isCurrent: () => {
-                if (sessionInvalidated || !transport?.connected || !source) return false;
-                source.assertCurrent(); return true;
-              }, importedReview: source.importedReview, importedDesign: source.importedDesign, importedDesignReview: source.importedDesignReview, importedExecution: source.importedExecution, importedExecutionReview: source.importedExecutionReview, importedValidation: source.importedValidation } } : {}) } : {})
+          ...(source
+            ? {
+                ...(source.recoveryConfiguration
+                  ? {
+                      productSourceRecovery: {
+                        configuration: source.recoveryConfiguration,
+                        features: source.features,
+                        ...(cleanLifecycle ? { cleanLifecycle } : {}),
+                        replaySession: () =>
+                          sessionInvalidated || !transport?.connected ? undefined : transport.currentSessionIdentity(),
+                        isCurrent: () => {
+                          if (sessionInvalidated || !transport?.connected || !source) return false;
+                          source.assertCurrent();
+                          return true;
+                        },
+                        onFailure: (error: Error) => {
+                          sessionInvalidated = true;
+                          reportFailure(error);
+                          void stop().catch((cause) => {
+                            reportFailure(cause instanceof Error ? cause : new Error("Recovery shutdown failed"));
+                          });
+                        },
+                        ...(executionReady
+                          ? {
+                              onReady: () => {
+                                if (sessionInvalidated || !transport?.connected || !source)
+                                  throw Error("Source readiness lost its original session");
+                                resolveExecution?.();
+                              },
+                            }
+                          : {}),
+                        activate: (
+                          runtime: Parameters<ReturnType<typeof prepareProductSourceNode>["activateRecovery"]>[0],
+                        ) => {
+                          if (sessionInvalidated || !transport?.connected || !source)
+                            throw Error("Recovery activation lost the current source session");
+                          return source.activateRecovery(runtime);
+                        },
+                      },
+                    }
+                  : { productSourceRuntime: source.runtime }),
+                ...(source.semanticClient
+                  ? {
+                      productSourceOperations: {
+                        client: source.semanticClient,
+                        isCurrent: () => {
+                          if (sessionInvalidated || !transport?.connected || !source) return false;
+                          source.assertCurrent();
+                          return true;
+                        },
+                        importedReview: source.importedReview,
+                        importedDesign: source.importedDesign,
+                        importedDesignReview: source.importedDesignReview,
+                        importedExecution: source.importedExecution,
+                        importedExecutionReview: source.importedExecutionReview,
+                        importedValidation: source.importedValidation,
+                      },
+                    }
+                  : {}),
+              }
+            : {}),
         });
         if (source) {
           source.assertDiscovery();
           const features = client.productSourceFeatures?.();
           if (!features) throw new Error("Product source controller discovery is unavailable");
-          connectionHello.execution_features = Object.freeze([...(hello.execution_features ?? []), ...features]) as string[];
+          connectionHello.execution_features = Object.freeze([
+            ...(hello.execution_features ?? []),
+            ...features,
+          ]) as string[];
           connectionHello.product_source_routing = source.routing;
           Object.freeze(connectionHello);
         }
@@ -349,8 +572,11 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
         if (!connection.ok) throw connection.error;
         if (source && !source.recoveryRequired) resolveExecution?.();
       } catch (err) {
-        try { await stop(); }
-        catch (cleanup) { throw new AggregateError([err, cleanup], "Node startup failed and closure is uncertain"); }
+        try {
+          await stop();
+        } catch (cleanup) {
+          throw new AggregateError([err, cleanup], "Node startup failed and closure is uncertain");
+        }
         throw err;
       }
     },

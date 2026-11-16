@@ -404,7 +404,9 @@ async function assignTaskInTransaction(
   const requestedOpinion = await taskAgentReviewForTask(ctx, tx, row.id);
   if (requestedOpinion) {
     if (assistantTurnId || ownedSelection || verificationRequirement || ctx.automationActor) {
-      throw AppError.permissionDenied("An artifact opinion task cannot acquire another execution or automatic review owner");
+      throw AppError.permissionDenied(
+        "An artifact opinion task cannot acquire another execution or automatic review owner",
+      );
     }
     await assertTaskAgentReviewAdmission(ctx, tx, requestedOpinion);
   }
@@ -1187,232 +1189,235 @@ export async function reviewTask(
   baseVersion?: number | null,
 ): Promise<Task> {
   const now = ctx.clock.nowIso();
-  return ctx.db.transaction(tx => reviewTaskInTransaction(ctx, tx, taskId, req, baseVersion, now));
+  return ctx.db.transaction((tx) => reviewTaskInTransaction(ctx, tx, taskId, req, baseVersion, now));
 }
 
 /** Internal kernel for an already authorized user feedback transaction. No
  * HTTP/model payload can supply the optional server-owned opinion attribution. */
 export async function reviewTaskInTransaction(
-  ctx: ServerContext, tx: DrizzleDb, taskId: string, req: ReviewRequest, baseVersion?: number | null,
-  now = ctx.clock.nowIso(), agentReviewFeedback?: { review_id: string; review_run_id: string; report_message_id: string },
+  ctx: ServerContext,
+  tx: DrizzleDb,
+  taskId: string,
+  req: ReviewRequest,
+  baseVersion?: number | null,
+  now = ctx.clock.nowIso(),
+  agentReviewFeedback?: { review_id: string; review_run_id: string; report_message_id: string },
 ): Promise<Task> {
   const trigger = req.outcome === "accepted" ? "accept" : "request_changes";
-    const row = (
-      await tx
-        .select()
-        .from(tasks)
-        .where(and(eq(tasks.id, taskId), eq(tasks.organizationId, ctx.organizationId)))
-        .for("update")
-    )[0];
-    if (row === undefined) {
-      throw AppError.notFound(`task not found: ${taskId}`, { task_id: taskId });
-    }
-    // Optimistic concurrency (#27 v2-B slice 2): if the caller pinned a
-    // base_version from the task snapshot it hydrated, reject when the task has
-    // since advanced. Checked inside the tx so it is consistent with the write.
-    await assertFreshTaskBaseVersion(tx, ctx.organizationId, taskId, baseVersion);
-    if (row.status !== "review") {
-      throw AppError.invalidState(`task must be 'review' to review (is '${row.status}')`, {
-        status: row.status,
-      });
-    }
-    const researchOrigin = await resolveResearchRevisionOrigin(ctx, tx, row);
-    const reviewPlanId = researchOrigin?.plan.id ?? row.sourcePlanId;
-    const reviewSpecRef = researchOrigin?.specRef ?? row.sourcePlanSpecRef;
-    const automation = await automationForTask(ctx, tx, row);
-    if (row.goalId && (await currentImportedDesignBoundary(ctx, tx, row.goalId, row.sourcePlanId)))
-      throw AppError.conflict(
-        "Imported design cannot be accepted through ordinary task review; H4 and H5 remain separately fenced",
-      );
-    let verifiedReview:
-      | {
-          verified_run_id: string;
-          verification_evidence_id: string;
-          verification_request_id: string;
-          profile_digest: string;
-          subject_digest: string | null;
-          independent_review_id?: string;
-          reviewer_run_id?: string;
-          reviewer_evidence_id?: string;
-        }
-      | undefined;
-    let ownedReview: ReturnType<typeof ownedResultReview> | undefined;
-    let revisionAcceptance: DesignRevision | undefined;
-    if (automation) {
-      if (!ctx.automationActor || ctx.actorUserId !== automation.actorUserId)
-        throw AppError.permissionDenied("Autonomous tasks require the goal runner's evidence review");
-      if (automation.planId !== reviewPlanId) throw AppError.conflict("The autonomous task is not in the current plan");
-      await requireAiSharingAuthorization(ctx, tx, {
-        consentId: automation.consentId,
-        policyVersion: automation.policyVersion,
-      });
-      const goal = (await tx.select().from(goals).where(eq(goals.id, automation.goalId)).for("update"))[0];
-      if (!goal || goal.status !== "running" || goal.currentPlanId !== automation.planId)
-        throw AppError.conflict("Autonomous review is paused or its plan changed");
-      if (req.outcome === "accepted") {
-        const run = (
-          await tx
-            .select()
-            .from(runs)
-            .where(and(eq(runs.taskId, taskId), eq(runs.organizationId, ctx.organizationId)))
-            .orderBy(desc(runs.createdAt), desc(runs.id))
-            .limit(1)
-        )[0];
-        if (!run || run.status !== "completed")
-          throw AppError.conflict("The latest execution did not complete successfully");
-        await assertDesignRevisionRunAdmission(ctx, tx, run, { acceptance: true });
-        const verification = await inspectRunVerification(ctx, tx, run);
-        if (!verification.passed || !verification.evidence) throw AppError.conflict(verification.reason);
-        const plan = (await tx.select().from(plans).where(eq(plans.id, reviewPlanId!)))[0];
-        const spec = TaskSpecSchema.parse((plan?.taskSpecs as unknown[] | undefined)?.[Number(reviewSpecRef)]);
-        const outputs = await tx
-          .select({ type: artifacts.type })
-          .from(artifacts)
-          .where(and(eq(artifacts.runId, run.id), eq(artifacts.organizationId, ctx.organizationId)));
-        if (spec.expected_artifacts.some((expected) => !outputs.some((actual) => actual.type === expected.type)))
-          throw AppError.conflict("The latest execution is missing an expected artifact type");
-        // Keep the acceptance bound to the exact node receipt, not just a human-readable comment.
-        verifiedReview = {
-          verified_run_id: run.id,
-          verification_evidence_id: verification.evidence.id,
-          verification_request_id: verification.evidence.requestId,
-          profile_digest: verification.evidence.payload.profile_digest,
-          subject_digest: verification.evidence.payload.subject_digest,
-        };
-        if (automation.executionMode === "agent_team") {
-          const peer = await inspectIndependentReview(ctx, tx, run, verification.evidence);
-          if (peer.status !== "accepted" || !peer.review || !peer.reviewerRunId || !peer.reviewerEvidenceId)
-            throw AppError.conflict(peer.reason);
-          verifiedReview.independent_review_id = peer.review.id;
-          verifiedReview.reviewer_run_id = peer.reviewerRunId;
-          verifiedReview.reviewer_evidence_id = peer.reviewerEvidenceId;
-          const peerEvidence = await readRunVerificationEvidence(ctx, tx, peer.reviewerRunId);
-          if (!peerEvidence || peerEvidence.id !== peer.reviewerEvidenceId)
-            throw AppError.conflict("Independent reviewer evidence changed before acceptance");
-          revisionAcceptance = await prepareDesignRevisionAcceptance(ctx, tx, run, verification.evidence.payload, {
-            reviewId: peer.review.id,
-            runId: peer.reviewerRunId,
-            payload: peerEvidence.payload,
-          });
-          if (revisionAcceptance) {
-            const refreshed = await inspectIndependentReview(ctx, tx, run, verification.evidence);
-            if (
-              refreshed.status !== "accepted" ||
-              refreshed.review?.id !== peer.review.id ||
-              refreshed.reviewerRunId !== peer.reviewerRunId ||
-              refreshed.reviewerEvidenceId !== peer.reviewerEvidenceId ||
-              !isDeepStrictEqual(refreshed.responseBinding, peer.responseBinding)
-            ) {
-              throw AppError.conflict(
-                "Independent revision reviewer changed during retained-content acceptance checks",
-              );
-            }
+  const row = (
+    await tx
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, taskId), eq(tasks.organizationId, ctx.organizationId)))
+      .for("update")
+  )[0];
+  if (row === undefined) {
+    throw AppError.notFound(`task not found: ${taskId}`, { task_id: taskId });
+  }
+  // Optimistic concurrency (#27 v2-B slice 2): if the caller pinned a
+  // base_version from the task snapshot it hydrated, reject when the task has
+  // since advanced. Checked inside the tx so it is consistent with the write.
+  await assertFreshTaskBaseVersion(tx, ctx.organizationId, taskId, baseVersion);
+  if (row.status !== "review") {
+    throw AppError.invalidState(`task must be 'review' to review (is '${row.status}')`, {
+      status: row.status,
+    });
+  }
+  const researchOrigin = await resolveResearchRevisionOrigin(ctx, tx, row);
+  const reviewPlanId = researchOrigin?.plan.id ?? row.sourcePlanId;
+  const reviewSpecRef = researchOrigin?.specRef ?? row.sourcePlanSpecRef;
+  const automation = await automationForTask(ctx, tx, row);
+  if (row.goalId && (await currentImportedDesignBoundary(ctx, tx, row.goalId, row.sourcePlanId)))
+    throw AppError.conflict(
+      "Imported design cannot be accepted through ordinary task review; H4 and H5 remain separately fenced",
+    );
+  let verifiedReview:
+    | {
+        verified_run_id: string;
+        verification_evidence_id: string;
+        verification_request_id: string;
+        profile_digest: string;
+        subject_digest: string | null;
+        independent_review_id?: string;
+        reviewer_run_id?: string;
+        reviewer_evidence_id?: string;
+      }
+    | undefined;
+  let ownedReview: ReturnType<typeof ownedResultReview> | undefined;
+  let revisionAcceptance: DesignRevision | undefined;
+  if (automation) {
+    if (!ctx.automationActor || ctx.actorUserId !== automation.actorUserId)
+      throw AppError.permissionDenied("Autonomous tasks require the goal runner's evidence review");
+    if (automation.planId !== reviewPlanId) throw AppError.conflict("The autonomous task is not in the current plan");
+    await requireAiSharingAuthorization(ctx, tx, {
+      consentId: automation.consentId,
+      policyVersion: automation.policyVersion,
+    });
+    const goal = (await tx.select().from(goals).where(eq(goals.id, automation.goalId)).for("update"))[0];
+    if (!goal || goal.status !== "running" || goal.currentPlanId !== automation.planId)
+      throw AppError.conflict("Autonomous review is paused or its plan changed");
+    if (req.outcome === "accepted") {
+      const run = (
+        await tx
+          .select()
+          .from(runs)
+          .where(and(eq(runs.taskId, taskId), eq(runs.organizationId, ctx.organizationId)))
+          .orderBy(desc(runs.createdAt), desc(runs.id))
+          .limit(1)
+      )[0];
+      if (!run || run.status !== "completed")
+        throw AppError.conflict("The latest execution did not complete successfully");
+      await assertDesignRevisionRunAdmission(ctx, tx, run, { acceptance: true });
+      const verification = await inspectRunVerification(ctx, tx, run);
+      if (!verification.passed || !verification.evidence) throw AppError.conflict(verification.reason);
+      const plan = (await tx.select().from(plans).where(eq(plans.id, reviewPlanId!)))[0];
+      const spec = TaskSpecSchema.parse((plan?.taskSpecs as unknown[] | undefined)?.[Number(reviewSpecRef)]);
+      const outputs = await tx
+        .select({ type: artifacts.type })
+        .from(artifacts)
+        .where(and(eq(artifacts.runId, run.id), eq(artifacts.organizationId, ctx.organizationId)));
+      if (spec.expected_artifacts.some((expected) => !outputs.some((actual) => actual.type === expected.type)))
+        throw AppError.conflict("The latest execution is missing an expected artifact type");
+      // Keep the acceptance bound to the exact node receipt, not just a human-readable comment.
+      verifiedReview = {
+        verified_run_id: run.id,
+        verification_evidence_id: verification.evidence.id,
+        verification_request_id: verification.evidence.requestId,
+        profile_digest: verification.evidence.payload.profile_digest,
+        subject_digest: verification.evidence.payload.subject_digest,
+      };
+      if (automation.executionMode === "agent_team") {
+        const peer = await inspectIndependentReview(ctx, tx, run, verification.evidence);
+        if (peer.status !== "accepted" || !peer.review || !peer.reviewerRunId || !peer.reviewerEvidenceId)
+          throw AppError.conflict(peer.reason);
+        verifiedReview.independent_review_id = peer.review.id;
+        verifiedReview.reviewer_run_id = peer.reviewerRunId;
+        verifiedReview.reviewer_evidence_id = peer.reviewerEvidenceId;
+        const peerEvidence = await readRunVerificationEvidence(ctx, tx, peer.reviewerRunId);
+        if (!peerEvidence || peerEvidence.id !== peer.reviewerEvidenceId)
+          throw AppError.conflict("Independent reviewer evidence changed before acceptance");
+        revisionAcceptance = await prepareDesignRevisionAcceptance(ctx, tx, run, verification.evidence.payload, {
+          reviewId: peer.review.id,
+          runId: peer.reviewerRunId,
+          payload: peerEvidence.payload,
+        });
+        if (revisionAcceptance) {
+          const refreshed = await inspectIndependentReview(ctx, tx, run, verification.evidence);
+          if (
+            refreshed.status !== "accepted" ||
+            refreshed.review?.id !== peer.review.id ||
+            refreshed.reviewerRunId !== peer.reviewerRunId ||
+            refreshed.reviewerEvidenceId !== peer.reviewerEvidenceId ||
+            !isDeepStrictEqual(refreshed.responseBinding, peer.responseBinding)
+          ) {
+            throw AppError.conflict("Independent revision reviewer changed during retained-content acceptance checks");
           }
         }
       }
     }
-    if (req.outcome === "accepted") {
-      const [latest] = await tx
-        .select()
-        .from(runs)
-        .where(and(eq(runs.taskId, taskId), eq(runs.organizationId, ctx.organizationId)))
-        .orderBy(desc(runs.createdAt), desc(runs.id))
-        .limit(1);
-      if (latest && latest.ownedResultAssignment !== null) {
-        const evidence = await readReviewableOwnedResultEvidence(ctx, tx, latest);
-        if (latest.status !== "completed" || !evidence || evidence.payload.verification.payload.outcome !== "passed") {
-          throw AppError.conflict("Owned result review requires the latest run's exact passing node evidence");
-        }
-        ownedReview = ownedResultReview(evidence);
+  }
+  if (req.outcome === "accepted") {
+    const [latest] = await tx
+      .select()
+      .from(runs)
+      .where(and(eq(runs.taskId, taskId), eq(runs.organizationId, ctx.organizationId)))
+      .orderBy(desc(runs.createdAt), desc(runs.id))
+      .limit(1);
+    if (latest && latest.ownedResultAssignment !== null) {
+      const evidence = await readReviewableOwnedResultEvidence(ctx, tx, latest);
+      if (latest.status !== "completed" || !evidence || evidence.payload.verification.payload.outcome !== "passed") {
+        throw AppError.conflict("Owned result review requires the latest run's exact passing node evidence");
       }
+      ownedReview = ownedResultReview(evidence);
     }
-    if (trigger === "request_changes") {
-      const policyTask = await resolveExecutionPolicyTask(ctx, tx, row);
-      await assertGoalAllowsExecution(ctx, tx, policyTask.goalId, "retry", policyTask.sourcePlanId);
-      await assertTaskPlanControlsSupported(ctx, tx, policyTask);
+  }
+  if (trigger === "request_changes") {
+    const policyTask = await resolveExecutionPolicyTask(ctx, tx, row);
+    await assertGoalAllowsExecution(ctx, tx, policyTask.goalId, "retry", policyTask.sourcePlanId);
+    await assertTaskPlanControlsSupported(ctx, tx, policyTask);
+  }
+  // Aggregate review: a parent cannot be accepted (-> done) until every child
+  // task is done or cancelled. Otherwise accepting a parent would mark a tree
+  // complete while sub-tasks are still open.
+  if (req.outcome === "accepted") {
+    const children = await tx
+      .select({ status: tasks.status })
+      .from(tasks)
+      .where(and(eq(tasks.parentTaskId, taskId), eq(tasks.organizationId, ctx.organizationId)));
+    const pending = children.filter((c) => c.status !== "done" && c.status !== "cancelled");
+    if (pending.length > 0) {
+      throw AppError.invalidState("cannot accept parent task until all child tasks are done or cancelled", {
+        open_children: pending.length,
+      });
     }
-    // Aggregate review: a parent cannot be accepted (-> done) until every child
-    // task is done or cancelled. Otherwise accepting a parent would mark a tree
-    // complete while sub-tasks are still open.
-    if (req.outcome === "accepted") {
-      const children = await tx
-        .select({ status: tasks.status })
-        .from(tasks)
-        .where(and(eq(tasks.parentTaskId, taskId), eq(tasks.organizationId, ctx.organizationId)));
-      const pending = children.filter((c) => c.status !== "done" && c.status !== "cancelled");
-      if (pending.length > 0) {
-        throw AppError.invalidState("cannot accept parent task until all child tasks are done or cancelled", {
-          open_children: pending.length,
-        });
-      }
+  }
+  const artifactRows = await tx
+    .select({ id: artifacts.id })
+    .from(artifacts)
+    .where(and(eq(artifacts.organizationId, ctx.organizationId), eq(artifacts.taskId, taskId)))
+    .orderBy(asc(artifacts.id));
+  const result = await transitionTask(tx, ctx, {
+    taskId,
+    from: "review",
+    trigger,
+    now,
+    events: (to) => [
+      buildEvent(ctx, {
+        type: "review.completed",
+        actorType: ctx.automationActor?.type ?? "user",
+        actorId: ctx.automationActor?.id ?? ctx.actorUserId,
+        correlationId: taskId,
+        projectId: row.projectId,
+        taskId,
+        roomId: row.roomId,
+        payload: {
+          outcome: req.outcome,
+          comment: req.comment ?? null,
+          artifact_ids: artifactRows.map((artifact) => artifact.id),
+          ...(agentReviewFeedback ? { agent_review_feedback: agentReviewFeedback } : {}),
+          ...verifiedReview,
+          ...(ownedReview ? { owned_result_review: ownedReview } : {}),
+        },
+      }),
+      buildEvent(ctx, {
+        type: "task.updated",
+        actorType: ctx.automationActor?.type ?? "user",
+        actorId: ctx.automationActor?.id ?? ctx.actorUserId,
+        correlationId: taskId,
+        projectId: row.projectId,
+        taskId,
+        roomId: row.roomId,
+        payload: { status: to },
+      }),
+    ],
+  });
+  if (!result.changed) {
+    throw AppError.conflict("task is no longer in review");
+  }
+  // #115 P3b-2: a `request_changes` review sends the task back to ready — a
+  // real retry that consumes the linked goal's retry budget. `accept` does not.
+  if (trigger === "request_changes" && row.goalId !== null) {
+    await incrementLinkedGoalRetryCount(ctx, tx, row.goalId, now);
+  }
+  // On accept (-> done), auto-unlock downstream dependents whose gating
+  // prerequisites are now all satisfied (emits dag.node.ready per unlock).
+  if (req.outcome === "accepted") {
+    if (revisionAcceptance && verifiedReview?.independent_review_id)
+      await settleDesignRevisionAcceptance(ctx, tx, revisionAcceptance, {
+        runId: verifiedReview.verified_run_id,
+        evidenceId: verifiedReview.verification_evidence_id,
+        reviewId: verifiedReview.independent_review_id,
+      });
+    await dagService.unlockDownstream(ctx, tx, taskId);
+    if (row.goalId !== null) {
+      await completeGoalIfAllTasksDone(ctx, tx, row.goalId, now);
     }
-    const artifactRows = await tx
-      .select({ id: artifacts.id })
-      .from(artifacts)
-      .where(and(eq(artifacts.organizationId, ctx.organizationId), eq(artifacts.taskId, taskId)))
-      .orderBy(asc(artifacts.id));
-    const result = await transitionTask(tx, ctx, {
-      taskId,
-      from: "review",
-      trigger,
-      now,
-      events: (to) => [
-        buildEvent(ctx, {
-          type: "review.completed",
-          actorType: ctx.automationActor?.type ?? "user",
-          actorId: ctx.automationActor?.id ?? ctx.actorUserId,
-          correlationId: taskId,
-          projectId: row.projectId,
-          taskId,
-          roomId: row.roomId,
-          payload: {
-            outcome: req.outcome,
-            comment: req.comment ?? null,
-            artifact_ids: artifactRows.map((artifact) => artifact.id),
-            ...(agentReviewFeedback ? { agent_review_feedback: agentReviewFeedback } : {}),
-            ...verifiedReview,
-            ...(ownedReview ? { owned_result_review: ownedReview } : {}),
-          },
-        }),
-        buildEvent(ctx, {
-          type: "task.updated",
-          actorType: ctx.automationActor?.type ?? "user",
-          actorId: ctx.automationActor?.id ?? ctx.actorUserId,
-          correlationId: taskId,
-          projectId: row.projectId,
-          taskId,
-          roomId: row.roomId,
-          payload: { status: to },
-        }),
-      ],
-    });
-    if (!result.changed) {
-      throw AppError.conflict("task is no longer in review");
-    }
-    // #115 P3b-2: a `request_changes` review sends the task back to ready — a
-    // real retry that consumes the linked goal's retry budget. `accept` does not.
-    if (trigger === "request_changes" && row.goalId !== null) {
-      await incrementLinkedGoalRetryCount(ctx, tx, row.goalId, now);
-    }
-    // On accept (-> done), auto-unlock downstream dependents whose gating
-    // prerequisites are now all satisfied (emits dag.node.ready per unlock).
-    if (req.outcome === "accepted") {
-      if (revisionAcceptance && verifiedReview?.independent_review_id)
-        await settleDesignRevisionAcceptance(ctx, tx, revisionAcceptance, {
-          runId: verifiedReview.verified_run_id,
-          evidenceId: verifiedReview.verification_evidence_id,
-          reviewId: verifiedReview.independent_review_id,
-        });
-      await dagService.unlockDownstream(ctx, tx, taskId);
-      if (row.goalId !== null) {
-        await completeGoalIfAllTasksDone(ctx, tx, row.goalId, now);
-      }
-    }
-    const updated = (await tx.select().from(tasks).where(eq(tasks.id, taskId)))[0];
-    if (updated === undefined) {
-      throw new Error("reviewTask: task missing after transition");
-    }
-    return mapTask(updated);
+  }
+  const updated = (await tx.select().from(tasks).where(eq(tasks.id, taskId)))[0];
+  if (updated === undefined) {
+    throw new Error("reviewTask: task missing after transition");
+  }
+  return mapTask(updated);
 }
 
 /**

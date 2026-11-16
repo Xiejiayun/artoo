@@ -235,53 +235,95 @@ async function readyGrant(journal, value, request, remaining = 5000) {
   return { window: journal.acceptSchedulerStartGrant(ready.exchange, response), response, controller };
 }
 
-test("an original unused permit is irreversibly fenced and delivers only its exact never-started proof", native, async (t) => {
-  await fixture(t, async (f) => {
-    await upgradeLocalJournalForSchedulerStartGrants(f.options);
-    const journal = await f.open(), value = proposal(f.root, "unused");
-    const { window, response } = await readyGrant(journal, value, f.request(value));
-    const admission = await journal.admitSchedulerStart(window);
-    assert.equal(admission.kind, "fresh");
-    await journal.advance(admission.permit, "preparing");
-    await journal.requestStop({ expectedNamespace: journal.namespace, runId: value.run_start.run_id });
-    const pending = journal.settleUnusedSchedulerPermit(admission.permit);
-    // The local bridge chance is burnt synchronously, before SQLite replies.
-    await assert.rejects(journal.startOwnedProcess(admission.permit, {}, {}, new AbortController().signal), /unused committed/);
-    const closed = await pending;
-    assert.equal(closed.phase, "closed"); assert.equal(closed.receipt.kind, "not_started_fenced");
-    assert.equal(JSON.parse(closed.receipt.contentJson).detail.scope, "scheduler-unused-permit.v1");
-    const scope = { expectedNamespace: journal.namespace, runId: closed.runId, launchKey: closed.launchKey,
-      physicalReceiptId: closed.receipt.id, settlementScope: "scheduler-unused-permit.v1" };
-    await assert.rejects(journal.claimNextClosedRunDelivery({ ...scope, settlementScope: undefined }), /physical settlement/);
-    const claim = await journal.claimNextClosedRunDelivery(scope);
-    assert.equal(claim.kind, "claimed"); assert.equal(claim.event.sequence, 0);
-    const event = JSON.parse(claim.event.contentJson);
-    assert.deepEqual(event, { type: "scheduler.permit_unused", payload: { version: 1, scope: "scheduler-unused-permit.v1",
-      grant_id: response.grant.grant_id, journal_namespace: journal.namespace,
-      node_attempt_id: response.grant.node_attempt_id, process_never_started: true } });
-    await journal.recordClosedRunEventReceipt(scope, { sequence: 0, attemptId: claim.attemptId,
-      contentSha256: claim.event.contentSha256, status: "accepted" });
-    assert.equal((await journal.claimNextClosedRunDelivery(scope)).kind, "complete");
-    assert.equal(f.inspect("SELECT count(*) AS total FROM outbox WHERE run_id=?", closed.runId)[0].total, 1);
-    assert.throws(() => journal.settleUnusedSchedulerPermit(admission.permit), /unused genuine/);
-    assert.equal((await journal.admitStart(f.ordinary(value))).kind, "fenced");
-  });
-});
+test(
+  "an original unused permit is irreversibly fenced and delivers only its exact never-started proof",
+  native,
+  async (t) => {
+    await fixture(t, async (f) => {
+      await upgradeLocalJournalForSchedulerStartGrants(f.options);
+      const journal = await f.open(),
+        value = proposal(f.root, "unused");
+      const { window, response } = await readyGrant(journal, value, f.request(value));
+      const admission = await journal.admitSchedulerStart(window);
+      assert.equal(admission.kind, "fresh");
+      await journal.advance(admission.permit, "preparing");
+      await journal.requestStop({ expectedNamespace: journal.namespace, runId: value.run_start.run_id });
+      const pending = journal.settleUnusedSchedulerPermit(admission.permit);
+      // The local bridge chance is burnt synchronously, before SQLite replies.
+      await assert.rejects(
+        journal.startOwnedProcess(admission.permit, {}, {}, new AbortController().signal),
+        /unused committed/,
+      );
+      const closed = await pending;
+      assert.equal(closed.phase, "closed");
+      assert.equal(closed.receipt.kind, "not_started_fenced");
+      assert.equal(JSON.parse(closed.receipt.contentJson).detail.scope, "scheduler-unused-permit.v1");
+      const scope = {
+        expectedNamespace: journal.namespace,
+        runId: closed.runId,
+        launchKey: closed.launchKey,
+        physicalReceiptId: closed.receipt.id,
+        settlementScope: "scheduler-unused-permit.v1",
+      };
+      await assert.rejects(
+        journal.claimNextClosedRunDelivery({ ...scope, settlementScope: undefined }),
+        /physical settlement/,
+      );
+      const claim = await journal.claimNextClosedRunDelivery(scope);
+      assert.equal(claim.kind, "claimed");
+      assert.equal(claim.event.sequence, 0);
+      const event = JSON.parse(claim.event.contentJson);
+      assert.deepEqual(event, {
+        type: "scheduler.permit_unused",
+        payload: {
+          version: 1,
+          scope: "scheduler-unused-permit.v1",
+          grant_id: response.grant.grant_id,
+          journal_namespace: journal.namespace,
+          node_attempt_id: response.grant.node_attempt_id,
+          process_never_started: true,
+        },
+      });
+      await journal.recordClosedRunEventReceipt(scope, {
+        sequence: 0,
+        attemptId: claim.attemptId,
+        contentSha256: claim.event.contentSha256,
+        status: "accepted",
+      });
+      assert.equal((await journal.claimNextClosedRunDelivery(scope)).kind, "complete");
+      assert.equal(f.inspect("SELECT count(*) AS total FROM outbox WHERE run_id=?", closed.runId)[0].total, 1);
+      assert.throws(() => journal.settleUnusedSchedulerPermit(admission.permit), /unused genuine/);
+      assert.equal((await journal.admitStart(f.ordinary(value))).kind, "fenced");
+    });
+  },
+);
 
 test("rejected unused proofs remain blocked without fabricating a process lifecycle correction", native, async (t) => {
   await fixture(t, async (f) => {
     await upgradeLocalJournalForSchedulerStartGrants(f.options);
-    const journal = await f.open(), value = proposal(f.root, "unused-rejected");
+    const journal = await f.open(),
+      value = proposal(f.root, "unused-rejected");
     const { window } = await readyGrant(journal, value, f.request(value));
     const admission = await journal.admitSchedulerStart(window);
     const closed = await journal.settleUnusedSchedulerPermit(admission.permit);
-    const scope = { expectedNamespace: journal.namespace, runId: closed.runId, launchKey: closed.launchKey,
-      physicalReceiptId: closed.receipt.id, settlementScope: "scheduler-unused-permit.v1" };
+    const scope = {
+      expectedNamespace: journal.namespace,
+      runId: closed.runId,
+      launchKey: closed.launchKey,
+      physicalReceiptId: closed.receipt.id,
+      settlementScope: "scheduler-unused-permit.v1",
+    };
     const claim = await journal.claimNextClosedRunDelivery(scope);
     assert.equal(claim.kind, "claimed");
-    const view = await journal.recordClosedRunEventReceipt(scope, { sequence: claim.event.sequence,
-      contentSha256: claim.event.contentSha256, attemptId: claim.attemptId, status: "rejected" });
-    assert.equal(view.state, "blocked"); assert.equal(view.revision, 0); assert.equal(view.correction, null);
+    const view = await journal.recordClosedRunEventReceipt(scope, {
+      sequence: claim.event.sequence,
+      contentSha256: claim.event.contentSha256,
+      attemptId: claim.attemptId,
+      status: "rejected",
+    });
+    assert.equal(view.state, "blocked");
+    assert.equal(view.revision, 0);
+    assert.equal(view.correction, null);
     assert.equal(f.inspect("SELECT count(*) AS total FROM outbox WHERE run_id=?", closed.runId)[0].total, 1);
   });
 });

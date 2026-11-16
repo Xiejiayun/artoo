@@ -16,7 +16,9 @@ export function useTaskContext() {
   const [params, setParams] = useSearchParams();
   const requested = params.get("task");
   const expectedProject = params.get("project");
-  const listedTask = cache.getQueryData<TasksResponse>(queryKeys.tasks(expectedProject ?? projectId ?? "pending"))?.tasks.find((item) => item.id === requested);
+  const listedTask = cache
+    .getQueryData<TasksResponse>(queryKeys.tasks(expectedProject ?? projectId ?? "pending"))
+    ?.tasks.find((item) => item.id === requested);
   const snapshot = useQuery({
     queryKey: queryKeys.task(requested ?? "no-linked-task"),
     queryFn: () => api.getTask(requested!),
@@ -24,14 +26,28 @@ export function useTaskContext() {
     retry: false,
   });
   const task = snapshot.data?.task ?? listedTask;
-  const known = !!task && task.id === requested && task.organization_id === bootstrap.data?.organization.id &&
+  const known =
+    !!task &&
+    task.id === requested &&
+    task.organization_id === bootstrap.data?.organization.id &&
     (!expectedProject || task.project_id === expectedProject) &&
     !!bootstrap.data?.projects.some((project) => project.id === task.project_id);
-  const contextError = requested ? snapshot.error ?? (task && !known ? new Error("This task could not be verified in the requested project.") : null) : null;
+  const contextError = requested
+    ? (snapshot.error ??
+      (task && !known ? new Error("This task could not be verified in the requested project.") : null))
+    : null;
   const applied = useRef<string | null>(null);
-  const identity = JSON.stringify([requested, expectedProject, bootstrap.data?.organization.id, bootstrap.data?.user.id]);
+  const identity = JSON.stringify([
+    requested,
+    expectedProject,
+    bootstrap.data?.organization.id,
+    bootstrap.data?.user.id,
+  ]);
   useEffect(() => {
-    if (!requested) { applied.current = null; return; }
+    if (!requested) {
+      applied.current = null;
+      return;
+    }
     if (!known || !task || applied.current === identity) return;
     applied.current = identity;
     if (task.project_id !== projectId) setSelectedProjectId(task.project_id);
@@ -42,17 +58,25 @@ export function useTaskContext() {
     setParams((current) => {
       const next = new URLSearchParams(current);
       next.delete("run");
-      if (id) { next.set("task", id); if (taskProject) next.set("project", taskProject); }
-      else { next.delete("task"); next.delete("project"); }
+      if (id) {
+        next.set("task", id);
+        if (taskProject) next.set("project", taskProject);
+      } else {
+        next.delete("task");
+        next.delete("project");
+      }
       return next;
     });
   };
   return {
     requested,
-    taskId: requested ? known ? task!.id : null : selectedTaskId,
+    taskId: requested ? (known ? task!.id : null) : selectedTaskId,
     contextLoading: !!requested && !contextError && (!known || task?.project_id !== projectId),
     contextError,
     selectTask,
-    retryContext: () => { void bootstrap.refetch(); void snapshot.refetch(); },
+    retryContext: () => {
+      void bootstrap.refetch();
+      void snapshot.refetch();
+    },
   };
 }

@@ -76,7 +76,10 @@ export async function provisionRunNamespace(
   if (process.platform === "win32") {
     if (!options.windowsProcessBackend) fail("Windows namespace provisioning requires the prepared native backend");
     assertWindowsProcessBackend(options.windowsProcessBackend!);
-    assertWindowsOwnedWorkspacePaths([{ path: input.basePath, directory: true }, { path: input.sourceRepo, directory: true }]);
+    assertWindowsOwnedWorkspacePaths([
+      { path: input.basePath, directory: true },
+      { path: input.sourceRepo, directory: true },
+    ]);
   } else if (process.platform !== "darwin" && process.platform !== "linux")
     fail("Namespace provisioning requires qualified POSIX filesystem semantics");
   const expected = allocateWorkspaceRoot({
@@ -151,7 +154,8 @@ export async function provisionRunNamespace(
     fail("Namespace preparation must leave exactly the final run target absent");
   }
   assertSame(observations);
-  if (process.platform === "win32") assertWindowsOwnedWorkspacePaths(observations.map(item => ({ path: item.canonical, directory: true })));
+  if (process.platform === "win32")
+    assertWindowsOwnedWorkspacePaths(observations.map((item) => ({ path: item.canonical, directory: true })));
   assertNotAborted(options);
   return Object.freeze({ root: input.root, parent: current.path, createdDirectories: Object.freeze([...created]) });
 }

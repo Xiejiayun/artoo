@@ -104,7 +104,8 @@ export async function captureSchedulerRequestBindings(
   if (task.status !== "ready") throw AppError.invalidState("Only a ready task can stage a scheduling intent");
   const opinion = await taskAgentReviewForTask(ctx, tx, task.id);
   if (opinion) {
-    if (request.agent_id !== opinion.reviewerAgentId) throw AppError.permissionDenied("Only the explicitly chosen reviewer Agent may claim this opinion task");
+    if (request.agent_id !== opinion.reviewerAgentId)
+      throw AppError.permissionDenied("Only the explicitly chosen reviewer Agent may claim this opinion task");
     await assertTaskAgentReviewAdmission(ctx, tx, opinion);
   }
   await assertPlainTaskOwner(ctx, tx, task);
@@ -260,9 +261,21 @@ async function collectSchedulerBindings(
     .from(approvals)
     .where(and(eq(approvals.organizationId, ctx.organizationId), eq(approvals.taskId, task.id)))
     .orderBy(asc(approvals.id));
-  const [agentConfiguration] = await tx.select().from(logicalAgentConfigurations).where(and(eq(logicalAgentConfigurations.agentId, agent.id), eq(logicalAgentConfigurations.organizationId, ctx.organizationId)));
-  const [squad] = await tx.select().from(projectSquads).where(and(eq(projectSquads.projectId, project.id), eq(projectSquads.organizationId, ctx.organizationId)));
-  if (squad && !squad.agentIds.includes(agent.id)) throw AppError.conflict("Agent is not a member of this project's configured Squad");
+  const [agentConfiguration] = await tx
+    .select()
+    .from(logicalAgentConfigurations)
+    .where(
+      and(
+        eq(logicalAgentConfigurations.agentId, agent.id),
+        eq(logicalAgentConfigurations.organizationId, ctx.organizationId),
+      ),
+    );
+  const [squad] = await tx
+    .select()
+    .from(projectSquads)
+    .where(and(eq(projectSquads.projectId, project.id), eq(projectSquads.organizationId, ctx.organizationId)));
+  if (squad && !squad.agentIds.includes(agent.id))
+    throw AppError.conflict("Agent is not a member of this project's configured Squad");
   return {
     task_input_version: await schedulerTaskVersion(ctx, tx, task.id, true),
     task_input_digest: auditDigestV1({ task, source: source ?? null, approvals: gates }),

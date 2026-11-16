@@ -45,7 +45,13 @@ function DetailSkeleton(): React.ReactNode {
  * room/activity (#73) and approvals/run timeline (#74) sub-surfaces are
  * rendered here but owned by their own slices.
  */
-export function TaskDetailPanel({ taskId, onSelectTask }: { taskId: string; onSelectTask?: (id: string) => void }): React.ReactNode {
+export function TaskDetailPanel({
+  taskId,
+  onSelectTask,
+}: {
+  taskId: string;
+  onSelectTask?: (id: string) => void;
+}): React.ReactNode {
   const api = useApi();
   const [delegationExpanded, setDelegationExpanded] = useState(false);
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
@@ -144,7 +150,12 @@ export function TaskDetailPanel({ taskId, onSelectTask }: { taskId: string; onSe
 
       <TaskActions key={`actions:${task.id}`} task={task} approvals={approvals} />
       <CancelRun key={`cancel:${task.id}`} runs={runs} taskId={task.id} projectId={task.project_id} />
-      <TaskDelegationPanel task={task} expanded={delegationExpanded} onExpandedChange={setDelegationExpanded} onSelectTask={onSelectTask} />
+      <TaskDelegationPanel
+        task={task}
+        expanded={delegationExpanded}
+        onExpandedChange={setDelegationExpanded}
+        onSelectTask={onSelectTask}
+      />
 
       {task.description ? (
         <section className="task-detail__section" aria-label="Description">

@@ -24,14 +24,8 @@ import { mapDependency } from "../mappers.js";
 import { transitionTask } from "./transition-service.js";
 
 /** Load all dependency edges for the org as DAG edges (from=prereq, to=dependent). */
-async function loadEdges(
-  ctx: ServerContext,
-  tx: ServerContext["db"]["db"],
-): Promise<DagEdge[]> {
-  const rows = await tx
-    .select()
-    .from(taskDependencies)
-    .where(eq(taskDependencies.organizationId, ctx.organizationId));
+async function loadEdges(ctx: ServerContext, tx: ServerContext["db"]["db"]): Promise<DagEdge[]> {
+  const rows = await tx.select().from(taskDependencies).where(eq(taskDependencies.organizationId, ctx.organizationId));
   return rows.map((r) => ({ from_task_id: r.fromTaskId, to_task_id: r.toTaskId, type: r.type as DagEdge["type"] }));
 }
 
@@ -187,9 +181,7 @@ export async function getDag(ctx: ServerContext, rootTaskId: string): Promise<Da
       parent_task_id: t.parentTaskId,
       title: t.title,
     }));
-  const edges = (await loadEdges(ctx, db)).filter(
-    (e) => nodeIds.has(e.from_task_id) && nodeIds.has(e.to_task_id),
-  );
+  const edges = (await loadEdges(ctx, db)).filter((e) => nodeIds.has(e.from_task_id) && nodeIds.has(e.to_task_id));
 
   return { root_task_id: rootTaskId, nodes, edges };
 }
@@ -199,10 +191,7 @@ export async function getDag(ctx: ServerContext, rootTaskId: string): Promise<Da
  * where `:id` is the DEPENDENT, i.e. `to_task_id = :id`). Symmetric with the
  * POST/DELETE endpoints, which treat `:id` as the dependent.
  */
-export async function listDependencies(
-  ctx: ServerContext,
-  dependentTaskId: string,
-): Promise<TaskDependency[]> {
+export async function listDependencies(ctx: ServerContext, dependentTaskId: string): Promise<TaskDependency[]> {
   const db = ctx.db.db;
   const dependent = (
     await db
@@ -217,10 +206,7 @@ export async function listDependencies(
     .select()
     .from(taskDependencies)
     .where(
-      and(
-        eq(taskDependencies.organizationId, ctx.organizationId),
-        eq(taskDependencies.toTaskId, dependentTaskId),
-      ),
+      and(eq(taskDependencies.organizationId, ctx.organizationId), eq(taskDependencies.toTaskId, dependentTaskId)),
     );
   return rows.map(mapDependency);
 }
@@ -242,12 +228,7 @@ export async function deleteDependency(
       await tx
         .select()
         .from(taskDependencies)
-        .where(
-          and(
-            eq(taskDependencies.id, dependencyId),
-            eq(taskDependencies.organizationId, ctx.organizationId),
-          ),
-        )
+        .where(and(eq(taskDependencies.id, dependencyId), eq(taskDependencies.organizationId, ctx.organizationId)))
     )[0];
     if (row === undefined) {
       throw AppError.notFound(`dependency not found: ${dependencyId}`, {
@@ -286,10 +267,7 @@ export async function deleteDependency(
 }
 
 /** Snapshot of every task's status in the org (for unlock evaluation). */
-async function loadStatusMap(
-  ctx: ServerContext,
-  tx: DrizzleDb,
-): Promise<Record<string, TaskStatus>> {
+async function loadStatusMap(ctx: ServerContext, tx: DrizzleDb): Promise<Record<string, TaskStatus>> {
   const rows = await tx
     .select({ id: tasks.id, status: tasks.status })
     .from(tasks)
@@ -317,7 +295,8 @@ async function loadEvidenceMap(
   if (prereqIds.length === 0) {
     return map;
   }
-  const latest = tx.selectDistinctOn([runs.taskId], { taskId: runs.taskId, id: runs.id, status: runs.status })
+  const latest = tx
+    .selectDistinctOn([runs.taskId], { taskId: runs.taskId, id: runs.id, status: runs.status })
     .from(runs)
     .where(and(eq(runs.organizationId, ctx.organizationId), inArray(runs.taskId, [...prereqIds])))
     .orderBy(runs.taskId, desc(runs.createdAt), desc(runs.id))
@@ -327,10 +306,14 @@ async function loadEvidenceMap(
     .from(artifacts)
     .leftJoin(latest, eq(latest.taskId, artifacts.taskId))
     .where(
-      and(eq(artifacts.organizationId, ctx.organizationId), inArray(artifacts.taskId, [...prereqIds]), or(
-        and(eq(latest.status, "completed"), eq(artifacts.runId, latest.id)),
-        and(isNull(latest.id), isNull(artifacts.runId)),
-      )),
+      and(
+        eq(artifacts.organizationId, ctx.organizationId),
+        inArray(artifacts.taskId, [...prereqIds]),
+        or(
+          and(eq(latest.status, "completed"), eq(artifacts.runId, latest.id)),
+          and(isNull(latest.id), isNull(artifacts.runId)),
+        ),
+      ),
     );
   for (const r of rows) {
     const set = map[r.taskId] ?? new Set<EvidenceKind>();
@@ -371,17 +354,11 @@ export async function isDependentSatisfied(
  * in backlog (it cannot be readied). Runs inside the caller's transaction.
  * Returns the ids actually unlocked.
  */
-export async function unlockDownstream(
-  ctx: ServerContext,
-  tx: DrizzleDb,
-  completedTaskId: string,
-): Promise<string[]> {
+export async function unlockDownstream(ctx: ServerContext, tx: DrizzleDb, completedTaskId: string): Promise<string[]> {
   const edges = await loadEdges(ctx, tx);
   const downstreamIds = [
     ...new Set(
-      edges
-        .filter((e) => e.from_task_id === completedTaskId && isGatingDependency(e.type))
-        .map((e) => e.to_task_id),
+      edges.filter((e) => e.from_task_id === completedTaskId && isGatingDependency(e.type)).map((e) => e.to_task_id),
     ),
   ];
   if (downstreamIds.length === 0) {
@@ -458,9 +435,7 @@ export async function propagateBlocked(
   const edges = await loadEdges(ctx, tx);
   const downstreamIds = [
     ...new Set(
-      edges
-        .filter((e) => e.from_task_id === sourceTaskId && isGatingDependency(e.type))
-        .map((e) => e.to_task_id),
+      edges.filter((e) => e.from_task_id === sourceTaskId && isGatingDependency(e.type)).map((e) => e.to_task_id),
     ),
   ];
   if (downstreamIds.length === 0) {

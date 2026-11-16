@@ -493,40 +493,81 @@ export class ApiClient {
   listDevices(): Promise<{ devices: Device[] }> {
     return this.request("GET", "/devices");
   }
-  createLogicalAgent(configuration: LogicalAgentConfigurationV1, requestKey: string): Promise<{ agent: Agent; configuration: LogicalAgentConfigurationRecordV1 }> {
-    return this.request("POST", "/agents", { body: { version: 1, request_key: requestKey, configuration }, idempotencyKey: requestKey });
+  createLogicalAgent(
+    configuration: LogicalAgentConfigurationV1,
+    requestKey: string,
+  ): Promise<{ agent: Agent; configuration: LogicalAgentConfigurationRecordV1 }> {
+    return this.request("POST", "/agents", {
+      body: { version: 1, request_key: requestKey, configuration },
+      idempotencyKey: requestKey,
+    });
   }
   async getAgentConfiguration(agentId: string): Promise<{ configuration: LogicalAgentConfigurationRecordV1 }> {
-    const result = await this.request<{ configuration: unknown }>("GET", `/agents/${encodeURIComponent(agentId)}/configuration`);
+    const result = await this.request<{ configuration: unknown }>(
+      "GET",
+      `/agents/${encodeURIComponent(agentId)}/configuration`,
+    );
     return { configuration: LogicalAgentConfigurationRecordV1Schema.parse(result.configuration) };
   }
-  async putAgentConfiguration(agentId: string, expectedRevision: number, configuration: LogicalAgentConfigurationV1): Promise<{ configuration: LogicalAgentConfigurationRecordV1 }> {
-    const result = await this.request<{ configuration: unknown }>("PUT", `/agents/${encodeURIComponent(agentId)}/configuration`, { body: { version: 1, expected_revision: expectedRevision, configuration } });
+  async putAgentConfiguration(
+    agentId: string,
+    expectedRevision: number,
+    configuration: LogicalAgentConfigurationV1,
+  ): Promise<{ configuration: LogicalAgentConfigurationRecordV1 }> {
+    const result = await this.request<{ configuration: unknown }>(
+      "PUT",
+      `/agents/${encodeURIComponent(agentId)}/configuration`,
+      { body: { version: 1, expected_revision: expectedRevision, configuration } },
+    );
     return { configuration: LogicalAgentConfigurationRecordV1Schema.parse(result.configuration) };
   }
   async getProjectSquad(projectId: string): Promise<{ squad: ProjectSquadV1 }> {
     const result = await this.request<{ squad: unknown }>("GET", `/projects/${encodeURIComponent(projectId)}/squad`);
     return { squad: ProjectSquadV1Schema.parse(result.squad) };
   }
-  async putProjectSquad(projectId: string, expectedRevision: number, agentIds: string[]): Promise<{ squad: ProjectSquadV1 }> {
-    const result = await this.request<{ squad: unknown }>("PUT", `/projects/${encodeURIComponent(projectId)}/squad`, { body: { version: 1, expected_revision: expectedRevision, agent_ids: agentIds } });
+  async putProjectSquad(
+    projectId: string,
+    expectedRevision: number,
+    agentIds: string[],
+  ): Promise<{ squad: ProjectSquadV1 }> {
+    const result = await this.request<{ squad: unknown }>("PUT", `/projects/${encodeURIComponent(projectId)}/squad`, {
+      body: { version: 1, expected_revision: expectedRevision, agent_ids: agentIds },
+    });
     return { squad: ProjectSquadV1Schema.parse(result.squad) };
   }
   async getComputerAdmission(computerId: string): Promise<{ admission: ComputerAdmissionV1 }> {
-    const result = await this.request<{ admission: unknown }>("GET", `/computers/${encodeURIComponent(computerId)}/admission`);
+    const result = await this.request<{ admission: unknown }>(
+      "GET",
+      `/computers/${encodeURIComponent(computerId)}/admission`,
+    );
     return { admission: ComputerAdmissionV1Schema.parse(result.admission) };
   }
-  async putComputerAdmission(computerId: string, expectedRevision: number, state: ComputerAdmissionV1["state"]): Promise<{ admission: ComputerAdmissionV1 }> {
-    const result = await this.request<{ admission: unknown }>("PUT", `/computers/${encodeURIComponent(computerId)}/admission`, { body: { version: 1, expected_revision: expectedRevision, state } });
+  async putComputerAdmission(
+    computerId: string,
+    expectedRevision: number,
+    state: ComputerAdmissionV1["state"],
+  ): Promise<{ admission: ComputerAdmissionV1 }> {
+    const result = await this.request<{ admission: unknown }>(
+      "PUT",
+      `/computers/${encodeURIComponent(computerId)}/admission`,
+      { body: { version: 1, expected_revision: expectedRevision, state } },
+    );
     return { admission: ComputerAdmissionV1Schema.parse(result.admission) };
   }
   getSchedulingPolicy<K extends SchedulingPolicyKind>(kind: K, id: string): Promise<SchedulingPolicyResponse<K>> {
     const resource = { project: "projects", agent: "agents", computer: "computers" }[kind];
     return this.request("GET", `/${resource}/${encodeURIComponent(id)}/scheduling-policy`);
   }
-  putSchedulingPolicy<K extends SchedulingPolicyKind>(kind: K, id: string, expectedRevision: number, policy: SchedulingPolicyByKind[K]): Promise<SchedulingPolicyResponse<K>> {
+  putSchedulingPolicy<K extends SchedulingPolicyKind>(
+    kind: K,
+    id: string,
+    expectedRevision: number,
+    policy: SchedulingPolicyByKind[K],
+  ): Promise<SchedulingPolicyResponse<K>> {
     const resource = { project: "projects", agent: "agents", computer: "computers" }[kind];
-    return this.request("PUT", `/${resource}/${encodeURIComponent(id)}/scheduling-policy`, { body: { version: 1, expected_revision: expectedRevision, policy } });
+    return this.request("PUT", `/${resource}/${encodeURIComponent(id)}/scheduling-policy`, {
+      body: { version: 1, expected_revision: expectedRevision, policy },
+    });
   }
   registerAgent(
     computerId: string,
@@ -611,15 +652,21 @@ export class ApiClient {
     );
   }
 
-  async getProjectControlView(projectId: string, options: ProjectControlViewOptions = {}): Promise<ProjectControlViewV1> {
+  async getProjectControlView(
+    projectId: string,
+    options: ProjectControlViewOptions = {},
+  ): Promise<ProjectControlViewV1> {
     const params = new URLSearchParams();
     if (options.limit !== undefined) params.set("limit", String(options.limit));
     if (options.after !== undefined) params.set("after", options.after);
     if (options.capacity !== undefined) params.set("capacity", String(options.capacity));
     const query = params.toString();
-    return ProjectControlViewV1Schema.parse(await this.request<unknown>(
-      "GET", `/projects/${encodeURIComponent(projectId)}/control-view${query ? `?${query}` : ""}`,
-    ));
+    return ProjectControlViewV1Schema.parse(
+      await this.request<unknown>(
+        "GET",
+        `/projects/${encodeURIComponent(projectId)}/control-view${query ? `?${query}` : ""}`,
+      ),
+    );
   }
 
   listTasks(projectId: string, options: { q?: string; limit?: number } = {}): Promise<TasksResponse> {
@@ -675,21 +722,47 @@ export class ApiClient {
   }
 
   async listTaskAgentReviews(taskId: string): Promise<{ reviews: TaskAgentReviewViewV1[] }> {
-    const result = await this.request<{ reviews: unknown[] }>("GET", `/tasks/${encodeURIComponent(taskId)}/agent-reviews`);
+    const result = await this.request<{ reviews: unknown[] }>(
+      "GET",
+      `/tasks/${encodeURIComponent(taskId)}/agent-reviews`,
+    );
     const reviews = result.reviews.map((review) => TaskAgentReviewViewV1Schema.parse(review));
-    if (reviews.some((review) => review.source_task_id !== taskId)) throw new Error("Agent feedback belongs to another source task.");
+    if (reviews.some((review) => review.source_task_id !== taskId))
+      throw new Error("Agent feedback belongs to another source task.");
     return { reviews };
   }
 
-  async createTaskAgentReview(taskId: string, body: CreateTaskAgentReviewRequestV1, idempotencyKey: string): Promise<{ review: TaskAgentReviewV1 }> {
-    const result = await this.request<{ review: unknown }>("POST", `/tasks/${encodeURIComponent(taskId)}/agent-reviews`, { body, idempotencyKey });
+  async createTaskAgentReview(
+    taskId: string,
+    body: CreateTaskAgentReviewRequestV1,
+    idempotencyKey: string,
+  ): Promise<{ review: TaskAgentReviewV1 }> {
+    const result = await this.request<{ review: unknown }>(
+      "POST",
+      `/tasks/${encodeURIComponent(taskId)}/agent-reviews`,
+      { body, idempotencyKey },
+    );
     const review = TaskAgentReviewV1Schema.parse(result.review);
-    if (review.source_task_id !== taskId || review.source_run_id !== body.source_run_id || review.reviewer_agent_id !== body.reviewer_agent_id) throw new Error("Agent feedback does not match the requested source and reviewer.");
+    if (
+      review.source_task_id !== taskId ||
+      review.source_run_id !== body.source_run_id ||
+      review.reviewer_agent_id !== body.reviewer_agent_id
+    )
+      throw new Error("Agent feedback does not match the requested source and reviewer.");
     return { review };
   }
 
-  requestTaskAgentReviewChanges(taskId: string, reviewId: string, body: ApplyTaskAgentReviewRequestV1, idempotencyKey: string): Promise<{ task: Task }> {
-    return this.request("POST", `/tasks/${encodeURIComponent(taskId)}/agent-reviews/${encodeURIComponent(reviewId)}/request-changes`, { body, idempotencyKey });
+  requestTaskAgentReviewChanges(
+    taskId: string,
+    reviewId: string,
+    body: ApplyTaskAgentReviewRequestV1,
+    idempotencyKey: string,
+  ): Promise<{ task: Task }> {
+    return this.request(
+      "POST",
+      `/tasks/${encodeURIComponent(taskId)}/agent-reviews/${encodeURIComponent(reviewId)}/request-changes`,
+      { body, idempotencyKey },
+    );
   }
 
   async listMessages(roomId: string, options: MessagePageOptions = {}): Promise<MessagesResponse> {

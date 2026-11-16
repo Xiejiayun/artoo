@@ -12,15 +12,43 @@ import { initializeTheme, ThemeControl } from "./ThemeControl.js";
 function SelectionProbe() {
   const { selectedTaskId, setSelectedTaskId } = useSelection();
   const location = useLocation();
-  return <><button onClick={() => setSelectedTaskId("task_previous")}>Select old task</button><output aria-label="Current task">{selectedTaskId ?? "none"}</output><output aria-label="Route">{location.pathname}{location.search}</output></>;
+  return (
+    <>
+      <button onClick={() => setSelectedTaskId("task_previous")}>Select old task</button>
+      <output aria-label="Current task">{selectedTaskId ?? "none"}</output>
+      <output aria-label="Route">
+        {location.pathname}
+        {location.search}
+      </output>
+    </>
+  );
 }
-const client = () => fakeApi({ bootstrap: async () => bootstrapFixture({ projects: [{ id: "proj_artoo", name: "artoo", default_workspace: "C:/workspace/artoo" }, { id: "proj_other", name: "Second project", default_workspace: null }] }), listNotifications: async () => ({ notifications: [], unread_count: 0, has_more: false, next_before: null }) });
+const client = () =>
+  fakeApi({
+    bootstrap: async () =>
+      bootstrapFixture({
+        projects: [
+          { id: "proj_artoo", name: "artoo", default_workspace: "C:/workspace/artoo" },
+          { id: "proj_other", name: "Second project", default_workspace: null },
+        ],
+      }),
+    listNotifications: async () => ({ notifications: [], unread_count: 0, has_more: false, next_before: null }),
+  });
 
 describe("Product shell", () => {
-  beforeEach(() => { window.localStorage.clear(); delete document.documentElement.dataset.theme; });
+  beforeEach(() => {
+    window.localStorage.clear();
+    delete document.documentElement.dataset.theme;
+  });
 
   it("switches project, clears stale task selection, and starts a clean thread route", async () => {
-    renderWithProviders(<><Nav /><SelectionProbe /></>, { client: client(), route: "/channels?room=old&thread=old" });
+    renderWithProviders(
+      <>
+        <Nav />
+        <SelectionProbe />
+      </>,
+      { client: client(), route: "/channels?room=old&thread=old" },
+    );
     await userEvent.click(screen.getByRole("button", { name: "Select old task" }));
     await userEvent.click(await screen.findByRole("button", { name: "Second project" }));
     await waitFor(() => expect(screen.getByLabelText("Route")).toHaveTextContent(/^\/channels$/));
@@ -32,11 +60,22 @@ describe("Product shell", () => {
     expect(squad.getByText("No agents assigned. Set up this project's squad.")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "artoo" }));
     expect(squad.getByText("Mock Coder")).toBeInTheDocument();
-    expect(squad.getByRole("link", { name: "Manage project squad" })).toHaveAttribute("href", "/agents?project=proj_artoo");
+    expect(squad.getByRole("link", { name: "Manage project squad" })).toHaveAttribute(
+      "href",
+      "/agents?project=proj_artoo",
+    );
   });
 
   it("shows backed project views and marks Release active", async () => {
-    renderWithProviders(<ProductHeader menuOpen={false} onToggleMenu={() => undefined} detailsOpen={true} onToggleDetails={() => undefined} />, { client: client(), route: "/release" });
+    renderWithProviders(
+      <ProductHeader
+        menuOpen={false}
+        onToggleMenu={() => undefined}
+        detailsOpen={true}
+        onToggleDetails={() => undefined}
+      />,
+      { client: client(), route: "/release" },
+    );
     const tabs = screen.getByRole("navigation", { name: "Project views" });
     expect(within(tabs).getByRole("link", { name: "Release" })).toHaveAttribute("aria-current", "page");
     expect(within(tabs).getByRole("link", { name: "Thread" })).toHaveAttribute("href", "/channels");
@@ -59,7 +98,13 @@ describe("Product shell", () => {
 
   it("keeps multiple theme controls synchronized", async () => {
     initializeTheme();
-    renderWithProviders(<><ThemeControl /><ThemeControl /></>, { client: client() });
+    renderWithProviders(
+      <>
+        <ThemeControl />
+        <ThemeControl />
+      </>,
+      { client: client() },
+    );
     await userEvent.click(screen.getAllByRole("button", { name: "Switch to light theme" })[0]!);
     expect(screen.getAllByRole("button", { name: "Switch to dark theme" })).toHaveLength(2);
     await userEvent.click(screen.getAllByRole("button", { name: "Switch to dark theme" })[1]!);

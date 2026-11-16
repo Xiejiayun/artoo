@@ -31,7 +31,13 @@ function RailSkeleton(): React.ReactNode {
  */
 export function WorkspaceLayout(): React.ReactNode {
   const { bootstrap, project, projectId } = useProject();
-  const { taskId: selectedTaskId, selectTask: setSelectedTaskId, contextLoading, contextError, retryContext } = useTaskContext();
+  const {
+    taskId: selectedTaskId,
+    selectTask: setSelectedTaskId,
+    contextLoading,
+    contextError,
+    retryContext,
+  } = useTaskContext();
 
   const userId = bootstrap.data?.user.id;
   useSubscription([
@@ -78,8 +84,27 @@ export function WorkspaceLayout(): React.ReactNode {
     );
   }
 
-  if (contextLoading) return <div className="workspace-state" role="status">Opening linked task…</div>;
-  if (contextError) return <div className="workspace-state"><ErrorState title="Task unavailable" description={contextError.message} action={<><Button onClick={retryContext}>Retry linked task</Button><Button onClick={() => setSelectedTaskId(null)}>Close linked task</Button></>} /></div>;
+  if (contextLoading)
+    return (
+      <div className="workspace-state" role="status">
+        Opening linked task…
+      </div>
+    );
+  if (contextError)
+    return (
+      <div className="workspace-state">
+        <ErrorState
+          title="Task unavailable"
+          description={contextError.message}
+          action={
+            <>
+              <Button onClick={retryContext}>Retry linked task</Button>
+              <Button onClick={() => setSelectedTaskId(null)}>Close linked task</Button>
+            </>
+          }
+        />
+      </div>
+    );
 
   return (
     <div className="workspace">

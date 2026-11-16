@@ -32,7 +32,7 @@ export function registerSchedulerModelRoutes(app: FastifyInstance, ctx: ServerCo
     const c = requestContext(ctx, request);
     return {
       requests: await listSchedulerExecutionRequests(c, (request.params as { id: string }).id),
-      ...await schedulerExecutionConsumerStatus(c, (request.params as { id: string }).id),
+      ...(await schedulerExecutionConsumerStatus(c, (request.params as { id: string }).id)),
     };
   });
   app.post("/api/v1/tasks/:id/scheduler-execution-requests", async (request, reply) => {
@@ -42,14 +42,20 @@ export function registerSchedulerModelRoutes(app: FastifyInstance, ctx: ServerCo
       (request.params as { id: string }).id,
       request.body,
     );
-    return reply.status(201).send({ request: executionRequest, ...await schedulerExecutionConsumerStatus(c, (request.params as { id: string }).id) });
+    return reply.status(201).send({
+      request: executionRequest,
+      ...(await schedulerExecutionConsumerStatus(c, (request.params as { id: string }).id)),
+    });
   });
   app.post("/api/v1/tasks/:id/scheduler-execution-requests/:requestId/cancel", async (request) => {
     if (!cancelExecutionRequestInput.safeParse(request.body).success)
       throw AppError.validation("Explicit version 2 cancellation is required");
     const c = requestContext(ctx, request);
     const { id, requestId } = request.params as { id: string; requestId: string };
-    return { request: await cancelSchedulerExecutionRequest(c, id, requestId), ...await schedulerExecutionConsumerStatus(c, id) };
+    return {
+      request: await cancelSchedulerExecutionRequest(c, id, requestId),
+      ...(await schedulerExecutionConsumerStatus(c, id)),
+    };
   });
   app.get("/api/v1/tasks/:id/scheduler-intents", async (request) => {
     const c = requestContext(ctx, request);

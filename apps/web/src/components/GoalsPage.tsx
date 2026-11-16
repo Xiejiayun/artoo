@@ -556,208 +556,249 @@ function GoalDetail({ goal }: { goal: Goal }): React.ReactNode {
       </header>
       <GoalOverview goal={goal} automation={automation.data?.automation} plans={plans.data?.plans} />
       <PlanningStages goal={goal} plans={plans.data?.plans} automatic={autonomous} />
-      <div className="cowork-goal-views" role="group" aria-label="Goal workspace"><Button aria-pressed={view === "plan"} onClick={() => setView("plan")}>Plan & dependencies</Button><Button aria-pressed={view === "team"} onClick={() => setView("team")}>Team conversation & handoffs</Button><Link to={`/board?goal=${encodeURIComponent(goal.id)}`}>Team board ↗</Link><Link to={`/agents?project=${encodeURIComponent(goal.project_id)}`}>Configure squad ↗</Link></div>
-      {view === "team" && <section className="cowork-goal-team" aria-label="Shared team workspace"><h3><MessageSquare size={16} aria-hidden="true" />Shared goal context</h3><p>Discuss the outcome, record decisions, hand work to another Agent, and resolve blockers in the same goal context.</p>{goal.room_id ? <RoomConversation key={goal.room_id} roomId={goal.room_id} projectId={goal.project_id} goalId={goal.id} /> : <p>This goal has no shared conversation room.</p>}</section>}
-      <div className="cowork-goal-plan" hidden={view !== "plan"}>
-      <ActionError error={automation.error} />
-      {automation.data?.automation && <AutonomousProgress goal={goal} automation={automation.data.automation} />}
-      <details className="delivery-criteria">
-        <summary>
-          <ListChecks size={16} aria-hidden="true" /> Success criteria <span>{goal.acceptance_criteria.length}</span>
-        </summary>
-        <section className="insights-criteria" aria-label="Goal acceptance criteria">
-          <ul>
-            {goal.acceptance_criteria.map((item, i) => (
-              <li key={i}>{item}</li>
-            ))}
-          </ul>
-        </section>
-      </details>
-      <div className="action-row insights-goal-actions" id="goal-controls">
-        {(canTransitionGoal(goal.status, "pause") || (autonomous && goal.status === "draft")) && (
-          <Button disabled={action.isPending} onClick={() => action.mutate("pause")}>
-            Pause goal
-          </Button>
-        )}
-        {canTransitionGoal(goal.status, "resume") && (
-          <Button disabled={action.isPending} onClick={() => action.mutate("resume")}>
-            Resume goal
-          </Button>
-        )}
-        {canTransitionGoal(goal.status, "cancel") && (
-          <Button variant="danger" disabled={action.isPending} onClick={() => setConfirmCancel(true)}>
-            Cancel goal
-          </Button>
-        )}
-        <Link className="os-goal-release-link" to={`/release?goal=${encodeURIComponent(goal.id)}`}>
-          Release details
-          <ArrowUpRight size={13} aria-hidden="true" />
-        </Link>
+      <div className="cowork-goal-views" role="group" aria-label="Goal workspace">
+        <Button aria-pressed={view === "plan"} onClick={() => setView("plan")}>
+          Plan & dependencies
+        </Button>
+        <Button aria-pressed={view === "team"} onClick={() => setView("team")}>
+          Team conversation & handoffs
+        </Button>
+        <Link to={`/board?goal=${encodeURIComponent(goal.id)}`}>Team board ↗</Link>
+        <Link to={`/agents?project=${encodeURIComponent(goal.project_id)}`}>Configure squad ↗</Link>
       </div>
-      {(canTransitionGoal(goal.status, "pause") || canTransitionGoal(goal.status, "resume")) && (
-        <p className="insights-help">
-          Pausing prevents new task scheduling; existing runs can finish. Resume allows new scheduling. Cancelling stops
-          active runs before the goal is marked cancelled.
-        </p>
-      )}
-      {confirmCancel && (
-        <div className="product-card">
-          <p>Cancel this goal and its remaining work?</p>
-          <div className="action-row">
-            <Button variant="danger" loading={action.isPending} onClick={() => action.mutate("cancel")}>
-              Confirm cancel goal
-            </Button>
-            <Button onClick={() => setConfirmCancel(false)}>Keep goal</Button>
-          </div>
-        </div>
-      )}
-      <ActionError error={action.error ?? planAction.error ?? audit.error} />
-      <section className="u-stack insights-plans" aria-label="Plans" id="goal-plans">
-        <div className="insights-section-heading">
-          <h3>Plans</h3>
-          <Badge>{plans.data?.plans.length ?? 0}</Badge>
-        </div>
-        <ActionError error={plans.error} />
-        {plans.isLoading && <LoadingView label="Loading plans…" />}
-        {manual && canProposePlan(goal.status, !!goal.current_plan_id) && (
-          <Button onClick={() => setProposing(!proposing)}>{proposing ? "Close plan editor" : "Propose plan"}</Button>
-        )}
-        {goal.current_plan_id && (goal.status === "paused" || goal.status === "blocked") && (
-          <p className="t-subtle">
-            To replace a plan, pause the goal and stop its active runs first. Accepted replacement tasks remain paused
-            until you resume the goal; prior execution evidence is kept.
-          </p>
-        )}
-        {proposing && (
-          <PlanForm
-            goalId={goal.id}
-            onCreated={async () => {
-              setProposing(false);
-              await refresh();
-            }}
-          />
-        )}
-        {plans.data?.plans.length === 0 && (
+      {view === "team" && (
+        <section className="cowork-goal-team" aria-label="Shared team workspace">
+          <h3>
+            <MessageSquare size={16} aria-hidden="true" />
+            Shared goal context
+          </h3>
           <p>
-            {autonomous
-              ? "The plan will appear here when agent planning finishes."
-              : "No plan proposed. Add tasks and acceptance criteria, then review the plan before creating its tasks."}
+            Discuss the outcome, record decisions, hand work to another Agent, and resolve blockers in the same goal
+            context.
+          </p>
+          {goal.room_id ? (
+            <RoomConversation key={goal.room_id} roomId={goal.room_id} projectId={goal.project_id} goalId={goal.id} />
+          ) : (
+            <p>This goal has no shared conversation room.</p>
+          )}
+        </section>
+      )}
+      <div className="cowork-goal-plan" hidden={view !== "plan"}>
+        <ActionError error={automation.error} />
+        {automation.data?.automation && <AutonomousProgress goal={goal} automation={automation.data.automation} />}
+        <details className="delivery-criteria">
+          <summary>
+            <ListChecks size={16} aria-hidden="true" /> Success criteria <span>{goal.acceptance_criteria.length}</span>
+          </summary>
+          <section className="insights-criteria" aria-label="Goal acceptance criteria">
+            <ul>
+              {goal.acceptance_criteria.map((item, i) => (
+                <li key={i}>{item}</li>
+              ))}
+            </ul>
+          </section>
+        </details>
+        <div className="action-row insights-goal-actions" id="goal-controls">
+          {(canTransitionGoal(goal.status, "pause") || (autonomous && goal.status === "draft")) && (
+            <Button disabled={action.isPending} onClick={() => action.mutate("pause")}>
+              Pause goal
+            </Button>
+          )}
+          {canTransitionGoal(goal.status, "resume") && (
+            <Button disabled={action.isPending} onClick={() => action.mutate("resume")}>
+              Resume goal
+            </Button>
+          )}
+          {canTransitionGoal(goal.status, "cancel") && (
+            <Button variant="danger" disabled={action.isPending} onClick={() => setConfirmCancel(true)}>
+              Cancel goal
+            </Button>
+          )}
+          <Link className="os-goal-release-link" to={`/release?goal=${encodeURIComponent(goal.id)}`}>
+            Release details
+            <ArrowUpRight size={13} aria-hidden="true" />
+          </Link>
+        </div>
+        {(canTransitionGoal(goal.status, "pause") || canTransitionGoal(goal.status, "resume")) && (
+          <p className="insights-help">
+            Pausing prevents new task scheduling; existing runs can finish. Resume allows new scheduling. Cancelling
+            stops active runs before the goal is marked cancelled.
           </p>
         )}
-        {plans.data?.plans.map((plan) => (
-          <article key={plan.id} className="insights-plan u-stack-sm">
+        {confirmCancel && (
+          <div className="product-card">
+            <p>Cancel this goal and its remaining work?</p>
             <div className="action-row">
-              <h4>Plan {plan.version}</h4>
-              <Badge tone={plan.status === "accepted" ? "success" : plan.status === "proposed" ? "info" : "neutral"}>
-                {plan.status}
-              </Badge>
-              <span className="insights-help">{plan.task_specs.length} tasks</span>
-            </div>
-            <p className="insights-prose">{plan.rationale}</p>
-            <ol className="insights-plan-tasks">
-              {plan.task_specs.map((spec, i) => (
-                <li key={i}>
-                  <span className="insights-step-number" aria-hidden="true">
-                    {i + 1}
-                  </span>
-                  <details className="delivery-plan-task">
-                    <summary>
-                      <strong>{spec.title}</strong>
-                      {spec.development_stage && <Badge>{stageLabels[spec.development_stage]}</Badge>}
-                      <span>{spec.acceptance_criteria.length} checks</span>
-                    </summary>
-                    {spec.description && <p>{spec.description}</p>}
-                    <ul>
-                      {spec.acceptance_criteria.map((criterion, j) => (
-                        <li key={j}>{criterion}</li>
-                      ))}
-                    </ul>
-                    {spec.dependencies.length > 0 && (
-                      <p className="insights-dependency">
-                        Depends on:{" "}
-                        {spec.dependencies.map((dep) => plan.task_specs[Number(dep.ref)]?.title ?? dep.ref).join(", ")}
-                      </p>
-                    )}
-                  </details>
-                </li>
-              ))}
-            </ol>
-            {manual && plan.status === "proposed" && (
-              <div className="action-row">
-                {canProposePlan(goal.status, !!goal.current_plan_id) && <Button disabled={planAction.isPending} onClick={() => setEditingPlan(plan)}>Edit as new proposal</Button>}
-                <Button
-                  variant="primary"
-                  disabled={planAction.isPending}
-                  onClick={() => planAction.mutate({ id: plan.id, name: "accept" })}
-                >
-                  Accept plan and create tasks
-                </Button>
-                <Button
-                  disabled={planAction.isPending}
-                  onClick={() => planAction.mutate({ id: plan.id, name: "reject" })}
-                >
-                  Reject plan
-                </Button>
-              </div>
-            )}
-          </article>
-        ))}
-      </section>
-      {manual && <GoalDiscussion goal={goal} />}
-      <details className="os-goal-history">
-        <summary>
-          Checkpoints & evidence <span>{checkpoints.data?.checkpoints.length ?? 0} checkpoints</span>
-        </summary>
-        <section className="u-stack-sm insights-checkpoints" aria-label="Checkpoints">
-          <p className="insights-help">
-            Historical snapshots, not current progress.
-            {latestCheckpoint ? ` Last saved ${taskUpdatedLabel(latestCheckpoint.created_at)}.` : ""}
-          </p>
-          <div className="action-row">
-            {goal.current_plan_id && (
-              <Button disabled={action.isPending} onClick={() => action.mutate("reconcile")}>
-                Refresh from checkpoint
+              <Button variant="danger" loading={action.isPending} onClick={() => action.mutate("cancel")}>
+                Confirm cancel goal
               </Button>
-            )}
-            <Button variant="ghost" iconLeft={Download} loading={audit.isPending} onClick={() => audit.mutate()}>
-              Export goal evidence
-            </Button>
+              <Button onClick={() => setConfirmCancel(false)}>Keep goal</Button>
+            </div>
           </div>
-          <ActionError error={checkpoints.error} />
-          {checkpoints.isLoading && <LoadingView label="Loading checkpoints…" shape="list" />}
-          {checkpoints.data?.checkpoints.length === 0 && <p>No checkpoints yet.</p>}
-          {checkpoints.data?.checkpoints.map((checkpoint) => (
-            <details className="insights-disclosure" key={checkpoint.id}>
-              <summary>
-                {checkpoint.type.replaceAll("_", " ")} · {new Date(checkpoint.created_at).toLocaleString()}
-              </summary>
-              <p>{checkpoint.summary}</p>
-              <p>
-                {checkpoint.state_refs.active_runs.length} active runs · {checkpoint.state_refs.open_blockers.length}{" "}
-                blockers · {checkpoint.state_refs.pending_approvals.length} approvals at this checkpoint
-              </p>
-              <ul>
-                {checkpoint.state_refs.task_statuses.map((task) => (
-                  <li key={task.task_id}>
-                    <Button
-                      size="sm"
-                      onClick={() => {
-                        setSelectedTaskId(task.task_id);
-                        navigate(`/?goal=${encodeURIComponent(goal.id)}`);
-                      }}
-                    >
-                      Open task {task.task_id}
-                    </Button>
-                    <StatusBadge status={task.status} />
+        )}
+        <ActionError error={action.error ?? planAction.error ?? audit.error} />
+        <section className="u-stack insights-plans" aria-label="Plans" id="goal-plans">
+          <div className="insights-section-heading">
+            <h3>Plans</h3>
+            <Badge>{plans.data?.plans.length ?? 0}</Badge>
+          </div>
+          <ActionError error={plans.error} />
+          {plans.isLoading && <LoadingView label="Loading plans…" />}
+          {manual && canProposePlan(goal.status, !!goal.current_plan_id) && (
+            <Button onClick={() => setProposing(!proposing)}>{proposing ? "Close plan editor" : "Propose plan"}</Button>
+          )}
+          {goal.current_plan_id && (goal.status === "paused" || goal.status === "blocked") && (
+            <p className="t-subtle">
+              To replace a plan, pause the goal and stop its active runs first. Accepted replacement tasks remain paused
+              until you resume the goal; prior execution evidence is kept.
+            </p>
+          )}
+          {proposing && (
+            <PlanForm
+              goalId={goal.id}
+              onCreated={async () => {
+                setProposing(false);
+                await refresh();
+              }}
+            />
+          )}
+          {plans.data?.plans.length === 0 && (
+            <p>
+              {autonomous
+                ? "The plan will appear here when agent planning finishes."
+                : "No plan proposed. Add tasks and acceptance criteria, then review the plan before creating its tasks."}
+            </p>
+          )}
+          {plans.data?.plans.map((plan) => (
+            <article key={plan.id} className="insights-plan u-stack-sm">
+              <div className="action-row">
+                <h4>Plan {plan.version}</h4>
+                <Badge tone={plan.status === "accepted" ? "success" : plan.status === "proposed" ? "info" : "neutral"}>
+                  {plan.status}
+                </Badge>
+                <span className="insights-help">{plan.task_specs.length} tasks</span>
+              </div>
+              <p className="insights-prose">{plan.rationale}</p>
+              <ol className="insights-plan-tasks">
+                {plan.task_specs.map((spec, i) => (
+                  <li key={i}>
+                    <span className="insights-step-number" aria-hidden="true">
+                      {i + 1}
+                    </span>
+                    <details className="delivery-plan-task">
+                      <summary>
+                        <strong>{spec.title}</strong>
+                        {spec.development_stage && <Badge>{stageLabels[spec.development_stage]}</Badge>}
+                        <span>{spec.acceptance_criteria.length} checks</span>
+                      </summary>
+                      {spec.description && <p>{spec.description}</p>}
+                      <ul>
+                        {spec.acceptance_criteria.map((criterion, j) => (
+                          <li key={j}>{criterion}</li>
+                        ))}
+                      </ul>
+                      {spec.dependencies.length > 0 && (
+                        <p className="insights-dependency">
+                          Depends on:{" "}
+                          {spec.dependencies
+                            .map((dep) => plan.task_specs[Number(dep.ref)]?.title ?? dep.ref)
+                            .join(", ")}
+                        </p>
+                      )}
+                    </details>
                   </li>
                 ))}
-              </ul>
-            </details>
+              </ol>
+              {manual && plan.status === "proposed" && (
+                <div className="action-row">
+                  {canProposePlan(goal.status, !!goal.current_plan_id) && (
+                    <Button disabled={planAction.isPending} onClick={() => setEditingPlan(plan)}>
+                      Edit as new proposal
+                    </Button>
+                  )}
+                  <Button
+                    variant="primary"
+                    disabled={planAction.isPending}
+                    onClick={() => planAction.mutate({ id: plan.id, name: "accept" })}
+                  >
+                    Accept plan and create tasks
+                  </Button>
+                  <Button
+                    disabled={planAction.isPending}
+                    onClick={() => planAction.mutate({ id: plan.id, name: "reject" })}
+                  >
+                    Reject plan
+                  </Button>
+                </div>
+              )}
+            </article>
           ))}
         </section>
-      </details>
+        {manual && <GoalDiscussion goal={goal} />}
+        <details className="os-goal-history">
+          <summary>
+            Checkpoints & evidence <span>{checkpoints.data?.checkpoints.length ?? 0} checkpoints</span>
+          </summary>
+          <section className="u-stack-sm insights-checkpoints" aria-label="Checkpoints">
+            <p className="insights-help">
+              Historical snapshots, not current progress.
+              {latestCheckpoint ? ` Last saved ${taskUpdatedLabel(latestCheckpoint.created_at)}.` : ""}
+            </p>
+            <div className="action-row">
+              {goal.current_plan_id && (
+                <Button disabled={action.isPending} onClick={() => action.mutate("reconcile")}>
+                  Refresh from checkpoint
+                </Button>
+              )}
+              <Button variant="ghost" iconLeft={Download} loading={audit.isPending} onClick={() => audit.mutate()}>
+                Export goal evidence
+              </Button>
+            </div>
+            <ActionError error={checkpoints.error} />
+            {checkpoints.isLoading && <LoadingView label="Loading checkpoints…" shape="list" />}
+            {checkpoints.data?.checkpoints.length === 0 && <p>No checkpoints yet.</p>}
+            {checkpoints.data?.checkpoints.map((checkpoint) => (
+              <details className="insights-disclosure" key={checkpoint.id}>
+                <summary>
+                  {checkpoint.type.replaceAll("_", " ")} · {new Date(checkpoint.created_at).toLocaleString()}
+                </summary>
+                <p>{checkpoint.summary}</p>
+                <p>
+                  {checkpoint.state_refs.active_runs.length} active runs · {checkpoint.state_refs.open_blockers.length}{" "}
+                  blockers · {checkpoint.state_refs.pending_approvals.length} approvals at this checkpoint
+                </p>
+                <ul>
+                  {checkpoint.state_refs.task_statuses.map((task) => (
+                    <li key={task.task_id}>
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          setSelectedTaskId(task.task_id);
+                          navigate(`/?goal=${encodeURIComponent(goal.id)}`);
+                        }}
+                      >
+                        Open task {task.task_id}
+                      </Button>
+                      <StatusBadge status={task.status} />
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ))}
+          </section>
+        </details>
       </div>
-      {editingPlan && <PlanRevisionDialog key={editingPlan.id} plan={editingPlan} onClose={() => setEditingPlan(null)} onCreated={async () => { setEditingPlan(null); await refresh(); }} />}
+      {editingPlan && (
+        <PlanRevisionDialog
+          key={editingPlan.id}
+          plan={editingPlan}
+          onClose={() => setEditingPlan(null)}
+          onCreated={async () => {
+            setEditingPlan(null);
+            await refresh();
+          }}
+        />
+      )}
     </article>
   );
 }

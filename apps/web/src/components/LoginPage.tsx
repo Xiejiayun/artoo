@@ -39,20 +39,59 @@ export function LoginPage({
 
   return (
     <div className="login-page welcome-page">
-      <div className="welcome-panel"><span className="login-brand"><span className="brand-mark" aria-hidden="true" /><strong>artoo OS</strong></span><span className="os-eyebrow">The control plane for your agents</span><h2>One team.<br />Any machine.<br /><span>Ship together.</span></h2><p>Bring your coding agents into one workspace. Turn an idea into a plan, follow the execution, and review the evidence.</p><div className="welcome-features"><span><Bot size={18} aria-hidden="true" /><span><strong>Agents work as a squad</strong><small>One project, clear roles and shared context.</small></span></span><span><Monitor size={18} aria-hidden="true" /><span><strong>Your machines, your workspaces</strong><small>Connect a node and choose where work runs.</small></span></span><span><ShieldCheck size={18} aria-hidden="true" /><span><strong>Every step stays visible</strong><small>Real runs, human review and release evidence.</small></span></span></div><footer>ARTOO · AGENT WORKSPACE</footer></div>
+      <div className="welcome-panel">
+        <span className="login-brand">
+          <span className="brand-mark" aria-hidden="true" />
+          <strong>artoo OS</strong>
+        </span>
+        <span className="os-eyebrow">The control plane for your agents</span>
+        <h2>
+          One team.
+          <br />
+          Any machine.
+          <br />
+          <span>Ship together.</span>
+        </h2>
+        <p>
+          Bring your coding agents into one workspace. Turn an idea into a plan, follow the execution, and review the
+          evidence.
+        </p>
+        <div className="welcome-features">
+          <span>
+            <Bot size={18} aria-hidden="true" />
+            <span>
+              <strong>Agents work as a squad</strong>
+              <small>One project, clear roles and shared context.</small>
+            </span>
+          </span>
+          <span>
+            <Monitor size={18} aria-hidden="true" />
+            <span>
+              <strong>Your machines, your workspaces</strong>
+              <small>Connect a node and choose where work runs.</small>
+            </span>
+          </span>
+          <span>
+            <ShieldCheck size={18} aria-hidden="true" />
+            <span>
+              <strong>Every step stays visible</strong>
+              <small>Real runs, human review and release evidence.</small>
+            </span>
+          </span>
+        </div>
+        <footer>ARTOO · AGENT WORKSPACE</footer>
+      </div>
       <div className="login-card welcome-signin">
-        <div className="os-login-theme"><ThemeControl /></div>
+        <div className="os-login-theme">
+          <ThemeControl />
+        </div>
         <span className="os-eyebrow">{t("login.eyebrow")}</span>
         <h1 className="t-display">{t("login.title")}</h1>
-        <p className="t-body t-muted login-lede">
-          {t("login.lede")}
-        </p>
+        <p className="t-body t-muted login-lede">{t("login.lede")}</p>
         <Button variant="primary" size="md" className="login-submit" iconRight={ArrowRight} onClick={signIn}>
           {t("login.submit")}
         </Button>
-        <p className="login-foot t-caption t-subtle">
-          {t("login.foot")}
-        </p>
+        <p className="login-foot t-caption t-subtle">{t("login.foot")}</p>
       </div>
     </div>
   );

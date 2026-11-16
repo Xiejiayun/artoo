@@ -19,7 +19,14 @@ describe("ui feedback + badges (#68)", () => {
     function Nested() {
       const [drawer, setDrawer] = useState(true);
       const [editor, setEditor] = useState(false);
-      return <Modal open={drawer} title="Task drawer" variant="drawer" onClose={() => setDrawer(false)}><button onClick={() => setEditor(true)}>Delegate</button><Modal open={editor} title="Create child" onClose={() => setEditor(false)}><input aria-label="Child title" /></Modal></Modal>;
+      return (
+        <Modal open={drawer} title="Task drawer" variant="drawer" onClose={() => setDrawer(false)}>
+          <button onClick={() => setEditor(true)}>Delegate</button>
+          <Modal open={editor} title="Create child" onClose={() => setEditor(false)}>
+            <input aria-label="Child title" />
+          </Modal>
+        </Modal>
+      );
     }
     render(<Nested />);
     const trigger = screen.getByRole("button", { name: "Delegate" });
@@ -36,7 +43,14 @@ describe("ui feedback + badges (#68)", () => {
     function FormDialog() {
       const [open, setOpen] = useState(false);
       const [value, setValue] = useState("");
-      return <><button onClick={() => setOpen(true)}>Open editor</button><Modal open={open} title="Editor" onClose={() => setOpen(false)}><input aria-label="Name" value={value} onChange={(event) => setValue(event.target.value)} /></Modal></>;
+      return (
+        <>
+          <button onClick={() => setOpen(true)}>Open editor</button>
+          <Modal open={open} title="Editor" onClose={() => setOpen(false)}>
+            <input aria-label="Name" value={value} onChange={(event) => setValue(event.target.value)} />
+          </Modal>
+        </>
+      );
     }
     render(<FormDialog />);
     const trigger = screen.getByRole("button", { name: "Open editor" });
@@ -126,9 +140,19 @@ describe("ui feedback + badges (#68)", () => {
 
   it("keeps each toast's original dismissal deadline when another arrives", () => {
     vi.useFakeTimers();
-    const { rerender } = render(<ToastProvider><ToastPusher key="first" tone="success" message="First saved" />{null}</ToastProvider>);
+    const { rerender } = render(
+      <ToastProvider>
+        <ToastPusher key="first" tone="success" message="First saved" />
+        {null}
+      </ToastProvider>,
+    );
     act(() => vi.advanceTimersByTime(2000));
-    rerender(<ToastProvider><ToastPusher key="first" tone="success" message="First saved" /><ToastPusher key="second" tone="success" message="Second saved" /></ToastProvider>);
+    rerender(
+      <ToastProvider>
+        <ToastPusher key="first" tone="success" message="First saved" />
+        <ToastPusher key="second" tone="success" message="Second saved" />
+      </ToastProvider>,
+    );
     expect(screen.getAllByRole("status")).toHaveLength(2);
     expect(screen.getByRole("region", { name: "Notifications" })).not.toHaveAttribute("aria-live");
     act(() => vi.advanceTimersByTime(2000));
