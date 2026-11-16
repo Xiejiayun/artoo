@@ -10,6 +10,7 @@ import { putSchedulerPolicy } from "./services/scheduler-policy-service.js";
 import { pollSchedulerExecution, schedulerExecutionConsumerStatus } from "./services/scheduler-claim-consumer-service.js";
 import { requestSchedulerRunStop, schedulerRequestStopRequested } from "./services/scheduler-run-service.js";
 import { prepareSchedulerStartProposal } from "./services/scheduler-start-proposal-service.js";
+import { getProjectControlView } from "./services/control-view-service.js";
 
 let server: TestServer;
 afterEach(async () => { await server?.close(); });
@@ -77,6 +78,12 @@ it("records Stop between claim and grant without granting physical execution or 
   expect(await schedulerRequestStopRequested(server.ctx, server.db.db, request.id)).toBe(true);
   expect(await server.db.db.select().from(schedulerRequestStopIntents)).toHaveLength(1);
   expect((await server.db.db.select().from(runs).where(eq(runs.id, runId)))[0]!.status).toBe("queued");
+  const view = await getProjectControlView(server.ctx, "proj_artoo", { limit: 100 });
+  expect(view.execution_consumer).toEqual({ consumer_available: true, execution_authorized: false });
+  expect(view.tasks.find((entry) => entry.task.id === taskId)).toMatchObject({
+    latest_run: { id: runId, status: "queued" }, execution_lease: null,
+    execution_request: { id: request.id, stop_requested: true, consumed_run_id: runId },
+  });
   await expect(prepareSchedulerStartProposal(server.ctx, { ...identity, taskId, requestId: request.id })).rejects.toThrow();
   expect(await server.db.db.select().from(schedulerStartGrants)).toHaveLength(0);
 });
