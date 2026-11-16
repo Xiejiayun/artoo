@@ -57,11 +57,11 @@ CREATE TRIGGER scheduler_attempt_credential_revoke_lease AFTER UPDATE OF state O
   FOR EACH ROW EXECUTE FUNCTION artoo_scheduler_attempt_credential_revoke_lease();
 --> statement-breakpoint
 CREATE FUNCTION artoo_scheduler_attempt_credential_revoke_run() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE closed_at timestamptz := coalesce(NEW.ended_at,clock_timestamp());
+DECLARE revocation_time timestamptz := coalesce(NEW.ended_at,clock_timestamp());
 BEGIN
   IF NEW.status IN ('completed','failed','cancelled') OR NEW.ended_at IS NOT NULL THEN
-    UPDATE scheduler_attempt_credentials c SET observed_at=greatest(c.observed_at,closed_at),
-      revoked_at=greatest(c.observed_at,closed_at)
+    UPDATE scheduler_attempt_credentials c SET observed_at=greatest(c.observed_at,revocation_time),
+      revoked_at=greatest(c.observed_at,revocation_time)
       FROM scheduler_execution_leases l JOIN scheduler_start_grants g ON g.request_id=l.request_id
       WHERE c.lease_id=l.id AND g.run_id=NEW.id AND c.revoked_at IS NULL;
   END IF;
