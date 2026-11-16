@@ -1,4 +1,4 @@
-import { agentInstances, agentRuntimes, agents, computers, devices, runs, skillInstalls } from "@artoo/db";
+import { agentInstances, agentRuntimes, agents, computers, devices, runs, skillInstalls, tasks } from "@artoo/db";
 import {
   SkillManifestSchema,
   deriveResourceLifecycle,
@@ -22,6 +22,7 @@ import { resourceExpiryMs } from "../config/resource-lifecycle.js";
 import { RUNTIME_STALE_AFTER_MS } from "../config/runtime-staleness.js";
 import { unsettledStandaloneExecutions } from "./execution-state.js";
 import { collectSchedulerRankingSnapshot } from "./scheduler-shadow-snapshot.js";
+import { assertSchedulerPreparedStartUnchanged } from "./scheduler-prepared-start-service.js";
 import { goalImportedDesignContinuations, goalImportedDesignReviews, goalImportedExecutions } from "@artoo/db";
 import { goalImportedExecutionReviews, goalImportedExecutionRepairs } from "@artoo/db";
 import { goalImportedValidations, goalImportedValidationReviews } from "@artoo/db";
@@ -120,6 +121,43 @@ export async function scheduleTask(
   ctx: ServerContext,
   required: readonly Capability[],
   opts: ScheduleOptions,
+): Promise<SchedulerOutcome> {
+  return scheduleTaskWithReservation(tx, ctx, required, opts);
+}
+
+/** Eligibility only; caller fences current writers. The exact immutable queued assignment supplies the sole
+ * self-reservation exclusion; ordinary scheduling has no exclusion parameter. */
+export async function revalidateSchedulerPreparedCandidate(tx: DrizzleDb, ctx: ServerContext, requestId: string) {
+  const prepared = await assertSchedulerPreparedStartUnchanged(ctx, tx, requestId);
+  const [task] = await tx
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.id, prepared.task_id), eq(tasks.organizationId, ctx.organizationId)));
+  if (!task || task.projectId !== prepared.project_id)
+    throw AppError.conflict("Prepared scheduling candidate lost its scoped Task");
+  const outcome = await scheduleTaskWithReservation(
+    tx,
+    ctx,
+    task.requiredCapabilities as Capability[],
+    {
+      mode: "manual",
+      projectId: prepared.project_id,
+      branchBacked: true,
+      agentInstanceId: prepared.agent_instance_id,
+    },
+    prepared.run_id,
+  );
+  if (outcome.selected.computer_id !== prepared.computer_id || outcome.selected.runtime === "mock")
+    throw AppError.conflict("Prepared scheduling candidate changed its exact execution binding");
+  return { prepared, outcome };
+}
+
+async function scheduleTaskWithReservation(
+  tx: DrizzleDb,
+  ctx: ServerContext,
+  required: readonly Capability[],
+  opts: ScheduleOptions,
+  preparedRunId?: string,
 ): Promise<SchedulerOutcome> {
   if (opts.cleanValidationRunId) {
     const [owner] = await tx
@@ -364,6 +402,7 @@ export async function scheduleTask(
   for (const r of activeRunRows) {
     if (
       r.id !== opts.cleanValidationRunId &&
+      r.id !== preparedRunId &&
       r.id !== opts.recoveryValidationRunId &&
       r.id !== opts.importedValidationRunId &&
       r.id !== opts.importedDesignRunId &&

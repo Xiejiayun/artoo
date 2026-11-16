@@ -1290,13 +1290,19 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
       expect((await observer!.query(`SELECT * FROM ${table}`)).rows).toEqual([]);
     expect((await observer!.query("SELECT DISTINCT status FROM tasks")).rows).toEqual([{ status: "ready" }]);
   });
-  it("consumes explicit execution once across independent backends and refreshes eligibility and credential expiry after instance lock waits", async () => {
+  it("consumes explicit execution once and revalidates claim expiry and prepared-start eligibility after observed instance lock waits", async () => {
     const f = await shadowFixture();
     const requests = requireBuilt("../../../../apps/server/dist/services/scheduler-execution-request-service.js") as {
       createSchedulerExecutionRequest(ctx: object, task: string, input: object): Promise<{ id: string }>;
     };
     const lifecycle = requireBuilt("../../../../apps/server/dist/services/lifecycle-service.js") as {
       claimSchedulerExecutionRequest(ctx: object, input: object): Promise<{ run: { id: string } }>;
+    };
+    const prestart = requireBuilt("../../../../apps/server/dist/services/scheduler-start-revalidation-service.js") as {
+      revalidateSchedulerPreparedStart(
+        ctx: object,
+        input: object,
+      ): Promise<{ run_id: string; execution_authorized: false }>;
     };
     const sharing = requireBuilt("../../../../apps/server/dist/config/ai-data-sharing.js") as {
       buildAiDataSharingPolicy(input: object): object;
@@ -1373,7 +1379,7 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
         base_version: version,
         agent_id: "agent_mock_coder",
         branch_backed: true,
-        write_paths: [],
+        write_paths: ["src/claim.ts"],
       });
       return { taskId: task, requestId: request.id, computerId: "computer_local_mock", sessionId: "session" };
     };
@@ -1467,6 +1473,80 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
     expect((await observer!.query("SELECT count(*)::int AS n FROM scheduler_prepared_starts")).rows).toEqual([
       { n: 1 },
     ]);
+    await observer!.query("UPDATE device_tokens SET expires_at=NULL WHERE id='claim-token'");
+    expect(await prestart.revalidateSchedulerPreparedStart(contexts[0]!, first)).toMatchObject({
+      run_id: winner.run.id,
+      execution_authorized: false,
+    });
+    const executionEvidence = (
+      await observer!.query("SELECT context_pack_id,scheduler_decision_id FROM runs WHERE id=$1", [winner.run.id])
+    ).rows[0]!;
+    const leaseEvidence = (await observer!.query("SELECT id FROM file_leases WHERE run_id=$1", [winner.run.id])).rows;
+    expect(leaseEvidence).toHaveLength(1);
+    for (const [table, column, value] of [
+      ["runs", "id", winner.run.id],
+      ["context_packs", "id", executionEvidence.context_pack_id],
+      ["scheduler_decisions", "id", executionEvidence.scheduler_decision_id],
+      ["file_leases", "id", leaseEvidence[0]!.id],
+    ]) {
+      await observer!.query("BEGIN");
+      try {
+        const held = await observer!.query(`SELECT id FROM ${table} WHERE ${column}=$1 FOR UPDATE`, [value]);
+        expect(held.rows).toHaveLength(1);
+        await expect(prestart.revalidateSchedulerPreparedStart(contexts[0]!, first)).rejects.toMatchObject({
+          message: expect.stringContaining("execution is changing"),
+          httpStatus: 409,
+          details: { reason: "scheduler_prepared_execution_busy" },
+        });
+      } finally {
+        await observer!.query("ROLLBACK");
+      }
+    }
+    await observer!.query("BEGIN");
+    waiting = undefined;
+    try {
+      await observer!.query("UPDATE agent_instances SET status='disabled' WHERE id='ai_claim'");
+      waiting = prestart.revalidateSchedulerPreparedStart(contexts[0]!, first).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await observeDelegationBlock(Number(backendIds[0]), observerId, "agent_instances", "scheduling_prestart");
+      await observer!.query("COMMIT");
+      expect(await waiting).toMatchObject({ message: expect.stringContaining("eligible") });
+    } finally {
+      await observer!.query("ROLLBACK");
+      if (waiting) await waiting;
+    }
+    await observer!.query("UPDATE agent_instances SET status='idle' WHERE id='ai_claim'");
+    await observer!.query("BEGIN");
+    waiting = undefined;
+    try {
+      await observer!.query("SELECT id FROM computers WHERE id='computer_local_mock' FOR UPDATE");
+      waiting = prestart.revalidateSchedulerPreparedStart(contexts[0]!, first).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await observeDelegationBlock(Number(backendIds[0]), observerId, "computers", "scheduling_prestart_session");
+      const originalSession = contexts[0]!.getPairedNodeSession();
+      contexts[0]!.getPairedNodeSession = () => ({ ...originalSession, sessionId: "replacement" });
+      await observer!.query("COMMIT");
+      expect(await waiting).toMatchObject({ message: expect.stringContaining("original paired allocation session") });
+    } finally {
+      await observer!.query("ROLLBACK");
+      if (waiting) await waiting;
+    }
+    expect((await observer!.query("SELECT count(*)::int AS n FROM runs")).rows).toEqual([{ n: 1 }]);
+    expect((await observer!.query("SELECT count(*)::int AS n FROM scheduler_prepared_starts")).rows).toEqual([
+      { n: 1 },
+    ]);
+    expect(
+      (
+        await observer!.query("SELECT state,consumed_run_id FROM scheduler_execution_requests WHERE id=$1", [
+          first.requestId,
+        ])
+      ).rows,
+    ).toEqual([{ state: "consumed", consumed_run_id: winner.run.id }]);
+    for (const ctx of contexts) expect(ctx.onRunQueued).not.toHaveBeenCalled();
   });
 
   it("keeps one explicit execution request across independent concurrent staging, replay and cancellation", async () => {

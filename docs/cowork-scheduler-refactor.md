@@ -672,6 +672,44 @@ PostgreSQL backend consumption also checks that exactly one false-authority
 prepared-start record exists. Executed results remain separate from this coverage
 description and do not establish live Provider acceptance.
 
+### Current prepared-start revalidation (Step 4 prerequisite)
+
+The internal revalidation service opens a new read-committed transaction and
+reuses the claim's configuration/capacity/Task/original-user/device/credential
+fences and all four startup scopes. Only an already consumed request with its
+original immutable prepared-start record is eligible. Current team access and
+the exact original AI-sharing consent are required again; renewed consent cannot
+replace a withdrawn grant. Instance and computer locks retain the existing order.
+Source-message locks and a complete prepared-binding comparison follow those
+waits, then fresh runtime, capability, online/trust, instance-capacity and policy
+checks run. The current paired session and credential expiry are checked last.
+The exact Run, context, decision and existing file-lease rows are held under
+non-waiting shared locks after the waiting resource locks. A busy lifecycle or
+evidence writer returns a complete-operation 409 rather than waiting against
+Run-event ingestion's Run-to-Task lock order. Other database errors are preserved.
+
+The scheduler has a separate internal prepared-candidate entry point. It derives
+the sole self-reservation exclusion from the immutable queued unstarted Run,
+rather than accepting an arbitrary Run ID in ordinary scheduling options. This
+lets a single-slot reservation validate itself. Policy revalidation likewise
+subtracts only that exact ordinary occupant, after checking its Task, project,
+Agent, instance, computer and occupancy evidence. Other Runs, held leases and
+dedicated reservations still count at every quota level. The reservation remains
+persisted throughout; no capacity is freed or reallocated.
+
+Revalidation writes no event, request, Run, lease or receipt and calls no dispatch
+hook. Its observation explicitly returns `execution_authorized:false`; it cannot
+be cached as a later start permit. No HTTP/WS/poller invokes it yet. A node-owned
+attempt protocol must incorporate current admission within its own transaction,
+durable journal replay protection and a physical-start receipt before live
+execution can be connected. Ordinary consumed-Run dispatch remains rejected.
+
+Regressions cover single-slot self-validation, retention of other reservations in
+instance/project/Agent/computer capacity, repeated read-only validation, pending
+request rejection, access/consent/session/expiry/inventory/input changes and an
+observed PostgreSQL resource-lock wait followed by disabled eligibility. Executed
+results remain distinct from these coverage sources and from live acceptance.
+
 ## Explicit delegation (independent Step 7)
 
 Existing `parent_task_id` also records conversation continuations and research

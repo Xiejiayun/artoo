@@ -48,7 +48,7 @@ function assertSchedulerClaimSession(ctx: ServerContext, session: Session) {
 }
 
 /** Row locks stop credential edits, but cannot stop wall-clock expiry during awaited admission work. */
-function assertSchedulerClaimCurrent(
+export function assertSchedulerClaimCurrent(
   ctx: ServerContext,
   session: Session,
   credential: { readonly expiresAt: string | null },
@@ -172,6 +172,10 @@ export async function prepareSchedulerExecutionClaim(
     assertSchedulerClaimCurrent(ctx, session, credential);
     return {
       kind: "replay" as const,
+      original,
+      row,
+      session,
+      credential,
       result: {
         run: mapRun(run),
         scheduler_decision: { id: decision.id, reason: decision.reason, score: decision.score },
