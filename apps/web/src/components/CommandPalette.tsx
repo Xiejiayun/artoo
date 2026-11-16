@@ -18,6 +18,7 @@ const PAGES = [
   ["Channels", "/channels"],
   ["Goals", "/goals"],
   ["Board", "/board"],
+  ["Review", "/review"],
   ["Release", "/release"],
   ["Machines", "/computers"],
   ["Agent library", "/agents"],

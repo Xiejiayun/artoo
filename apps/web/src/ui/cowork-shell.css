@@ -187,3 +187,29 @@
 .cowork-admission { padding: 16px 0; border-bottom: 1px solid var(--border); }
 .cowork-policy { width: 100%; }
 .agent-library__card:has(.cowork-policy) { flex-wrap: wrap; }
+
+.cowork-review-note { display: flex; align-items: flex-start; gap: 12px; border: 1px solid var(--border); border-radius: 9px; padding: 16px; background: var(--surface); }
+.cowork-review-note > svg { flex: none; color: var(--accent-text); }
+.cowork-review-note p { flex: 1; margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.65; }
+.cowork-review-note > span { flex: none; color: var(--text-muted); font: 10px var(--font-mono); }
+.cowork-review-note strong { margin-left: 8px; color: var(--text-primary); }
+.cowork-review-layout { display: grid; grid-template-columns: minmax(240px,320px) minmax(0,1fr); align-items: start; gap: 22px; }
+.cowork-review-queue, .cowork-review-detail { min-width: 0; }
+.cowork-review-filters { display: grid; gap: 12px; padding: 16px; border-bottom: 1px solid var(--border); }
+.cowork-review-queue > p { padding: 12px 16px; }
+.cowork-review-queue > ul { list-style: none; padding: 0; margin: 0; }
+.cowork-review-queue > .ui-btn { margin: 16px; }
+.cowork-review-task { display: grid; gap: 11px; width: 100%; padding: 17px; border: 0; border-top: 1px solid var(--border); background: transparent; color: var(--text-primary); text-align: left; cursor: pointer; }
+.cowork-review-task:hover, .cowork-review-task.is-active { background: var(--accent-soft); }
+.cowork-review-task > span:first-child { display: flex; flex-wrap: wrap; gap: 6px; }
+.cowork-review-task > strong { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.cowork-review-detail { padding: 24px; }
+.cowork-review-detail h2 { font-size: 20px; }
+.cowork-review-detail h3 { font-size: 13px; }
+.cowork-review-detail p, .cowork-review-detail li { color: var(--text-muted); font-size: 12px; line-height: 1.7; }
+.cowork-review-task-heading .action-row a { color: var(--accent-text); font-size: 11px; }
+.cowork-review-task-heading code { overflow-wrap: anywhere; font-size: 9px; }
+.cowork-review-state { border-left: 2px solid var(--border-strong); padding-left: 12px; }
+.cowork-artifact-preview { display: grid; gap: 10px; }
+.cowork-artifact-preview pre { max-height: 480px; overflow: auto; margin: 0; padding: 15px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text-primary); white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.7 var(--font-mono); }
+@media (max-width: 1060px) { .cowork-review-layout { grid-template-columns: minmax(0,1fr); } .cowork-review-note { flex-wrap: wrap; } .cowork-review-queue > ul { max-height: 360px; overflow: auto; } }
