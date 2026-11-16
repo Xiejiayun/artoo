@@ -8,6 +8,7 @@ export * from "./scheduler-intent-schema.js";
 export * from "./scheduler-execution-request-schema.js";
 export * from "./scheduler-prepared-start-schema.js";
 export * from "./scheduler-start-grant-schema.js";
+export * from "./scheduler-execution-lease-schema.js";
 export * from "./enqueue-schema.js";
 export * from "./task-delegation-schema.js";
 export * from "./source-clean-restart-schema.js";

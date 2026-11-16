@@ -13,6 +13,7 @@ import {
   schedulerExecutionRequests,
   schedulerPreparedStarts,
   schedulerStartGrants,
+  schedulerExecutionLeases,
   tasks,
 } from "@artoo/db";
 import { createInProcessChannel } from "@artoo/testkit";
@@ -41,6 +42,10 @@ import {
 } from "./services/scheduler-start-proposal-service.js";
 import { scheduleTask } from "./services/scheduler.js";
 import { grantSchedulerStart, grantSchedulerStartInTransaction } from "./services/scheduler-start-grant-service.js";
+import {
+  closeSchedulerExecutionLease,
+  renewSchedulerExecutionLease,
+} from "./services/scheduler-execution-lease-service.js";
 import { randomUUID } from "node:crypto";
 import { createManagedWebSocketTransport } from "@artoo/artood";
 import { generateDeviceToken } from "./services/device-credential.js";
@@ -284,6 +289,7 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
       requests: await server.db.db.select().from(schedulerExecutionRequests),
       prepared: await server.db.db.select().from(schedulerPreparedStarts),
       grants: await server.db.db.select().from(schedulerStartGrants),
+      executionLeases: await server.db.db.select().from(schedulerExecutionLeases),
       leases: await server.db.db.select().from(fileLeases),
       events: await server.db.db.select().from(eventLog),
     };
@@ -756,8 +762,23 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
     const saved = await snapshot();
     expect(saved.grants).toHaveLength(1);
     expect(saved.events.filter((event) => event.type === "scheduler.start_grant.created")).toHaveLength(1);
-    const { grants: _newGrants, events: _newEvents, ...other } = saved;
-    const { grants: _oldGrants, events: _oldEvents, ...oldOther } = before;
+    expect(saved.executionLeases).toHaveLength(1);
+    expect(saved.executionLeases[0]).toMatchObject({
+      state: "active",
+      epoch: 1,
+      binding: {
+        run_id: first.grant.run_id,
+        request_id: input.requestId,
+        grant_id: first.grant.grant_id,
+        journal_namespace: ready.journal_namespace,
+        node_attempt_id: ready.node_attempt_id,
+      },
+    });
+    expect(Date.parse(saved.executionLeases[0]!.expiresAt) - Date.parse(saved.executionLeases[0]!.claimedAt)).toBe(
+      30_000,
+    );
+    const { grants: _newGrants, executionLeases: _newLeases, events: _newEvents, ...other } = saved;
+    const { grants: _oldGrants, executionLeases: _oldLeases, events: _oldEvents, ...oldOther } = before;
     expect(other).toEqual(oldOther);
     expect(await prepareSchedulerStartProposal(server.ctx, input)).toMatchObject({
       proposal_digest: ready.proposal_digest,
@@ -771,6 +792,179 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
     expect(await snapshot()).toEqual(saved);
     expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
   });
+
+  it("renews exact logical ownership after start-grant expiry without changing Run or physical reservations", async () => {
+    const { input, ready } = await readyStart();
+    let time = Date.parse(server.ctx.clock.nowIso());
+    server.ctx.clock = { now: () => new Date(time), nowIso: () => new Date(time).toISOString() };
+    await grantSchedulerStart(server.ctx, input, ready);
+    time += 6000;
+    await expect(grantSchedulerStart(server.ctx, input, ready)).rejects.toThrow("expired");
+    // Controlled lifecycle rows only; this suite creates no physical process.
+    await server.db.db
+      .update(runs)
+      .set({ status: "running", startedAt: server.ctx.clock.nowIso() })
+      .where(eq(runs.id, ready.run_id));
+    await server.db.db.update(tasks).set({ status: "running" }).where(eq(tasks.id, input.taskId));
+    const before = await snapshot(),
+      binding = before.executionLeases[0]!.binding;
+    const renewed = await renewSchedulerExecutionLease(
+      { ...server.ctx, actorUserId: "paired-node-is-not-the-user" },
+      input,
+      binding,
+    );
+    expect(renewed).toMatchObject({ state: "active", binding, closed_at: null });
+    expect(renewed.expires_at).toBe(new Date(time + 30_000).toISOString().replace("Z", "000Z"));
+    const { executionLeases: _old, events: _oldEvents, ...oldOther } = before;
+    const after = await snapshot();
+    const { executionLeases: _new, events: _newEvents, ...newOther } = after;
+    expect(newOther).toEqual(oldOther);
+    expect(after.events.filter((event) => event.type === "scheduler.execution_lease.renewed")).toHaveLength(1);
+    await expect(grantSchedulerStart(server.ctx, input, ready)).rejects.toThrow("original queued assignment");
+    expect(await snapshot()).toEqual(after);
+    expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
+  });
+
+  it("rejects every changed lease identity, original-session transfer and expired credential without writes", async () => {
+    const { input, ready } = await readyStart();
+    const time = Date.parse(server.ctx.clock.nowIso());
+    server.ctx.clock = { now: () => new Date(time), nowIso: () => new Date(time).toISOString() };
+    await grantSchedulerStart(server.ctx, input, ready);
+    const before = await snapshot(),
+      binding = before.executionLeases[0]!.binding;
+    for (const [key, value] of Object.entries(binding)) {
+      const replacement =
+        key === "version"
+          ? 2
+          : key === "epoch"
+            ? 2
+            : typeof value === "string" && /^[a-f\d]{8}-/.test(value)
+              ? randomUUID()
+              : "different";
+      await expect(
+        renewSchedulerExecutionLease(server.ctx, input, { ...binding, [key]: replacement }),
+      ).rejects.toThrow();
+      expect(await snapshot()).toEqual(before);
+    }
+    for (const disabled of switches) {
+      flags(disabled);
+      // unified_enqueue controls new Task insertion, not an already consumed lease.
+      if (disabled === "unified_enqueue") continue;
+      await expect(renewSchedulerExecutionLease(server.ctx, input, binding)).rejects.toThrow("disabled");
+      expect(await snapshot()).toEqual(before);
+    }
+    flags();
+    server.ctx.getPairedNodeSession = () => ({ ...session, sessionId: "replacement" });
+    await expect(
+      renewSchedulerExecutionLease(server.ctx, { ...input, sessionId: "replacement" }, binding),
+    ).rejects.toThrow();
+    expect(await snapshot()).toEqual(before);
+    server.ctx.getPairedNodeSession = () => ({ ...session });
+    await server.db.db.update(deviceTokens).set({ expiresAt: new Date(time).toISOString() });
+    await expect(renewSchedulerExecutionLease(server.ctx, input, binding)).rejects.toThrow("credential");
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("compares renewal observations and expiry at database microsecond precision and never revives a closed lease", async () => {
+    const { input, ready } = await readyStart();
+    const base = new Date(Date.parse(server.ctx.clock.nowIso()) + 1000).toISOString().slice(0, 19);
+    let now = `${base}.000123Z`;
+    server.ctx.clock = { now: () => new Date(now), nowIso: () => now };
+    await grantSchedulerStart(server.ctx, input, ready);
+    const binding = (await snapshot()).executionLeases[0]!.binding;
+    now = `${base}.000124Z`;
+    const renewed = await renewSchedulerExecutionLease(server.ctx, input, binding);
+    const saved = await snapshot();
+    now = `${base}.000123Z`;
+    await expect(renewSchedulerExecutionLease(server.ctx, input, binding)).rejects.toThrow("clock regressed");
+    await expect(closeSchedulerExecutionLease(server.ctx, binding, "revoked")).rejects.toThrow("stale");
+    expect(await snapshot()).toEqual(saved);
+    now = renewed.expires_at.replace(/124Z$/, "123Z");
+    await expect(closeSchedulerExecutionLease(server.ctx, binding, "expired")).rejects.toThrow("not yet eligible");
+    expect(await snapshot()).toEqual(saved);
+    now = renewed.expires_at;
+    await expect(renewSchedulerExecutionLease(server.ctx, input, binding)).rejects.toThrow("expired");
+    const expired = await closeSchedulerExecutionLease(server.ctx, binding, "expired");
+    expect(expired).toMatchObject({ state: "expired", closed_at: now });
+    const closed = await snapshot();
+    await expect(renewSchedulerExecutionLease(server.ctx, input, binding)).rejects.toThrow("expired");
+    await expect(closeSchedulerExecutionLease(server.ctx, binding, "revoked")).rejects.toThrow("stale");
+    expect(await snapshot()).toEqual(closed);
+    expect(closed.runs).toEqual(saved.runs);
+    expect(closed.leases).toEqual(saved.leases);
+    expect(closed.tasks).toEqual(saved.tasks);
+  });
+
+  it("refuses renewal after Run termination, Task withdrawal or original-assignee drift", async () => {
+    const { input, ready } = await readyStart();
+    const time = Date.parse(server.ctx.clock.nowIso());
+    server.ctx.clock = { now: () => new Date(time), nowIso: () => new Date(time).toISOString() };
+    await grantSchedulerStart(server.ctx, input, ready);
+    const binding = (await snapshot()).executionLeases[0]!.binding;
+    // Controlled DB lifecycle states, never physical closure evidence.
+    for (const state of ["completed", "failed", "cancelled"] as const) {
+      await server.db.db.update(runs).set({ status: state }).where(eq(runs.id, ready.run_id));
+      const before = await snapshot();
+      await expect(renewSchedulerExecutionLease(server.ctx, input, binding)).rejects.toThrow("active assignment");
+      expect(await snapshot()).toEqual(before);
+    }
+    await server.db.db.update(runs).set({ status: "queued" }).where(eq(runs.id, ready.run_id));
+    for (const patch of [
+      { status: "cancelled" as const },
+      { status: "review" as const },
+      { status: "assigned" as const, assigneeType: "user" as const, assigneeId: "user_owner" },
+    ]) {
+      await server.db.db.update(tasks).set(patch).where(eq(tasks.id, input.taskId));
+      const before = await snapshot();
+      await expect(renewSchedulerExecutionLease(server.ctx, input, binding)).rejects.toThrow(
+        "original active assignment",
+      );
+      expect(await snapshot()).toEqual(before);
+    }
+  });
+
+  it("revokes logical ownership while retaining reservations and prevents replay of its still-current start grant", async () => {
+    const { input, ready } = await readyStart();
+    const time = Date.parse(server.ctx.clock.nowIso());
+    server.ctx.clock = { now: () => new Date(time), nowIso: () => new Date(time).toISOString() };
+    await grantSchedulerStart(server.ctx, input, ready);
+    const before = await snapshot(),
+      binding = before.executionLeases[0]!.binding;
+    await closeSchedulerExecutionLease(server.ctx, binding, "revoked");
+    const saved = await snapshot();
+    await expect(grantSchedulerStart(server.ctx, input, ready)).rejects.toThrow("lease is closed");
+    await expect(renewSchedulerExecutionLease(server.ctx, input, binding)).rejects.toThrow("stale");
+    expect(await snapshot()).toEqual(saved);
+    expect(saved.runs).toEqual(before.runs);
+    expect(saved.leases).toEqual(before.leases);
+    expect(saved.tasks).toEqual(before.tasks);
+  });
+
+  it.each(["session", "credential", "expiry", "clock", "audit"] as const)(
+    "rolls renewal and event back when %s changes during persistence",
+    async (changed) => {
+      const { input, ready } = await readyStart();
+      let time = Date.parse(server.ctx.clock.nowIso());
+      server.ctx.clock = { now: () => new Date(time), nowIso: () => new Date(time).toISOString() };
+      if (changed === "credential")
+        await server.db.db.update(deviceTokens).set({ expiresAt: new Date(time + 40_000).toISOString() });
+      await grantSchedulerStart(server.ctx, input, ready);
+      const before = await snapshot(),
+        binding = before.executionLeases[0]!.binding,
+        generate = server.ctx.idGen.generate.bind(server.ctx.idGen);
+      server.ctx.idGen = {
+        generate(prefix) {
+          if (changed === "session") server.ctx.getPairedNodeSession = () => ({ ...session, sessionId: "replacement" });
+          if (changed === "credential") time += 40_000;
+          if (changed === "expiry") time += 30_000;
+          if (changed === "clock") time -= 1;
+          return changed === "audit" ? before.events[0]!.id : generate(prefix);
+        },
+      };
+      await expect(renewSchedulerExecutionLease(server.ctx, input, binding)).rejects.toThrow();
+      expect(await snapshot()).toEqual(before);
+    },
+  );
 
   it("caps new and replayed remaining lifetime at the original current credential expiry", async () => {
     const { input, ready } = await readyStart();
@@ -1283,12 +1477,14 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
       ready_id: randomUUID(),
     };
     await grantSchedulerStart(server.ctx, input, ready);
+    const binding = (await snapshot()).executionLeases[0]!.binding;
     await revokeAiDataSharingConsent(server.ctx);
     for (const consent of ["withdrawn", "replaced"]) {
       if (consent === "replaced") await grantAiDataSharingConsent(server.ctx, server.ctx.aiDataSharingPolicy.version);
       const before = await snapshot();
       await expect(revalidateSchedulerPreparedStart(server.ctx, input)).rejects.toThrow("Review and allow");
       await expect(grantSchedulerStart(server.ctx, input, ready)).rejects.toThrow("Review and allow");
+      await expect(renewSchedulerExecutionLease(server.ctx, input, binding)).rejects.toThrow("Review and allow");
       expect(await snapshot()).toEqual(before);
     }
     expect(server.ctx.onRunQueued).not.toHaveBeenCalled();

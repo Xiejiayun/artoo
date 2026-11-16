@@ -1603,6 +1603,71 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
         ])
       ).rows,
     ).toEqual([{ state: "consumed", consumed_run_id: winner.run.id }]);
+    const executionLeases = requireBuilt(
+      "../../../../apps/server/dist/services/scheduler-execution-lease-service.js",
+    ) as {
+      renewSchedulerExecutionLease(
+        ctx: object,
+        input: object,
+        binding: object,
+      ): Promise<{ binding: object; expires_at: string }>;
+      closeSchedulerExecutionLease(
+        ctx: object,
+        binding: object,
+        reason: "expired" | "revoked",
+      ): Promise<{ state: string }>;
+    };
+    const originalSession = contexts[1]!.getPairedNodeSession();
+    contexts[0]!.getPairedNodeSession = () => ({ ...originalSession });
+    const leaseRows = (await observer!.query("SELECT binding FROM scheduler_execution_leases")).rows;
+    expect(leaseRows).toHaveLength(1);
+    const leaseBinding = leaseRows[0]!.binding;
+    expect(leaseBinding).toMatchObject({
+      epoch: 1,
+      run_id: winner.run.id,
+      grant_id: grant.grant.grant_id,
+      session_id: "session",
+    });
+    // The start window has expired; the independently owned logical lease can renew.
+    const renewals = await Promise.allSettled(
+      contexts.map((ctx) => executionLeases.renewSchedulerExecutionLease(ctx, first, leaseBinding)),
+    );
+    expect(renewals.some((result) => result.status === "fulfilled")).toBe(true);
+    for (const result of renewals) {
+      if (result.status === "rejected") expect(result.reason).toMatchObject({ httpStatus: 409 });
+      else expect(result.value.binding).toEqual(leaseBinding);
+    }
+    expect((await observer!.query("SELECT count(*)::int AS n FROM scheduler_execution_leases")).rows).toEqual([
+      { n: 1 },
+    ]);
+    const leaseHistory = (await observer!.query("SELECT * FROM scheduler_execution_leases")).rows;
+    await observer!.query("BEGIN");
+    try {
+      await observer!.query("SELECT id FROM runs WHERE id=$1 FOR UPDATE", [winner.run.id]);
+      await expect(
+        executionLeases.renewSchedulerExecutionLease(contexts[1]!, first, leaseBinding),
+      ).rejects.toMatchObject({
+        httpStatus: 409,
+        details: { reason: "scheduler_execution_lease_busy" },
+      });
+    } finally {
+      await observer!.query("ROLLBACK");
+    }
+    expect((await observer!.query("SELECT * FROM scheduler_execution_leases")).rows).toEqual(leaseHistory);
+    await expect(
+      executionLeases.closeSchedulerExecutionLease(contexts[1]!, leaseBinding, "expired"),
+    ).rejects.toMatchObject({ httpStatus: 409 });
+    const closure = await executionLeases.closeSchedulerExecutionLease(contexts[1]!, leaseBinding, "revoked");
+    expect(closure.state).toBe("revoked");
+    await expect(executionLeases.renewSchedulerExecutionLease(contexts[1]!, first, leaseBinding)).rejects.toMatchObject(
+      { httpStatus: 409 },
+    );
+    expect((await observer!.query("SELECT id FROM file_leases WHERE run_id=$1", [winner.run.id])).rows).toEqual(
+      leaseEvidence,
+    );
+    expect((await observer!.query("SELECT status FROM runs WHERE id=$1", [winner.run.id])).rows).toEqual([
+      { status: "queued" },
+    ]);
     for (const ctx of contexts) expect(ctx.onRunQueued).not.toHaveBeenCalled();
   });
 

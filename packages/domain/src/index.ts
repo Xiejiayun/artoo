@@ -111,4 +111,5 @@ export * from "./scheduler-execution-request.js";
 export * from "./scheduler-prepared-start.js";
 export * from "./scheduler-start-proposal.js";
 export * from "./scheduler-start-grant.js";
+export * from "./scheduler-execution-lease.js";
 export * from "./task-delegation.js";
