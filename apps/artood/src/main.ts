@@ -4,9 +4,9 @@ import type { SourceCommandDiagnostic } from "./source-command-diagnostics.js";
 export { acquirePublishedProductOwnership, createPublishedProduct } from "./published-product.js";
 export { describeWindowsApplicationEntryVerifier } from "./windows-application-entry.js";
 import { arch as osArch, hostname, platform } from "node:os";
-import { isAbsolute } from "node:path";
+import { isAbsolute, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
-import { lstatSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 
 import type { NodeHello } from "@artoo/protocol";
 
@@ -26,7 +26,7 @@ import { loadPreparedVerificationProfilesFile, loadVerificationProfilesFile, typ
 import { loadReleaseProfilesFile, type ReleaseProfile } from "./product-release.js";
 import { prepareWindowsProcessInstallation } from "./windows-process-installation.js";
 import { prepareWindowsReleaseStorage, type PreparedWindowsReleaseStorage } from "./windows-release-storage.js";
-import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
+import { assertWindowsSchedulerStartBackend, type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import type { ResearchOptions } from "./research.js";
 import { supervisedSelection, launchWindowsSupervisedCli, runWindowsSupervisedDaemon } from "./windows-daemon-launcher.js";
 import { prepareProductSourceConfiguration } from "./product-source-config.js";
@@ -51,6 +51,9 @@ import type { PreparedWindowsDaemonSupervisorAuthority } from "./windows-supervi
  * - `ARTOO_WINDOWS_PROCESS_BUNDLE` + `ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256` opt into
  *   a protected local Windows helper installation. Both are required together;
  *   all allowed roots must be existing physical directories outside that installation.
+ * - `ARTOO_WINDOWS_GIT_EXECUTABLE` explicit canonical local Git executable for a
+ *   Windows managed candidate. Requires the prepared backend with original-launch-window
+ *   capability plus a saved journal; this selection does not qualify the platform.
  * - `ARTOO_OWNED_RESULT_PROFILES_FILE` protected local JSON; managed fresh-allocation
  *   startup opens previously initialized stores after an explicit journal v4 upgrade.
  * - `ARTOO_WORKTREE_BASE_REPO` (opt-in) git repo to create per-run worktrees from. Absent ->
@@ -93,6 +96,8 @@ export interface ArtoodConfig {
   verificationProfiles?: readonly VerificationProfile[];
   /** Opaque authority returned by protected local Windows installation qualification. */
   windowsProcessBackend?: PreparedWindowsProcessBackend;
+  /** Explicit local Git program for native managed workspaces; never a task command. */
+  windowsGitExecutable?: string;
   releaseProfiles?: readonly ReleaseProfile[];
   applicationPublicationProfiles?: ArtoodNodeOptions["applicationPublicationProfiles"];
   windowsReleaseStorage?: ReadonlyMap<string, PreparedWindowsReleaseStorage>;
@@ -180,8 +185,23 @@ function windowsProcessBackendFromEnv(env: NodeJS.ProcessEnv, allowedRoots: read
   if (!directory || !manifestSha256) throw new Error("ARTOO_WINDOWS_PROCESS_BUNDLE and ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256 must both be provided");
   if (!isAbsolute(directory) || /[\u0000-\u001f\u007f]/.test(directory)) throw new Error("ARTOO_WINDOWS_PROCESS_BUNDLE must be an absolute local directory");
   if (!/^sha256:[a-f0-9]{64}$/.test(manifestSha256)) throw new Error("ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256 must be a sha256 digest");
-  if (managed) throw new Error("Windows process installation cannot be combined with managed execution");
-  return prepareWindowsProcessInstallation({ directory, manifestSha256, writableWorkspaceRoots: allowedRoots });
+  if (managed && !env.ARTOO_WINDOWS_GIT_EXECUTABLE?.trim())
+    throw new Error("Windows process installation cannot be combined with managed execution without explicit native Git and launch-window qualification");
+  const backend = prepareWindowsProcessInstallation({ directory, manifestSha256, writableWorkspaceRoots: allowedRoots });
+  if (managed) assertWindowsSchedulerStartBackend(backend);
+  return backend;
+}
+
+function windowsGitExecutable(value: string): string {
+  // Keep the program an operator-selected physical local file. PATH lookup,
+  // remote paths and server/task argv cannot select the managed Git executor.
+  if (!/^[A-Za-z]:\\/.test(value) || win32.resolve(value) !== value || /[\u0000-\u001f\u007f]/u.test(value)
+    || value.slice(3).split("\\").some(part => !part || /[<>:"|?*/]/u.test(part) || /[ .]$/u.test(part)))
+    throw new Error("ARTOO_WINDOWS_GIT_EXECUTABLE must be an absolute canonical local executable");
+  const stat = lstatSync(value);
+  if (!stat.isFile() || stat.isSymbolicLink() || realpathSync.native(value) !== value)
+    throw new Error("ARTOO_WINDOWS_GIT_EXECUTABLE must be a physical local executable");
+  return value;
 }
 
 /** Parse the artood config from environment variables, throwing on missing required keys. */
@@ -224,6 +244,10 @@ function configFromEnv(env: NodeJS.ProcessEnv,
   if (env.ARTOO_SCHEDULER_ENABLED === "1" && (!managed.managedJournal || managed.allowNewAllocations !== true))
     throw new Error("Scheduler claims require a prepared journal and ARTOO_MANAGED_EXECUTION=1");
   const windowsProcessBackend = windowsProcessBackendFromEnv(env, allowedRoots, managed.managedJournal !== undefined);
+  const selectedWindowsGit = env.ARTOO_WINDOWS_GIT_EXECUTABLE?.trim();
+  if (env.ARTOO_WINDOWS_GIT_EXECUTABLE !== undefined && (!selectedWindowsGit || !managed.managedJournal || !windowsProcessBackend))
+    throw new Error("ARTOO_WINDOWS_GIT_EXECUTABLE requires a prepared Windows managed installation");
+  const windowsGit = selectedWindowsGit ? windowsGitExecutable(selectedWindowsGit) : undefined;
   const productSourceConfigFile = env.ARTOO_PRODUCT_SOURCE_CONFIG_FILE;
   if (productSourceConfigFile !== undefined && (!productSourceConfigFile || !isAbsolute(productSourceConfigFile)
     || /[\u0000-\u001f\u007f]/.test(productSourceConfigFile) || !windowsProcessBackend)) {
@@ -263,6 +287,7 @@ function configFromEnv(env: NodeJS.ProcessEnv,
     heartbeatIntervalMs: parsePositiveMs(env.ARTOO_HEARTBEAT_INTERVAL_MS),
     ...(verificationProfiles ? { verificationProfiles } : {}),
     ...(windowsProcessBackend ? { windowsProcessBackend } : {}),
+    ...(windowsGit ? { windowsGitExecutable: windowsGit } : {}),
     ...(productSourceConfigFile ? { productSourceConfigFile } : {}),
     ...(env.ARTOO_OWNED_RESULT_PROFILES_FILE ? { ownedResultProfilesFile: env.ARTOO_OWNED_RESULT_PROFILES_FILE } : {}),
     ...(releaseProfiles ? { releaseProfiles } : {}),
@@ -284,6 +309,7 @@ export function buildRegistry(config: ArtoodConfig): AdapterRegistry {
       );
     }
     return preset({ allowedRoots: config.allowedRoots, trustedExecution: config.trustedExecution,
+      ...(config.windowsProcessBackend ? { windowsProcessBackend: config.windowsProcessBackend } : {}),
       research: config.research, initializeRepository: config.initializeRepository, productBootstrapGit: config.productBootstrapGit,
       ...(config.reportArtifacts === "none" ? { artifacts: [] } : {}),
       ...(name === "codex" ? { codex: config.codex } : {}) });
@@ -314,8 +340,14 @@ export function createNodeFromConfig(config: ArtoodConfig, sourceCommandDiagnost
   }
   if (config.windowsProcessBackend !== undefined) {
     if (process.platform !== "win32") throw new Error("Windows process installation is supported only on Windows");
-    if (config.managedJournal !== undefined) throw new Error("Windows process installation cannot be combined with managed execution");
+    if (config.managedJournal !== undefined) {
+      if (!config.windowsGitExecutable) throw new Error("Windows process installation cannot be combined with managed execution without explicit native Git and launch-window qualification");
+      windowsGitExecutable(config.windowsGitExecutable);
+      assertWindowsSchedulerStartBackend(config.windowsProcessBackend);
+    }
   }
+  if (config.windowsGitExecutable !== undefined && (!config.managedJournal || !config.windowsProcessBackend))
+    throw new Error("ARTOO_WINDOWS_GIT_EXECUTABLE requires a prepared Windows managed installation");
   if (config.allowNewAllocations !== undefined && typeof config.allowNewAllocations !== "boolean") {
     throw new Error("New-allocation choice must be a boolean");
   }
@@ -352,6 +384,7 @@ export function createNodeFromConfig(config: ArtoodConfig, sourceCommandDiagnost
     sourceCommandDiagnostic,
   };
   return binding ? createManagedBootstrap({ ...common, binding, allowNewAllocations: config.allowNewAllocations!,
+    ...(config.windowsProcessBackend ? { ownedGit: { windowsProcessBackend: config.windowsProcessBackend, gitExecutable: config.windowsGitExecutable! } } : {}),
     ...(config.scheduler ? { scheduler: true } : {}),
     ...(config.ownedResultProfilesFile ? { ownedResultProfilesFile: config.ownedResultProfilesFile } : {}) })
     : createArtoodNode({ ...common, acknowledgeRunEvents: true });

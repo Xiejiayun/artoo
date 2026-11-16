@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { freezeTaskSourceInputs } from "./task-source-input-service.js";
+import { assertTaskAgentReviewAdmission, taskAgentReviewForTask, taskAgentReviewSubject } from "./task-agent-review-binding.js";
 
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 
@@ -599,6 +600,19 @@ export async function buildRunContextPack(
         .where(and(eq(tasks.id, independentReview.taskId), eq(tasks.organizationId, ctx.organizationId)))
     : [];
   const handoff = await taskHandoff(ctx, tx, subjectTask ?? task);
+  const requestedOpinion = await taskAgentReviewForTask(ctx, tx, task.id);
+  if (requestedOpinion) {
+    const frozen = await assertTaskAgentReviewAdmission(ctx, tx, requestedOpinion);
+    const entry: NonNullable<ContextPack["dependency_context"]>["entries"][number] = {
+      task_id: frozen.source.id, title: frozen.source.title, dependency_type: "user_requested_review", status: "review",
+      acceptance_criteria: frozen.source.acceptanceCriteria as string[], run_id: frozen.run.id, workspace_root: null,
+      artifacts_truncated: false, artifacts: taskAgentReviewSubject(requestedOpinion).artifacts.map(artifact => ({ ...artifact,
+        content_path: `/api/v1/artifacts/${encodeURIComponent(artifact.id)}/content` })),
+    };
+    if ((handoff.dependencyContext?.entries.length ?? 0) >= 100) throw AppError.conflict("Opinion context exceeds the dependency input limit");
+    handoff.dependencyContext = { version: 1, truncated: handoff.dependencyContext?.truncated ?? false,
+      entries: [...(handoff.dependencyContext?.entries ?? []), entry] };
+  }
   let reviewVerification: NonNullable<ContextPack["review_subject"]>["verification"];
   let acceptedReceipt = handoff.acceptedResearchEvidence?.payload;
   if (independentReview) {
@@ -727,6 +741,7 @@ export async function buildRunContextPack(
     : "";
   const [agentConfiguration] = params.agentInstanceId ? await tx.select({ agentId: logicalAgentConfigurations.agentId, revision: logicalAgentConfigurations.revision, configuration: logicalAgentConfigurations.configuration }).from(logicalAgentConfigurations).innerJoin(agentInstances, eq(agentInstances.agentId, logicalAgentConfigurations.agentId)).where(and(eq(agentInstances.id, params.agentInstanceId), eq(agentInstances.organizationId, ctx.organizationId), eq(logicalAgentConfigurations.organizationId, ctx.organizationId))) : [];
   const payload: ContextPack = ContextPackSchema.parse({
+    ...(requestedOpinion ? { agent_review_subject: taskAgentReviewSubject(requestedOpinion) } : {}),
     ...(agentConfiguration ? { agent_configuration: { version: 1, agent_id: agentConfiguration.agentId, revision: agentConfiguration.revision, role: agentConfiguration.configuration.role, description: agentConfiguration.configuration.description, instructions: agentConfiguration.configuration.instructions } } : {}),
     ...(sourceInputs ? { source_inputs: sourceInputs } : {}),
     ...(handoff.appDelivery ? { app_delivery: handoff.appDelivery } : {}),
@@ -771,8 +786,8 @@ export async function buildRunContextPack(
     },
     workspace: { root: workspaceRoot, file_scope: [] },
     policy: {
-      ...(discussion || independentReview ? { execution_mode: "discussion" as const } : {}),
-      filesystem_write_scope: discussion || independentReview ? [] : filesystemWriteScope,
+      ...(discussion || independentReview || requestedOpinion ? { execution_mode: "discussion" as const } : {}),
+      filesystem_write_scope: discussion || independentReview || requestedOpinion ? [] : filesystemWriteScope,
       requires_approval: ["git.push", "external.post"],
     },
     memory: {
