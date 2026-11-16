@@ -786,6 +786,50 @@ checks complete payload/digest stability, read-only replay, transaction/isolatio
 requirements and late expiry/session/capability changes after awaited completion.
 Executed results are recorded with the implementation PR.
 
+### Immutable short-lived server start grants (Step 4 foundation)
+
+Migration `0073_scheduler_start_grants.sql` adds one append-only grant per
+prepared request/Run, with a unique scoped journal namespace/node attempt.
+It does not backfill older records. The strict version-1 ready and grant
+contracts bind the exact request, Run, original user, instance, computer, paired
+device/session, journal namespace, worker-generated node attempt, ready exchange
+and canonical full-proposal digest. Neither private worker ownership nor paired
+token material enters the stored grant, audit or response.
+
+`grantSchedulerStart` reconstructs and compares the full proposal inside the
+existing read-committed revalidation transaction. It retains all original
+authorization, consent, source input, eligibility, capacity and evidence locks.
+The immutable lifetime is at most five seconds and no later than the current
+original credential expiry. All grant/audit writes precede final expiry and
+credential/session/capability checks. Failure rolls back both records.
+
+An identical response-loss replay repeats current admission checks and returns
+the original grant with its remaining lifetime. It never renews the deadline,
+changes ready exchange, creates another attempt, or refreshes one-time user
+permission. A shorter current credential expiry reduces the returned lifetime;
+extending it cannot extend the original grant. Expired grants remain historical
+reservations and do not imply process closure or resource release. A server
+clock earlier than the original issue time rejects replay. The scoped grant
+audit alone is excluded from Task input versions so it cannot invalidate its
+own prepared binding; other Task events remain inputs.
+
+This remains an internal kernel with no HTTP/WS/poller or launch consumer. A
+future node consumer must own a fresh private preparation capability, keep the
+first ready exchange's monotonic start tick across retries, conservatively
+subtract the complete round-trip latency from `remaining_ms`, and check the
+private deadline/channel immediately before materialization and physical spawn.
+Reopening a journal or replaying a public grant cannot recreate that authority.
+Ordinary consumed-Run dispatch remains blocked. No renewal, failover, live
+Provider acceptance or production activation follows from this foundation.
+
+Regression coverage includes immutable response replay, exact binding/mode
+rejection, credential lifetime bounds, backwards clock, final persistence
+failure rollback, original consent withdrawal/replacement and migration
+rollback/backup/restore. The real PostgreSQL suite additionally checks
+independent concurrent grant calls, busy execution-evidence locks and expiry
+during an observed computer-row lock wait. Executed results are recorded in the
+implementation PR.
+
 ## Explicit delegation (independent Step 7)
 
 Existing `parent_task_id` also records conversation continuations and research
