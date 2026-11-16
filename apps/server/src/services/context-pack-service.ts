@@ -1,10 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { freezeTaskSourceInputs } from "./task-source-input-service.js";
-import {
-  assertTaskAgentReviewAdmission,
-  taskAgentReviewForTask,
-  taskAgentReviewSubject,
-} from "./task-agent-review-binding.js";
+import { assertTaskAgentReviewAdmission, taskAgentReviewSubject } from "./task-agent-review-binding.js";
 
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 
@@ -26,6 +22,7 @@ import {
   runs,
   taskDependencies,
   taskEnqueueEvents,
+  taskAgentReviews,
   tasks,
 } from "@artoo/db";
 import {
@@ -431,15 +428,24 @@ export async function buildRunContextPack(
     task_id: task.id,
   });
 
-  // Probe persisted inputs with the existing project read. Ordinary contexts
-  // keep their query budget; rollback must still honor comments already saved.
+  // Read persisted inputs and the immutable opinion binding with the existing
+  // project query. Ordinary contexts keep their bounded query budget; neither
+  // optional context can bypass its own later authorization checks.
   const sourceInputProbe = tx
     .select({ taskId: taskEnqueueEvents.taskId })
     .from(taskEnqueueEvents)
     .where(and(eq(taskEnqueueEvents.taskId, task.id), isNotNull(taskEnqueueEvents.messageId)));
   const [projectContext] = await tx
-    .select({ project: projects, hasSourceInputs: sql<boolean>`exists (${sourceInputProbe})` })
+    .select({
+      project: projects,
+      hasSourceInputs: sql<boolean>`exists (${sourceInputProbe})`,
+      requestedOpinion: taskAgentReviews,
+    })
     .from(projects)
+    .leftJoin(
+      taskAgentReviews,
+      and(eq(taskAgentReviews.reviewTaskId, task.id), eq(taskAgentReviews.organizationId, ctx.organizationId)),
+    )
     .where(eq(projects.id, task.projectId));
   const project = projectContext?.project;
   const workspaceRoot = params.workspaceRoot ?? project?.defaultWorkspace ?? "";
@@ -604,7 +610,7 @@ export async function buildRunContextPack(
         .where(and(eq(tasks.id, independentReview.taskId), eq(tasks.organizationId, ctx.organizationId)))
     : [];
   const handoff = await taskHandoff(ctx, tx, subjectTask ?? task);
-  const requestedOpinion = await taskAgentReviewForTask(ctx, tx, task.id);
+  const requestedOpinion = projectContext?.requestedOpinion;
   if (requestedOpinion) {
     const frozen = await assertTaskAgentReviewAdmission(ctx, tx, requestedOpinion);
     const entry: NonNullable<ContextPack["dependency_context"]>["entries"][number] = {

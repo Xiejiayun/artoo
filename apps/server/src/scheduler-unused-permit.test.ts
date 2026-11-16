@@ -61,9 +61,10 @@ async function setup() {
   const [seed] = await server.db.db.select().from(agentInstances).where(eq(agentInstances.id, "instance_mock_coder"));
   await server.db.db.update(agentInstances).set({ status: "disabled" }).where(eq(agentInstances.id, seed!.id));
   // Controlled advertised runtime: this fixture starts no CLI, helper or Provider.
+  // Per-run allocation requires the same canonical ai_ identity as real inventory.
   await server.db.db.insert(agentInstances).values({
     ...seed!,
-    id: "unused-instance",
+    id: "ai_unused",
     runtime: "codex",
     workspaceRoot: "/fixture/repository",
     config: {
