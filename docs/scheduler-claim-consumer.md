@@ -1,0 +1,13 @@
+# Private scheduler request consumer
+
+The paired managed-node session may negotiate optional `scheduler_claim: { version: 1 }` only alongside the supported scheduler start, lease and lifecycle channels. Ordinary and mixed-version sessions remain unchanged. The live registry binding reports consumer availability only while the negotiated original paired session is current and active.
+
+`scheduler.claim.poll.v1` carries only the node, original session and exchange identity. Its private response returns either an existing durable assignment's Task/request/Run IDs, an idle delay, or a generic rejection. It does not carry execution permission, a physical start grant, credentials or adapter input. The poller consumes an existing user's `execute_once` request through the original claim transaction; it never creates consent, retries or failover authority and never invokes the ordinary Run dispatch hook.
+
+Polling is enabled per project only when all of `execution_requests`, `daemon_claim`, `isolated_workspaces`, `capacity_admission` and `attempt_credentials` are enabled. A logical Squad may supply an instance bound to the project or to no project; another project's instance remains ineligible. Existing consent, policy, runtime, capacity and admission checks still decide whether a candidate can be consumed. A reported consumer is availability, not a promise of immediate execution.
+
+The consumer scans at most 16 pending requests per poll with a stable SQL timestamp/ID cursor. It alternates pending scans with replay of the original session's queued assignment when no start grant exists, so a response lost before local ownership can be recovered without creating another Run. The private channel permits one outstanding poll through its bounded reply write. Replaced sessions and competing pollers cannot acquire new authority from a stale response.
+
+Stop intent is persisted against a consumed request even in the interval before its first physical grant/lease. This blocks subsequent grant issuance and is projected by lifecycle status once a lease exists. Stop records intent and leaves the Run active; it does not assert process closure. A node that has already acquired a grant must use its sole physical owner to stop or fence the unused permit. Until qualified closure or a separately implemented unused-permit reconciliation exists, an uncertain pre-start assignment retains its resources.
+
+The new service tests use controlled advertised runtime inventory without starting a CLI, process or Provider. They cover original-user attribution, same-session replay, default-off permissions and Stop before grant. Their execution is deferred to the final integrated validation round; this slice supplies no live-provider acceptance evidence.

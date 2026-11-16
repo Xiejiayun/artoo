@@ -93,6 +93,7 @@ import { z } from "zod";
 import { schedulerStartRegistrationSchema, schedulerStartResponseCommandSchema } from "./scheduler-start.js";
 import { schedulerLeaseRegistrationSchema, schedulerLeaseResponseCommandSchema } from "./scheduler-lease.js";
 import { schedulerRunRegistrationSchema, schedulerRunResponseCommandSchema } from "./scheduler-run.js";
+import { schedulerClaimRegistrationSchema, schedulerClaimResponseCommandSchema } from "./scheduler-claim.js";
 import {
   applicationPublicationStartCommandSchema,
   applicationPublicationStopCommandSchema,
@@ -187,6 +188,7 @@ export const nodeHelloSchema = z
     scheduler_start: schedulerStartRegistrationSchema.optional(),
     scheduler_lease: schedulerLeaseRegistrationSchema.optional(),
     scheduler_run: schedulerRunRegistrationSchema.optional(),
+    scheduler_claim: schedulerClaimRegistrationSchema.optional(),
     product_source_routing: ProductSourceRoutingV1Schema.optional(),
     managed_receipts: z
       .object({
@@ -292,6 +294,7 @@ export const nodeSessionReadyCommandSchema = z.object({
     scheduler_start: schedulerStartRegistrationSchema.optional(),
     scheduler_lease: schedulerLeaseRegistrationSchema.optional(),
     scheduler_run: schedulerRunRegistrationSchema.optional(),
+    scheduler_claim: schedulerClaimRegistrationSchema.optional(),
     liveness: z.object({
       probe_interval_ms: z.number().int().positive(),
       probe_timeout_ms: z.number().int().positive(),
@@ -516,6 +519,7 @@ export const productReleaseHealthAckCommandSchema = z.object({
 
 // Name each existing option so declaration emit preserves exact types without expanding the entire graph.
 type CommandSchemaOptions = [
+  typeof schedulerClaimResponseCommandSchema,
   typeof schedulerRunResponseCommandSchema,
   typeof schedulerLeaseResponseCommandSchema,
   typeof schedulerStartResponseCommandSchema,
@@ -601,6 +605,7 @@ type CommandSchemaOptions = [
 
 /** All Server -> Node commands, discriminated on `type`. */
 export const commandSchema: z.ZodDiscriminatedUnion<CommandSchemaOptions, "type"> = z.discriminatedUnion("type", [
+  schedulerClaimResponseCommandSchema,
   schedulerRunResponseCommandSchema,
   schedulerLeaseResponseCommandSchema,
   schedulerStartResponseCommandSchema,
