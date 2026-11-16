@@ -50,6 +50,25 @@ afterEach(() => {
 });
 
 describe("paired-node frozen dependency artifact inputs", () => {
+  it("uses the same immutable one-use snapshot binding for an explicit Agent review of a still-review source", async () => {
+    const f = fixture(Buffer.from("review this exact source result")), context = f.payload.context_pack.payload!;
+    const entry = context.dependency_context!.entries[0]!;
+    entry.dependency_type = "user_requested_review"; entry.status = "review"; entry.workspace_root = null;
+    context.agent_review_subject = { version: 1, review_id: "explicit-review", source_task_id: entry.task_id,
+      source_run_id: entry.run_id!, reviewer_agent_id: "different-logical-agent",
+      artifacts: entry.artifacts.map(({ id, type, run_id, checksum }) => ({ id, type, run_id: run_id!, checksum: checksum! })) };
+    const request = vi.fn(async (_url: URL) => new Response(f.bytes, { headers: f.headers })); vi.stubGlobal("fetch", request);
+    await f.loader(f.payload, f.session, new AbortController().signal);
+    const changed = structuredClone(f.payload); changed.context_pack.payload!.agent_review_subject!.source_run_id = "other-run";
+    expect(() => takeDependencyArtifactInputs(changed)).toThrow("immutable Run payload");
+    const inputs = take(f.payload), [file] = files(inputs);
+    expect(readFileSync(file!.path)).toEqual(f.bytes);
+    expect(String(request.mock.calls[0]![0])).toContain(`/runs/${f.payload.run_id}/dependency-artifacts/${f.artifactId}/content`);
+    expect(inputs.contextText).not.toContain("private-node-token");
+    expect(takeDependencyArtifactInputs(f.payload)).toBeUndefined();
+    expect(f.payload.verification).toBeUndefined(); expect(context.review_subject).toBeUndefined();
+    inputs.close(); expect(existsSync(file!.path)).toBe(false);
+  });
   it("uses only the fixed paired origin and original session, preserves bytes and consumes once", async () => {
     const f = fixture(Buffer.from([0, 255, 128, 13, 10]));
     const request = vi.fn(async () => new Response(f.bytes, { headers: f.headers }));
