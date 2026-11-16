@@ -760,6 +760,32 @@ monotonic grant deadline, pre-spawn authority, lease renewal or failover. The
 ordinary consumed-Run dispatch guard remains intact. A later slice must supply
 those authorities before any live scheduler execution is connected.
 
+### Internal server proposal construction (Step 4 foundation)
+
+The server can construct the complete version-1 proposal inside the same
+read-committed prepared-start revalidation transaction. It uses the original
+immutable prepared snapshot, exact persisted Run, inline ContextPack and
+computer OS with the existing allocation validator. No current instance root,
+new ContextPack ID or URI fallback replaces those inputs. The ordinary allocated
+command retains its exact root-scoped write policy, protected operation approvals,
+artifact rules and typed retention contract. Dedicated owned-result/ordinary
+verification modes cannot be reinterpreted as this proposal.
+
+`withRevalidatedSchedulerPreparedStart` keeps the original paired credential
+private and checks its expiry, session and allocation capability after all
+awaited database completion work. The original observation API uses the same
+boundary and keeps its false-authority response. The database-only completion
+callback must not dispatch a frame or start a process before commit; a callback
+failure or final credential/session change rolls its transaction back.
+
+Proposal construction itself writes nothing, returns a detached frozen snapshot
+and canonical digest, and explicitly reports `execution_authorized:false`.
+It is not wired to HTTP, WebSocket, polling or any launch/grant path. It does not
+qualify a Linux/Windows journal or replace node-local checks. Regression coverage
+checks complete payload/digest stability, read-only replay, transaction/isolation
+requirements and late expiry/session/capability changes after awaited completion.
+Executed results are recorded with the implementation PR.
+
 ## Explicit delegation (independent Step 7)
 
 Existing `parent_task_id` also records conversation continuations and research

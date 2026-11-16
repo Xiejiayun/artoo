@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildAiDataSharingPolicy } from "./config/ai-data-sharing.js";
 import { loadSchedulerRollout, type SchedulerRolloutFlag } from "./config/scheduler-rollout.js";
 import { attachNodeBinding } from "./node-binding.js";
+import { auditDigestV1 } from "./audit-signature.js";
 import { grantAiDataSharingConsent, revokeAiDataSharingConsent } from "./services/ai-data-sharing-service.js";
 import { claimSchedulerExecutionRequest } from "./services/lifecycle-service.js";
 import {
@@ -30,7 +31,12 @@ import { assertSchedulerPreparedStartUnchanged } from "./services/scheduler-prep
 import {
   revalidateSchedulerPreparedStart,
   revalidateSchedulerPreparedStartInTransaction,
+  withRevalidatedSchedulerPreparedStart,
 } from "./services/scheduler-start-revalidation-service.js";
+import {
+  prepareSchedulerStartProposal,
+  prepareSchedulerStartProposalInTransaction,
+} from "./services/scheduler-start-proposal-service.js";
 import { scheduleTask } from "./services/scheduler.js";
 import { buildTestServer, type TestServer } from "./test-support.js";
 
@@ -531,6 +537,110 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
       await put(resource, policy);
     }
     expect(await server.db.db.select().from(runs)).toHaveLength(1);
+  });
+
+  it("builds one complete immutable proposal from current fenced evidence without writes or dispatch", async () => {
+    await setup();
+    const input = await stage(true, true);
+    await expect(prepareSchedulerStartProposal(server.ctx, input)).rejects.toThrow("already consumed");
+    const claimed = await claim(input),
+      before = await snapshot();
+    const result = await prepareSchedulerStartProposal(server.ctx, input);
+    expect(result.execution_authorized).toBe(false);
+    expect(result.proposal.prepared_start).toEqual(before.prepared[0]!.snapshot);
+    expect(result.proposal.run_start).toEqual({
+      run_id: claimed.run.id,
+      task_id: input.taskId,
+      agent_instance_id: INSTANCE,
+      runtime: "codex",
+      workspace: { root: claimed.run.workspace_root, branch: claimed.run.workspace_branch },
+      workspace_allocation: claimed.run.workspace_allocation,
+      workspace_retention_reporting: "typed-v1",
+      context_pack: {
+        id: claimed.run.context_pack_id,
+        payload: before.packs.find((pack) => pack.id === claimed.run.context_pack_id)!.payload,
+      },
+      policy_snapshot: {
+        filesystem_write_scope: [claimed.run.workspace_root],
+        requires_approval: ["git.push", "external.post"],
+      },
+      artifact_rules: { paths: ["artifacts/**", "*.patch"] },
+    });
+    expect(result.proposal_digest).toBe(auditDigestV1({ kind: "scheduler-start-proposal.v1", ...result.proposal }));
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.proposal.run_start.context_pack.payload!.task)).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(session.tokenLookup);
+    expect(result).not.toHaveProperty("permit");
+    expect(await prepareSchedulerStartProposal(server.ctx, input)).toEqual(result);
+    expect(await snapshot()).toEqual(before);
+    expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
+    await expect(prepareSchedulerStartProposalInTransaction(server.ctx, server.db.db, input)).rejects.toThrow(
+      "transaction",
+    );
+    await expect(
+      server.db.db.transaction((tx) => prepareSchedulerStartProposalInTransaction(server.ctx, tx, input), {
+        isolationLevel: "repeatable read",
+      }),
+    ).rejects.toThrow("read committed");
+    flags("daemon_claim");
+    await expect(prepareSchedulerStartProposal(server.ctx, input)).rejects.toThrow("disabled");
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it.each(["expiry", "session", "capability"] as const)(
+    "rechecks %s after awaited fenced completion and rolls back callback writes",
+    async (changed) => {
+      await setup();
+      const input = await stage();
+      await claim(input);
+      let time = Date.parse(server.ctx.clock.nowIso());
+      const expires = time + 1000;
+      server.ctx.clock = { now: () => new Date(time), nowIso: () => new Date(time).toISOString() };
+      await server.db.db.update(deviceTokens).set({ expiresAt: new Date(expires).toISOString() });
+      const before = await snapshot(),
+        completed = vi.fn();
+      await expect(
+        server.db.db.transaction(
+          (tx) =>
+            withRevalidatedSchedulerPreparedStart(server.ctx, tx, input, async (prepared) => {
+              expect(prepared.run_id).toBe(before.runs[0]!.id);
+              await tx
+                .update(tasks)
+                .set({ title: "A callback write that must roll back" })
+                .where(eq(tasks.id, input.taskId));
+              if (changed === "expiry") time = expires;
+              else if (changed === "session")
+                server.ctx.getPairedNodeSession = () => ({ ...session, sessionId: "replacement" });
+              else server.ctx.supportsExecutionFeature = () => false;
+              completed();
+              return "not returned as authority";
+            }),
+          { isolationLevel: "read committed" },
+        ),
+      ).rejects.toThrow(changed === "expiry" ? "credential" : "allocation session");
+      expect(completed).toHaveBeenCalledOnce();
+      expect(await snapshot()).toEqual(before);
+      expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
+    },
+  );
+
+  it("propagates a fenced completion failure and rolls its writes back", async () => {
+    await setup();
+    const input = await stage();
+    await claim(input);
+    const before = await snapshot(),
+      failure = new Error("controlled proposal read failure");
+    await expect(
+      server.db.db.transaction(
+        (tx) =>
+          withRevalidatedSchedulerPreparedStart(server.ctx, tx, input, async () => {
+            await tx.update(tasks).set({ title: "Not committed" }).where(eq(tasks.id, input.taskId));
+            throw failure;
+          }),
+        { isolationLevel: "read committed" },
+      ),
+    ).rejects.toBe(failure);
+    expect(await snapshot()).toEqual(before);
   });
 
   it("revalidates an exact single-slot prepared reservation without freeing capacity or granting another execution", async () => {
