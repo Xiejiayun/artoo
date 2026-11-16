@@ -502,6 +502,50 @@ describe("node WS auth gate (#28 slice 3a)", () => {
     expect(server.nodeRegistry.get("computer_mismatch")).toBeUndefined();
   });
 
+  it("announces dependency reads only to the opted-in paired socket and fences its old session on reconnect", async () => {
+    server = await buildTestServer();
+    const computerId = "computer_dependency_inputs";
+    const raw = await seedNodeToken(server, "dependency_inputs", { computerId });
+    const port = await listen(server);
+    const sockets: WebSocket[] = [];
+    async function connect(token: string, requested: boolean) {
+      const received: ServerToNodeMessage[] = [];
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=${token}`);
+      sockets.push(socket);
+      socket.addEventListener("message", (event) => received.push(JSON.parse(String(event.data)) as ServerToNodeMessage));
+      await new Promise<void>((resolve, reject) => {
+        socket.addEventListener("error", reject, { once: true });
+        socket.addEventListener("open", () => { socket.send(JSON.stringify({ ...hello(computerId), ...(requested ? { dependency_inputs: { version: 1 } } : {}) })); resolve(); }, { once: true });
+      });
+      await waitFor(() => server?.nodeRegistry.get(computerId) !== undefined, "dependency node registered");
+      return received;
+    }
+    try {
+      const first = await connect(raw, true);
+      await waitFor(() => first.some((item) => item.type === "node.dependency-inputs.session.v1"), "first input session");
+      const announced = first.find((item) => item.type === "node.dependency-inputs.session.v1")!;
+      expect(announced.payload).toEqual({ version: 1, node_id: computerId, session_id: server.nodeRegistry.get(computerId)!.getPairedNodeSession!()!.sessionId });
+      const old = server.nodeRegistry.get(computerId)!;
+      const second = await connect(raw, true);
+      await waitFor(() => second.some((item) => item.type === "node.dependency-inputs.session.v1"), "replacement input session");
+      expect(second.find((item) => item.type === "node.dependency-inputs.session.v1")!.payload).not.toEqual(announced.payload);
+      expect(old.getPairedNodeSession!()).toBeUndefined();
+      const count = first.length;
+      await old.announceDependencyInputsSession!();
+      expect(first).toHaveLength(count);
+      const prior = server.nodeRegistry.get(computerId)!;
+      const legacy = await connect(raw, false);
+      await waitFor(() => server?.nodeRegistry.get(computerId) !== prior, "legacy paired replacement");
+      await server.nodeRegistry.get(computerId)!.announceDependencyInputsSession!();
+      expect(legacy.some((item) => item.type === "node.dependency-inputs.session.v1")).toBe(false);
+      const legacyBinding = server.nodeRegistry.get(computerId)!;
+      const dev = await connect("dev", true);
+      await waitFor(() => server?.nodeRegistry.get(computerId) !== legacyBinding, "development replacement");
+      await server.nodeRegistry.get(computerId)!.announceDependencyInputsSession!();
+      expect(dev.some((item) => item.type === "node.dependency-inputs.session.v1")).toBe(false);
+    } finally { for (const socket of sockets) socket.close(); }
+  });
+
   it("rejects an unlinked device node token (no computer) — fail closed", async () => {
     server = await buildTestServer();
     const raw = await seedNodeToken(server, "unlinked", { computerId: null });

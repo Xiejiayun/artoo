@@ -144,6 +144,7 @@ export function registerNodeWsRoute(
       registered = true;
       clearTimeout(initializationTimer);
       registry.register(nodeId, binding);
+      void binding.announceDependencyInputsSession?.().catch(() => close(1008, "dependency input session announcement failed"));
       if (qualifiedReceiptsReady)
         void binding.announceSourceRecoverySession?.().catch(() => close(1008, "recovery session announcement failed"));
       void setComputerOnline(ctx, nodeId);
@@ -234,6 +235,7 @@ export function registerNodeWsRoute(
           : undefined,
         message.product_source_routing,
         message.application_publication_profiles,
+        message.dependency_inputs,
       );
       if (message.workspace_roots)
         binding.workspaceRoots = Object.freeze({

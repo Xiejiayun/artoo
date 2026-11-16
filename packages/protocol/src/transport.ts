@@ -317,6 +317,7 @@ export type NodeToServerMessage =
   | import("./scheduler-claim.js").SchedulerClaimPollMessage;
 export type ServerToNodeMessage =
   | ExistingServerToNodeMessage
+  | import("./dependency-inputs.js").DependencyInputsSessionCommand
   | ApplicationPublicationStartCommand
   | ApplicationPublicationStopCommand
   | ApplicationPublicationStatusCommand
