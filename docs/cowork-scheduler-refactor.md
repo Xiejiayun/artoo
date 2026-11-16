@@ -1048,6 +1048,48 @@ controlled author reported actual physical closure after grant expiry and Stop.
 The shared-checks job, required package aggregate and Mac desktop job also passed;
 broader Vitest and iOS results were still pending when this next item began.
 
+### Session exchange to durable local admission (Step 4 in progress)
+
+`managed/scheduler-session-admission.ts` composes one original negotiated socket
+generation with the explicitly upgraded v6 journal. Its trusted local caller
+must name the already consumed Task/request/Run. Before network work it captures
+the original identities, methods and session signal, checks the namespace and
+all preparation/storage/admission capabilities, then observes the proposal,
+persists one preparation, begins the original ready clock, exchanges the grant
+and attempts one durable admission. It never claims work, retries an exchange,
+falls back to ordinary admission or starts a process itself.
+
+An existing/unknown preparation or admission returns an explicit retained result
+without another ready or producer permit. Storage is joined even if the caller
+cancels while it commits. Original generation loss, local cancellation or expiry
+withholds a possibly committed permit and releases no local/server reservation.
+Only a genuinely fresh admission returns the journal's exact permit/payload and
+the original guard for Git namespace, reservation and materialization. The
+journal independently carries that guard to the actual adapter spawn. A new
+generation or reopened journal cannot reconstruct the original capability.
+
+Unit coverage uses real channel/window state machines and explicitly controlled
+storage replies. Protected macOS coverage adds real paired WebSocket/PGlite grant
+services to actual SQLite, Git and controlled author execution. It also checks
+cancellation after preparation/admission commits, restart denial and retained
+server reservations. The physical case lets the grant expire, closes its original
+transport and uses actual process closure to settle locally. The server remains
+queued with its reservation because no scheduler Run writeback owner is installed
+by this slice. These are separate controlled boundaries, not live Provider,
+end-to-end scheduler lifecycle or rollout acceptance. Normal runner startup still
+does not opt into scheduler negotiation; live claim/poll/renewal, Run lifecycle
+integration, server restart/failover and final unified acceptance remain open.
+
+Consumed scheduler Runs are also fenced from ordinary Run event ingest, retryable
+start failure, cancellation and resume/stop dispatch. The existing frames/ACKs
+carry no scheduler attempt or journal namespace and cannot prove that attempt's
+physical absence. These paths reject before mutation or ordinary command exposure;
+an ordinary cancellation callback is never invoked. Disconnect without closure
+can still record failure while retaining leases; a later ordinary absence assertion
+cannot release them. The future scoped lifecycle must supply the actual attempt
+and closure owner. This intentionally does not activate a public scheduler Stop
+path. Existing manual/ordinary Run controls retain their original behavior.
+
 ## Explicit delegation (independent Step 7)
 
 Existing `parent_task_id` also records conversation continuations and research

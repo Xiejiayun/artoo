@@ -1,6 +1,23 @@
 import { isDeepStrictEqual } from "node:util";
-import { goalImportedExecutions, goalImportedExecutionRepairs, goalImportedValidations, goalRecoveryValidations, goalCleanValidations } from "@artoo/db";
-import { appendEvent, artifacts, assistantTurns, eventLog, goals, messages, runEventIngest, runs, runUsage, tasks } from "@artoo/db";
+import {
+  goalImportedExecutions,
+  goalImportedExecutionRepairs,
+  goalImportedValidations,
+  goalRecoveryValidations,
+  goalCleanValidations,
+} from "@artoo/db";
+import {
+  appendEvent,
+  artifacts,
+  assistantTurns,
+  eventLog,
+  goals,
+  messages,
+  runEventIngest,
+  runs,
+  runUsage,
+  tasks,
+} from "@artoo/db";
 import {
   canTransitionRun,
   canTransitionTask,
@@ -35,39 +52,67 @@ import { enqueueArtifactForIntegration } from "./integration-service.js";
 import { releaseRunLeases } from "./lease-service.js";
 import { qualifyRunEventMessage } from "./run-event-receipt.js";
 import { transitionRun, transitionTask } from "./transition-service.js";
+import { assertOrdinaryRunControl } from "./scheduler-run-control.js";
 import { unconfirmedDisconnectRunIds } from "./execution-state.js";
 import { previewForActiveSynthesis } from "./discussion-plan.js";
-import { loadWorkspaceRetentions, projectWorkspaceRetention, WORKSPACE_RETAINED_EVENT } from "./workspace-retention-service.js";
+import {
+  loadWorkspaceRetentions,
+  projectWorkspaceRetention,
+  WORKSPACE_RETAINED_EVENT,
+} from "./workspace-retention-service.js";
 import { persistRunVerificationEvidence, RUN_VERIFICATION_EVENT } from "./verification-service.js";
 import { assertProductSourceExport } from "./product-source-export-service.js";
 import { assertProductSourceSemanticExport } from "./product-source-semantic-export-service.js";
-import { OWNED_RESULT_EVENT, parseOwnedResultAssignment, persistOwnedResultEvidence, readOwnedResultEvidence,
-  assertOwnedResultCompletionPrefix, type OwnedResultSession } from "./owned-result-service.js";
+import {
+  OWNED_RESULT_EVENT,
+  parseOwnedResultAssignment,
+  persistOwnedResultEvidence,
+  readOwnedResultEvidence,
+  assertOwnedResultCompletionPrefix,
+  type OwnedResultSession,
+} from "./owned-result-service.js";
 
 /** GET /api/v1/runs/:id — run snapshot. */
 export async function getRun(ctx: ServerContext, runId: string): Promise<Run> {
-  return ctx.db.db.transaction(async (db) => {
-    const row = (
-      await db
-        .select()
-        .from(runs)
-        .where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId)))
-    )[0];
-    if (row === undefined) {
-      throw AppError.notFound(`run not found: ${runId}`, { run_id: runId });
-    }
-    const retention = await loadWorkspaceRetentions(db, ctx.organizationId, [row]);
-    return { ...mapRun(row), workspace_retention: retention.get(row.id) ?? null };
-  }, { isolationLevel: "repeatable read", accessMode: "read only" });
+  return ctx.db.db.transaction(
+    async (db) => {
+      const row = (
+        await db
+          .select()
+          .from(runs)
+          .where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId)))
+      )[0];
+      if (row === undefined) {
+        throw AppError.notFound(`run not found: ${runId}`, { run_id: runId });
+      }
+      const retention = await loadWorkspaceRetentions(db, ctx.organizationId, [row]);
+      return { ...mapRun(row), workspace_retention: retention.get(row.id) ?? null };
+    },
+    { isolationLevel: "repeatable read", accessMode: "read only" },
+  );
 }
 
 /** Provider measurements remain explicitly unknown until the runtime reports them. */
 export async function getRunUsage(ctx: ServerContext, runId: string) {
   await getRun(ctx, runId);
-  const row = (await ctx.db.db.select().from(runUsage).where(and(eq(runUsage.runId, runId), eq(runUsage.organizationId, ctx.organizationId))))[0];
-  return row ? { run_id: runId, input_tokens: row.inputTokens, output_tokens: row.outputTokens,
-    cached_input_tokens: row.cachedInputTokens, cost_usd: row.costUsd, currency: row.currency,
-    provider_session_id: row.providerSessionId, updated_at: row.updatedAt } : null;
+  const row = (
+    await ctx.db.db
+      .select()
+      .from(runUsage)
+      .where(and(eq(runUsage.runId, runId), eq(runUsage.organizationId, ctx.organizationId)))
+  )[0];
+  return row
+    ? {
+        run_id: runId,
+        input_tokens: row.inputTokens,
+        output_tokens: row.outputTokens,
+        cached_input_tokens: row.cachedInputTokens,
+        cost_usd: row.costUsd,
+        currency: row.currency,
+        provider_session_id: row.providerSessionId,
+        updated_at: row.updatedAt,
+      }
+    : null;
 }
 
 /** POST /api/v1/runs/:id/cancel — cancel a non-terminal run; emits run.cancelled. */
@@ -77,6 +122,7 @@ export async function cancelRun(ctx: ServerContext, runId: string, stopProcess: 
   if (!canTransitionRun(current.status, "cancel")) {
     throw AppError.invalidState(`cannot cancel run in status '${current.status}'`, { status: current.status });
   }
+  await assertOrdinaryRunControl(ctx, ctx.db.db, runId);
   // Never hold a database transaction while waiting for the external process.
   // Failed/offline stop leaves both status and exclusive write leases intact.
   await stopProcess();
@@ -189,7 +235,11 @@ export interface WireIngestResult extends IngestResult {
 }
 
 /** Only this full-frame path may supply a qualified accepted run.event ACK. */
-export async function ingestWireRunEvent(ctx: ServerContext, rawFrame: unknown, ownedResultSession?: OwnedResultSession): Promise<WireIngestResult | null> {
+export async function ingestWireRunEvent(
+  ctx: ServerContext,
+  rawFrame: unknown,
+  ownedResultSession?: OwnedResultSession,
+): Promise<WireIngestResult | null> {
   const qualified = qualifyRunEventMessage(rawFrame);
   const env = mapRunEvent(qualified.message);
   if (env === null) return null;
@@ -198,13 +248,20 @@ export async function ingestWireRunEvent(ctx: ServerContext, rawFrame: unknown, 
 }
 
 async function ingestRunEventInternal(
-  ctx: ServerContext, env: IngestEnvelope, wireIdentity: string | null,
+  ctx: ServerContext,
+  env: IngestEnvelope,
+  wireIdentity: string | null,
   ownedResultSession?: OwnedResultSession,
 ): Promise<IngestResult> {
   if (!Number.isInteger(env.sequence) || env.sequence < 0 || env.sequence > 2147483647) {
     throw AppError.validation("run event sequence must fit a nonnegative int32");
   }
-  if (["verification", "owned_result_verification", "product_source_export", "product_source_semantic_export"].includes(env.event.kind) && wireIdentity === null) {
+  if (
+    ["verification", "owned_result_verification", "product_source_export", "product_source_semantic_export"].includes(
+      env.event.kind,
+    ) &&
+    wireIdentity === null
+  ) {
     throw AppError.permissionDenied("verification requires a qualified node event");
   }
   const now = ctx.clock.nowIso();
@@ -213,7 +270,10 @@ async function ingestRunEventInternal(
   // hook failure can never break the already-committed run ingest.
   let budgetGoalId: string | null = null;
   const result = await ctx.db.transaction(async (tx) => {
-    const runQuery = tx.select().from(runs).where(and(eq(runs.id, env.runId), eq(runs.organizationId, ctx.organizationId)));
+    const runQuery = tx
+      .select()
+      .from(runs)
+      .where(and(eq(runs.id, env.runId), eq(runs.organizationId, ctx.organizationId)));
     const run = (await runQuery.for("update"))[0];
     if (run === undefined) {
       throw AppError.notFound(`run not found: ${env.runId}`, { run_id: env.runId });
@@ -221,6 +281,7 @@ async function ingestRunEventInternal(
     if (wireIdentity !== null && env.nodeId !== run.computerId) {
       throw AppError.permissionDenied("run is not owned by this node");
     }
+    await assertOrdinaryRunControl(ctx, tx, run.id);
     const taskRow = (await tx.select().from(tasks).where(eq(tasks.id, run.taskId)))[0];
     if (taskRow === undefined) {
       throw new Error("ingestRunEvent: task missing for run");
@@ -228,20 +289,37 @@ async function ingestRunEventInternal(
     const roomId = taskRow.roomId;
     const ownedAssignment = parseOwnedResultAssignment(run);
     const assertOwnedSession = () => {
-      if (ownedAssignment && (wireIdentity === null || !ownedResultSession?.(ownedAssignment.request.requirement.profile))) {
+      if (
+        ownedAssignment &&
+        (wireIdentity === null || !ownedResultSession?.(ownedAssignment.request.requirement.profile))
+      ) {
         throw AppError.permissionDenied("Owned result events require their current qualified managed node session");
       }
     };
     assertOwnedSession();
-    if (env.event.kind === "owned_result_verification" && !ownedAssignment) throw AppError.validation("Run has no owned result assignment");
-    if (env.event.kind === "verification" && ownedAssignment) throw AppError.validation("Ordinary verification cannot fulfill an owned result assignment");
+    if (env.event.kind === "owned_result_verification" && !ownedAssignment)
+      throw AppError.validation("Run has no owned result assignment");
+    if (env.event.kind === "verification" && ownedAssignment)
+      throw AppError.validation("Ordinary verification cannot fulfill an owned result assignment");
 
-    const reported = env.event.kind === "workspace_retained" ? RunWorkspaceRetainedPayloadSchema.safeParse(env.event.retention) : undefined;
-    if (reported && (!reported.success || env.nodeId !== run.computerId || run.workspaceRoot === null || run.workspaceBranch === null
-      || reported.data.workspace_root !== run.workspaceRoot || reported.data.workspace_branch !== run.workspaceBranch)) {
+    const reported =
+      env.event.kind === "workspace_retained"
+        ? RunWorkspaceRetainedPayloadSchema.safeParse(env.event.retention)
+        : undefined;
+    if (
+      reported &&
+      (!reported.success ||
+        env.nodeId !== run.computerId ||
+        run.workspaceRoot === null ||
+        run.workspaceBranch === null ||
+        reported.data.workspace_root !== run.workspaceRoot ||
+        reported.data.workspace_branch !== run.workspaceBranch)
+    ) {
       throw AppError.validation("retention must report the owning node's exact bound worktree");
     }
-    const retention = reported?.success ? StoredWorkspaceRetainedPayloadSchema.parse({ ...reported.data, reporter_computer_id: run.computerId }) : undefined;
+    const retention = reported?.success
+      ? StoredWorkspaceRetainedPayloadSchema.parse({ ...reported.data, reporter_computer_id: run.computerId })
+      : undefined;
 
     const duplicate = await tx
       .select({ eventId: runEventIngest.eventId, bodyIdentity: runEventIngest.bodyIdentity })
@@ -266,7 +344,12 @@ async function ingestRunEventInternal(
         throw AppError.conflict("qualified run event receipt requires the original wire frame");
       }
       if (retention && wireIdentity === null) {
-        const stored = (await tx.select().from(eventLog).where(and(eq(eventLog.id, duplicate[0]!.eventId), eq(eventLog.organizationId, ctx.organizationId))))[0];
+        const stored = (
+          await tx
+            .select()
+            .from(eventLog)
+            .where(and(eq(eventLog.id, duplicate[0]!.eventId), eq(eventLog.organizationId, ctx.organizationId)))
+        )[0];
         const projected = projectWorkspaceRetention(run, stored);
         if (!projected || projected.sequence !== env.sequence || !isDeepStrictEqual(stored?.payload, retention)) {
           throw AppError.conflict("retention sequence was already used by a different event");
@@ -318,73 +401,170 @@ async function ingestRunEventInternal(
 
     let eventId: string;
     const ev = env.event;
-    if (ownedAssignment && (ev.kind === "owned_result_verification"
-      || ev.kind === "lifecycle" && ev.phase === "completed"
-      || ev.kind === "workspace_retained" && retention?.outcome === "completed")) {
-      if (run.status !== "running" || taskRow.status !== "running") throw AppError.conflict("Owned result success requires its active run and task");
+    if (
+      ownedAssignment &&
+      (ev.kind === "owned_result_verification" ||
+        (ev.kind === "lifecycle" && ev.phase === "completed") ||
+        (ev.kind === "workspace_retained" && retention?.outcome === "completed"))
+    ) {
+      if (run.status !== "running" || taskRow.status !== "running")
+        throw AppError.conflict("Owned result success requires its active run and task");
       if (taskRow.goalId) {
-        const [goal] = await tx.select().from(goals).where(and(eq(goals.id, taskRow.goalId), eq(goals.organizationId, ctx.organizationId))).for("share");
-        if (!goal || goal.status !== "running" || taskRow.sourcePlanId !== null && goal.currentPlanId !== taskRow.sourcePlanId) {
+        const [goal] = await tx
+          .select()
+          .from(goals)
+          .where(and(eq(goals.id, taskRow.goalId), eq(goals.organizationId, ctx.organizationId)))
+          .for("share");
+        if (
+          !goal ||
+          goal.status !== "running" ||
+          (taskRow.sourcePlanId !== null && goal.currentPlanId !== taskRow.sourcePlanId)
+        ) {
           throw AppError.conflict("Owned result task's goal or plan is no longer active");
         }
       }
     }
     if (ev.kind === "product_source_export" || ev.kind === "product_source_semantic_export") {
-      if (run.status !== "running" || taskRow.status !== "running") throw AppError.conflict("Product source export requires its active run and task");
-      const proof = ev.kind === "product_source_export"
-        ? await assertProductSourceExport(ctx, tx, run, taskRow, ev.proof, env.sequence)
-        : await assertProductSourceSemanticExport(ctx, tx, run, taskRow, ev.proof, env.sequence);
-      const type = ev.kind === "product_source_export" ? "run.product-source.export.v1" : "run.product-source.export.v2";
-      const prior = await tx.select({ id: eventLog.id }).from(eventLog).where(and(eq(eventLog.organizationId, ctx.organizationId),
-        eq(eventLog.runId, run.id), inArray(eventLog.type, ["run.product-source.export.v1", "run.product-source.export.v2"]))).limit(1);
+      if (run.status !== "running" || taskRow.status !== "running")
+        throw AppError.conflict("Product source export requires its active run and task");
+      const proof =
+        ev.kind === "product_source_export"
+          ? await assertProductSourceExport(ctx, tx, run, taskRow, ev.proof, env.sequence)
+          : await assertProductSourceSemanticExport(ctx, tx, run, taskRow, ev.proof, env.sequence);
+      const type =
+        ev.kind === "product_source_export" ? "run.product-source.export.v1" : "run.product-source.export.v2";
+      const prior = await tx
+        .select({ id: eventLog.id })
+        .from(eventLog)
+        .where(
+          and(
+            eq(eventLog.organizationId, ctx.organizationId),
+            eq(eventLog.runId, run.id),
+            inArray(eventLog.type, ["run.product-source.export.v1", "run.product-source.export.v2"]),
+          ),
+        )
+        .limit(1);
       if (prior.length) throw AppError.conflict("Export already exists; replay its original qualified frame");
-      const event = buildEvent(ctx, { type, actorType: "system", actorId: run.computerId,
-        correlationId: run.taskId, projectId: taskRow.projectId, taskId: run.taskId, roomId, runId: env.runId,
-        sequence: env.sequence, payload: proof });
-      await appendEvent(tx, event); eventId = event.id;
+      const event = buildEvent(ctx, {
+        type,
+        actorType: "system",
+        actorId: run.computerId,
+        correlationId: run.taskId,
+        projectId: taskRow.projectId,
+        taskId: run.taskId,
+        roomId,
+        runId: env.runId,
+        sequence: env.sequence,
+        payload: proof,
+      });
+      await appendEvent(tx, event);
+      eventId = event.id;
     } else if (ev.kind === "owned_result_verification") {
-      const event = buildEvent(ctx, { type: OWNED_RESULT_EVENT, actorType: "system", actorId: run.computerId,
-        correlationId: run.taskId, projectId: taskRow.projectId, taskId: run.taskId, roomId, runId: env.runId,
-        sequence: env.sequence, payload: ev.verification });
+      const event = buildEvent(ctx, {
+        type: OWNED_RESULT_EVENT,
+        actorType: "system",
+        actorId: run.computerId,
+        correlationId: run.taskId,
+        projectId: taskRow.projectId,
+        taskId: run.taskId,
+        roomId,
+        runId: env.runId,
+        sequence: env.sequence,
+        payload: ev.verification,
+      });
       await appendEvent(tx, event);
       await persistOwnedResultEvidence(ctx, tx, { run, task: taskRow, payload: ev.verification, eventId: event.id });
       eventId = event.id;
     } else if (ev.kind === "verification") {
-      const event = buildEvent(ctx, { type: RUN_VERIFICATION_EVENT, actorType: "system", actorId: run.computerId,
-        correlationId: run.taskId, projectId: taskRow.projectId, taskId: run.taskId, roomId, runId: env.runId,
-        sequence: env.sequence, payload: ev.verification });
+      const event = buildEvent(ctx, {
+        type: RUN_VERIFICATION_EVENT,
+        actorType: "system",
+        actorId: run.computerId,
+        correlationId: run.taskId,
+        projectId: taskRow.projectId,
+        taskId: run.taskId,
+        roomId,
+        runId: env.runId,
+        sequence: env.sequence,
+        payload: ev.verification,
+      });
       await appendEvent(tx, event);
       await persistRunVerificationEvidence(ctx, tx, { run, payload: ev.verification, eventId: event.id });
       eventId = event.id;
     } else if (ev.kind === "workspace_retained" && retention) {
       if (ownedAssignment && retention.outcome === "completed") {
         const evidence = await readOwnedResultEvidence(ctx, tx, run);
-        if (!evidence || evidence.payload.verification.payload.outcome !== "passed" || evidence.sequence + 1 !== env.sequence) {
+        if (
+          !evidence ||
+          evidence.payload.verification.payload.outcome !== "passed" ||
+          evidence.sequence + 1 !== env.sequence
+        ) {
           throw AppError.conflict("Completed owned result retention must follow its exact passing evidence");
         }
       }
-      const latest = (await tx.select().from(eventLog).where(and(eq(eventLog.organizationId, ctx.organizationId),
-        eq(eventLog.runId, env.runId), eq(eventLog.type, WORKSPACE_RETAINED_EVENT))).orderBy(desc(eventLog.position)).limit(1))[0];
+      const latest = (
+        await tx
+          .select()
+          .from(eventLog)
+          .where(
+            and(
+              eq(eventLog.organizationId, ctx.organizationId),
+              eq(eventLog.runId, env.runId),
+              eq(eventLog.type, WORKSPACE_RETAINED_EVENT),
+            ),
+          )
+          .orderBy(desc(eventLog.position))
+          .limit(1)
+      )[0];
       if (latest) {
         const previous = projectWorkspaceRetention(run, latest);
-        if (!previous || previous.outcome !== "completed" || retention.outcome !== "incomplete_delivery" || env.sequence <= previous.sequence) {
-          throw AppError.conflict("only a later incomplete-delivery correction may follow a completed retention report");
+        if (
+          !previous ||
+          previous.outcome !== "completed" ||
+          retention.outcome !== "incomplete_delivery" ||
+          env.sequence <= previous.sequence
+        ) {
+          throw AppError.conflict(
+            "only a later incomplete-delivery correction may follow a completed retention report",
+          );
         }
       }
-      const event = buildEvent(ctx, { type: WORKSPACE_RETAINED_EVENT, actorType: "system", actorId: run.computerId,
-        correlationId: run.taskId, projectId: taskRow.projectId, taskId: run.taskId, roomId, runId: env.runId,
-        sequence: env.sequence, payload: retention });
+      const event = buildEvent(ctx, {
+        type: WORKSPACE_RETAINED_EVENT,
+        actorType: "system",
+        actorId: run.computerId,
+        correlationId: run.taskId,
+        projectId: taskRow.projectId,
+        taskId: run.taskId,
+        roomId,
+        runId: env.runId,
+        sequence: env.sequence,
+        payload: retention,
+      });
       await appendEvent(tx, event);
       eventId = event.id;
-    } else if (ev.kind === "lifecycle" && ev.phase !== "started" && run.status === "failed" && run.failureReason === "daemon_disconnect") {
+    } else if (
+      ev.kind === "lifecycle" &&
+      ev.phase !== "started" &&
+      run.status === "failed" &&
+      run.failureReason === "daemon_disconnect"
+    ) {
       // A disconnect is uncertainty, not evidence of process exit. The owner's
       // eventual terminal event closes that uncertainty and releases its leases.
-      eventId = await emit("run.reconciled", { run_id: env.runId, observed_phase: ev.phase, process_exit_confirmed: true });
+      eventId = await emit("run.reconciled", {
+        run_id: env.runId,
+        observed_phase: ev.phase,
+        process_exit_confirmed: true,
+      });
       await releaseRunLeases(ctx, tx, env.runId);
     } else if (ev.kind === "lifecycle" && ["completed", "failed", "cancelled"].includes(run.status)) {
       // A stop ACK or a prior terminal event may win the race. Commit a receipt
       // for delayed lifecycle frames without changing the settled run/task.
-      eventId = await emit("run.reconciled", { run_id: env.runId, observed_phase: ev.phase, settled_status: run.status });
+      eventId = await emit("run.reconciled", {
+        run_id: env.runId,
+        observed_phase: ev.phase,
+        settled_status: run.status,
+      });
     } else if (ev.kind === "lifecycle") {
       if (ev.phase === "started") {
         await transitionRun(tx, ctx, { runId: env.runId, from: "queued", trigger: "start", patch: { startedAt: now } });
@@ -393,26 +573,93 @@ async function ingestRunEventInternal(
         eventId = await emit("run.started", { run_id: env.runId }, { kind: "run_event", body: "Run started" });
       } else if (ev.phase === "completed") {
         if (ownedAssignment) await assertOwnedResultCompletionPrefix(ctx, tx, run, env.sequence);
-        await transitionRun(tx, ctx, { runId: env.runId, from: "running", trigger: "run_completed", patch: { endedAt: now } });
-        const [importedExecution] = await tx.select({ id: goalImportedExecutions.id }).from(goalImportedExecutions).where(and(eq(goalImportedExecutions.runId, run.id), eq(goalImportedExecutions.organizationId, ctx.organizationId)));
-        const [importedRepair] = await tx.select({ id: goalImportedExecutionRepairs.id }).from(goalImportedExecutionRepairs).where(and(eq(goalImportedExecutionRepairs.runId, run.id), eq(goalImportedExecutionRepairs.organizationId, ctx.organizationId)));
-        const [importedValidation] = await tx.select({ id: goalImportedValidations.id }).from(goalImportedValidations).where(and(eq(goalImportedValidations.runId, run.id), eq(goalImportedValidations.organizationId, ctx.organizationId)));
-        const [recoveryValidation] = await tx.select({ id: goalRecoveryValidations.id }).from(goalRecoveryValidations).where(and(eq(goalRecoveryValidations.runId, run.id), eq(goalRecoveryValidations.organizationId, ctx.organizationId)));
-        const [cleanValidation] = await tx.select({ id: goalCleanValidations.id }).from(goalCleanValidations).where(and(eq(goalCleanValidations.runId, run.id), eq(goalCleanValidations.organizationId, ctx.organizationId)));
+        await transitionRun(tx, ctx, {
+          runId: env.runId,
+          from: "running",
+          trigger: "run_completed",
+          patch: { endedAt: now },
+        });
+        const [importedExecution] = await tx
+          .select({ id: goalImportedExecutions.id })
+          .from(goalImportedExecutions)
+          .where(
+            and(
+              eq(goalImportedExecutions.runId, run.id),
+              eq(goalImportedExecutions.organizationId, ctx.organizationId),
+            ),
+          );
+        const [importedRepair] = await tx
+          .select({ id: goalImportedExecutionRepairs.id })
+          .from(goalImportedExecutionRepairs)
+          .where(
+            and(
+              eq(goalImportedExecutionRepairs.runId, run.id),
+              eq(goalImportedExecutionRepairs.organizationId, ctx.organizationId),
+            ),
+          );
+        const [importedValidation] = await tx
+          .select({ id: goalImportedValidations.id })
+          .from(goalImportedValidations)
+          .where(
+            and(
+              eq(goalImportedValidations.runId, run.id),
+              eq(goalImportedValidations.organizationId, ctx.organizationId),
+            ),
+          );
+        const [recoveryValidation] = await tx
+          .select({ id: goalRecoveryValidations.id })
+          .from(goalRecoveryValidations)
+          .where(
+            and(
+              eq(goalRecoveryValidations.runId, run.id),
+              eq(goalRecoveryValidations.organizationId, ctx.organizationId),
+            ),
+          );
+        const [cleanValidation] = await tx
+          .select({ id: goalCleanValidations.id })
+          .from(goalCleanValidations)
+          .where(
+            and(eq(goalCleanValidations.runId, run.id), eq(goalCleanValidations.organizationId, ctx.organizationId)),
+          );
         // Original author and repairs need separate closed results and committed verification.
-        if (!importedExecution && !importedRepair && !importedValidation && !recoveryValidation && !cleanValidation) await transitionTask(tx, ctx, { taskId: run.taskId, from: "running", trigger: "run_completed", now });
-        eventId = await emit("run.completed", { run_id: env.runId }, { kind: "run_event", body: importedValidation || recoveryValidation || cleanValidation ? "Run completed; awaiting dedicated validation verification and closure" : importedExecution || importedRepair ? "Run completed; awaiting dedicated implementation verification and closure" : "Run completed; task ready for review" });
+        if (!importedExecution && !importedRepair && !importedValidation && !recoveryValidation && !cleanValidation)
+          await transitionTask(tx, ctx, { taskId: run.taskId, from: "running", trigger: "run_completed", now });
+        eventId = await emit(
+          "run.completed",
+          { run_id: env.runId },
+          {
+            kind: "run_event",
+            body:
+              importedValidation || recoveryValidation || cleanValidation
+                ? "Run completed; awaiting dedicated validation verification and closure"
+                : importedExecution || importedRepair
+                  ? "Run completed; awaiting dedicated implementation verification and closure"
+                  : "Run completed; task ready for review",
+          },
+        );
         await releaseRunLeases(ctx, tx, env.runId);
       } else if (ev.phase === "failed" && (run.status === "queued" || run.status === "starting")) {
         // The node may confirm stop after start-ACK/first-event delivery fails,
         // before a started lifecycle commits. Match failRunStart recovery
         // without inventing a run.started event or leaving an assigned task stuck.
         await transitionRun(tx, ctx, { runId: env.runId, from: "queued", trigger: "start", patch: { startedAt: now } });
-        await transitionRun(tx, ctx, { runId: env.runId, from: "starting", trigger: "start_failed",
-          patch: { endedAt: now, failureReason: ev.failureReason ?? "unknown" } });
-        await transitionTask(tx, ctx, { taskId: run.taskId, from: "assigned", trigger: "assign_failed_retryable", now });
-        eventId = await emit("run.failed", { run_id: env.runId, failure_reason: ev.failureReason ?? "unknown", recoverable: true },
-          { kind: "run_event", body: "Run failed before start; task ready for assignment" });
+        await transitionRun(tx, ctx, {
+          runId: env.runId,
+          from: "starting",
+          trigger: "start_failed",
+          patch: { endedAt: now, failureReason: ev.failureReason ?? "unknown" },
+        });
+        await transitionTask(tx, ctx, {
+          taskId: run.taskId,
+          from: "assigned",
+          trigger: "assign_failed_retryable",
+          now,
+        });
+        eventId = await emit(
+          "run.failed",
+          { run_id: env.runId, failure_reason: ev.failureReason ?? "unknown", recoverable: true },
+          { kind: "run_event", body: "Run failed before start; task ready for assignment" },
+        );
         await releaseRunLeases(ctx, tx, env.runId);
       } else if (ev.phase === "failed") {
         await transitionRun(tx, ctx, {
@@ -421,23 +668,47 @@ async function ingestRunEventInternal(
           trigger: "run_failed",
           patch: { endedAt: now, failureReason: ev.failureReason ?? "unknown" },
         });
-        const taskBlocked = await transitionTask(tx, ctx, { taskId: run.taskId, from: "running", trigger: "run_failed", now });
-        eventId = await emit("run.failed", { run_id: env.runId, failure_reason: ev.failureReason ?? "unknown" }, { kind: "run_event", body: "Run failed" });
+        const taskBlocked = await transitionTask(tx, ctx, {
+          taskId: run.taskId,
+          from: "running",
+          trigger: "run_failed",
+          now,
+        });
+        eventId = await emit(
+          "run.failed",
+          { run_id: env.runId, failure_reason: ev.failureReason ?? "unknown" },
+          { kind: "run_event", body: "Run failed" },
+        );
         await releaseRunLeases(ctx, tx, env.runId);
         if (taskBlocked.changed) {
           // The task is now blocked: signal downstream gating dependents (advisory).
           await dagService.propagateBlocked(ctx, tx, run.taskId, `run_failed: ${ev.failureReason ?? "unknown"}`);
         }
       } else {
-        await transitionRun(tx, ctx, { runId: env.runId, from: run.status as RunStatus, trigger: "cancel", patch: { endedAt: now } });
+        await transitionRun(tx, ctx, {
+          runId: env.runId,
+          from: run.status as RunStatus,
+          trigger: "cancel",
+          patch: { endedAt: now },
+        });
         if (canTransitionTask(taskRow.status as TaskStatus, "cancel")) {
           await transitionTask(tx, ctx, {
-            taskId: run.taskId, from: taskRow.status as TaskStatus, trigger: "cancel", now,
-            events: (to) => [buildEvent(ctx, {
-              type: "task.updated", actorType: "agent", actorId: run.agentInstanceId,
-              correlationId: run.taskId, projectId: taskRow.projectId, taskId: run.taskId,
-              roomId, payload: { status: to, cancelled_run_id: env.runId },
-            })],
+            taskId: run.taskId,
+            from: taskRow.status as TaskStatus,
+            trigger: "cancel",
+            now,
+            events: (to) => [
+              buildEvent(ctx, {
+                type: "task.updated",
+                actorType: "agent",
+                actorId: run.agentInstanceId,
+                correlationId: run.taskId,
+                projectId: taskRow.projectId,
+                taskId: run.taskId,
+                roomId,
+                payload: { status: to, cancelled_run_id: env.runId },
+              }),
+            ],
           });
           await dagService.propagateBlocked(ctx, tx, run.taskId, "run_cancelled");
         }
@@ -447,26 +718,74 @@ async function ingestRunEventInternal(
     } else if (ev.kind === "answer") {
       const parsed = RunAnswerPayloadSchema.safeParse({ text: ev.text });
       if (!parsed.success) throw AppError.validation("invalid assistant answer");
-      const turn = (await tx.select().from(assistantTurns).where(and(eq(assistantTurns.runId, env.runId), eq(assistantTurns.organizationId, ctx.organizationId))).for("update"))[0];
+      const turn = (
+        await tx
+          .select()
+          .from(assistantTurns)
+          .where(and(eq(assistantTurns.runId, env.runId), eq(assistantTurns.organizationId, ctx.organizationId)))
+          .for("update")
+      )[0];
       const responseRoomId = turn?.roomId ?? roomId;
       if (!responseRoomId || turn?.responseMessageId || ["failed", "cancelled"].includes(run.status)) {
         eventId = await emit("run.answer.discarded", { run_id: env.runId, reason: "settled_or_already_answered" });
       } else {
         const messageId = ctx.idGen.generate(ID_PREFIXES.message);
-        const planPreview = turn ? await previewForActiveSynthesis(ctx, tx, turn, parsed.data.text, run.agentInstanceId) : undefined;
-        const payload = { run_id: env.runId, ...(turn ? { assistant_turn_id: turn.id, intent: "assistant" } : {}),
-          ...(planPreview ? { discussion_plan: planPreview } : {}) };
-        await tx.insert(messages).values({ id: messageId, organizationId: ctx.organizationId,
+        const planPreview = turn
+          ? await previewForActiveSynthesis(ctx, tx, turn, parsed.data.text, run.agentInstanceId)
+          : undefined;
+        const payload = {
+          run_id: env.runId,
+          ...(turn ? { assistant_turn_id: turn.id, intent: "assistant" } : {}),
+          ...(planPreview ? { discussion_plan: planPreview } : {}),
+        };
+        await tx.insert(messages).values({
+          id: messageId,
+          organizationId: ctx.organizationId,
           threadRootId: turn?.threadRootId ?? null,
-          roomId: responseRoomId, taskId: run.taskId, runId: env.runId, actorType: "agent", actorId: run.agentInstanceId,
-          kind: "text", body: parsed.data.text, payload, createdAt: now });
-        if (turn) await tx.update(assistantTurns).set({ responseMessageId: messageId, updatedAt: now }).where(eq(assistantTurns.id, turn.id));
-        const updatedRoot = turn?.threadRootId ? (await tx.update(messages).set({ replyCount: sql`${messages.replyCount} + 1` }).where(eq(messages.id, turn.threadRootId)).returning({ replyCount: messages.replyCount }))[0] : undefined;
-        const event = buildEvent(ctx, { type: "message.created", actorType: "agent", actorId: run.agentInstanceId,
-          correlationId: turn?.id ?? run.taskId, projectId: taskRow.projectId, taskId: run.taskId, roomId: responseRoomId,
-          runId: env.runId, sequence: env.sequence, payload: { message_id: messageId, kind: "text", run_id: env.runId,
+          roomId: responseRoomId,
+          taskId: run.taskId,
+          runId: env.runId,
+          actorType: "agent",
+          actorId: run.agentInstanceId,
+          kind: "text",
+          body: parsed.data.text,
+          payload,
+          createdAt: now,
+        });
+        if (turn)
+          await tx
+            .update(assistantTurns)
+            .set({ responseMessageId: messageId, updatedAt: now })
+            .where(eq(assistantTurns.id, turn.id));
+        const updatedRoot = turn?.threadRootId
+          ? (
+              await tx
+                .update(messages)
+                .set({ replyCount: sql`${messages.replyCount} + 1` })
+                .where(eq(messages.id, turn.threadRootId))
+                .returning({ replyCount: messages.replyCount })
+            )[0]
+          : undefined;
+        const event = buildEvent(ctx, {
+          type: "message.created",
+          actorType: "agent",
+          actorId: run.agentInstanceId,
+          correlationId: turn?.id ?? run.taskId,
+          projectId: taskRow.projectId,
+          taskId: run.taskId,
+          roomId: responseRoomId,
+          runId: env.runId,
+          sequence: env.sequence,
+          payload: {
+            message_id: messageId,
+            kind: "text",
+            run_id: env.runId,
             ...(turn ? { assistant_turn_id: turn.id, intent: "assistant" } : {}),
-            ...(turn?.threadRootId ? { thread_root_id: turn.threadRootId, root_reply_count: updatedRoot!.replyCount } : {}) } });
+            ...(turn?.threadRootId
+              ? { thread_root_id: turn.threadRootId, root_reply_count: updatedRoot!.replyCount }
+              : {}),
+          },
+        });
         await appendEvent(tx, event);
         eventId = event.id;
       }
@@ -474,35 +793,60 @@ async function ingestRunEventInternal(
       const parsed = RunUsagePayloadSchema.safeParse(ev.usage);
       if (!parsed.success) throw AppError.validation("invalid provider usage");
       const value = parsed.data;
-      const measured = { inputTokens: value.input_tokens, outputTokens: value.output_tokens,
-        cachedInputTokens: value.cached_input_tokens, costUsd: value.cost_usd, currency: value.currency,
-        providerSessionId: value.provider_session_id, updatedAt: now };
-      await tx.insert(runUsage).values({ runId: env.runId, organizationId: ctx.organizationId, ...measured })
+      const measured = {
+        inputTokens: value.input_tokens,
+        outputTokens: value.output_tokens,
+        cachedInputTokens: value.cached_input_tokens,
+        costUsd: value.cost_usd,
+        currency: value.currency,
+        providerSessionId: value.provider_session_id,
+        updatedAt: now,
+      };
+      await tx
+        .insert(runUsage)
+        .values({ runId: env.runId, organizationId: ctx.organizationId, ...measured })
         .onConflictDoUpdate({ target: runUsage.runId, set: measured });
       eventId = await emit("run.usage", { ...value });
     } else if (ev.kind === "output") {
       const activity = ev.activity === undefined ? undefined : RunActivityPayloadSchema.safeParse(ev.activity);
       if (activity && !activity.success) throw AppError.validation("invalid run activity");
-      eventId = await emit("run.output", { stream: ev.stream, text: ev.text, ...(activity?.success ? { activity: activity.data } : {}) });
+      eventId = await emit("run.output", {
+        stream: ev.stream,
+        text: ev.text,
+        ...(activity?.success ? { activity: activity.data } : {}),
+      });
     } else if (ev.kind === "artifact") {
-      const storedArtifact = (await tx.select().from(artifacts).where(and(
-        eq(artifacts.organizationId, ctx.organizationId), eq(artifacts.runId, env.runId), eq(artifacts.uri, ev.uri),
-      )))[0];
-      if (ev.uri.startsWith("/api/v1/artifacts/") && (!storedArtifact || storedArtifact.checksum !== ev.checksum || storedArtifact.type !== ev.artifactType)) {
+      const storedArtifact = (
+        await tx
+          .select()
+          .from(artifacts)
+          .where(
+            and(
+              eq(artifacts.organizationId, ctx.organizationId),
+              eq(artifacts.runId, env.runId),
+              eq(artifacts.uri, ev.uri),
+            ),
+          )
+      )[0];
+      if (
+        ev.uri.startsWith("/api/v1/artifacts/") &&
+        (!storedArtifact || storedArtifact.checksum !== ev.checksum || storedArtifact.type !== ev.artifactType)
+      ) {
         throw AppError.validation("artifact must be uploaded by its execution node before it is announced");
       }
       const artifactId = storedArtifact?.id ?? ctx.idGen.generate(ID_PREFIXES.artifact);
-      if (!storedArtifact) await tx.insert(artifacts).values({
-        id: artifactId,
-        organizationId: ctx.organizationId,
-        taskId: run.taskId,
-        runId: env.runId,
-        type: ev.artifactType,
-        uri: ev.uri,
-        metadata: {},
-        checksum: ev.checksum ?? null,
-        createdAt: now,
-      });
+      if (!storedArtifact)
+        await tx.insert(artifacts).values({
+          id: artifactId,
+          organizationId: ctx.organizationId,
+          taskId: run.taskId,
+          runId: env.runId,
+          type: ev.artifactType,
+          uri: ev.uri,
+          metadata: {},
+          checksum: ev.checksum ?? null,
+          createdAt: now,
+        });
       eventId = await emit(
         "artifact.created",
         { artifact_id: artifactId, type: ev.artifactType, uri: ev.uri },
@@ -566,6 +910,7 @@ export async function failRunStart(
   const now = ctx.clock.nowIso();
   const reason = `${errorCode}: ${message}`;
   await ctx.db.transaction(async (tx) => {
+    await assertOrdinaryRunControl(ctx, tx, runId);
     const run = (
       await tx
         .select()
@@ -629,19 +974,33 @@ export async function failRunDaemonDisconnect(
   const REASON = "daemon_disconnect";
   return ctx.db.transaction(async (tx) => {
     const run = (
-      await tx.select().from(runs).where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId)))
+      await tx
+        .select()
+        .from(runs)
+        .where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId)))
     )[0];
     // Gone, moved to another computer, or already terminal/other → idempotent no-op.
     if (run === undefined || run.computerId !== computerId) return { failed: false };
+    if (processExitConfirmed) await assertOrdinaryRunControl(ctx, tx, runId);
     const status = run.status as RunStatus;
     if (status === "failed" && run.failureReason === REASON && processExitConfirmed) {
       await releaseRunLeases(ctx, tx, runId);
       if ((await unconfirmedDisconnectRunIds(ctx, tx, { computerId })).includes(runId)) {
         const task = (await tx.select().from(tasks).where(eq(tasks.id, run.taskId)))[0];
-        await appendEvent(tx, buildEvent(ctx, { type: "run.reconciled", actorType: "system", actorId: "control_plane",
-          correlationId: run.taskId, projectId: task?.projectId ?? null, taskId: run.taskId, roomId: task?.roomId ?? null, runId,
-          payload: { run_id: runId, process_exit_confirmed: true, reason: "owner_confirmed_absent" },
-        }));
+        await appendEvent(
+          tx,
+          buildEvent(ctx, {
+            type: "run.reconciled",
+            actorType: "system",
+            actorId: "control_plane",
+            correlationId: run.taskId,
+            projectId: task?.projectId ?? null,
+            taskId: run.taskId,
+            roomId: task?.roomId ?? null,
+            runId,
+            payload: { run_id: runId, process_exit_confirmed: true, reason: "owner_confirmed_absent" },
+          }),
+        );
       }
       return { failed: false };
     }
@@ -660,14 +1019,24 @@ export async function failRunDaemonDisconnect(
           taskId: run.taskId,
           roomId: taskRow?.roomId ?? null,
           runId,
-          payload: { run_id: runId, failure_reason: REASON, recoverable: true, process_exit_confirmed: processExitConfirmed },
+          payload: {
+            run_id: runId,
+            failure_reason: REASON,
+            recoverable: true,
+            process_exit_confirmed: processExitConfirmed,
+          },
         }),
       );
       if (processExitConfirmed) await releaseRunLeases(ctx, tx, runId);
     };
 
     if (status === "running" || status === "paused" || status === "awaiting_input") {
-      const result = await transitionRun(tx, ctx, { runId, from: status, trigger: "run_failed", patch: { endedAt: now, failureReason: REASON } });
+      const result = await transitionRun(tx, ctx, {
+        runId,
+        from: status,
+        trigger: "run_failed",
+        patch: { endedAt: now, failureReason: REASON },
+      });
       if (!result.changed) return { failed: false }; // lost the race → no duplicate event
       const taskStatus = taskRow?.status as TaskStatus;
       const taskBlocked = canTransitionTask(taskStatus, "run_failed")
@@ -681,7 +1050,12 @@ export async function failRunDaemonDisconnect(
     }
     if (status === "queued") await transitionRun(tx, ctx, { runId, from: "queued", trigger: "start" });
     // starting (including a queued run whose dispatch/process state was uncertain)
-    const result = await transitionRun(tx, ctx, { runId, from: "starting", trigger: "start_failed", patch: { endedAt: now, failureReason: REASON } });
+    const result = await transitionRun(tx, ctx, {
+      runId,
+      from: "starting",
+      trigger: "start_failed",
+      patch: { endedAt: now, failureReason: REASON },
+    });
     if (!result.changed) return { failed: false };
     await transitionTask(tx, ctx, { taskId: run.taskId, from: "assigned", trigger: "assign_failed_retryable", now });
     await emitFailed();
@@ -789,7 +1163,12 @@ function mapRunEvent(message: RunEventMessage): IngestEnvelope | null {
   const body = message.event;
   let event: RunIngestEvent | null;
   if (body.type === "run.output") {
-    event = { kind: "output", stream: body.payload.stream, text: body.payload.text, ...(body.payload.activity ? { activity: body.payload.activity } : {}) };
+    event = {
+      kind: "output",
+      stream: body.payload.stream,
+      text: body.payload.text,
+      ...(body.payload.activity ? { activity: body.payload.activity } : {}),
+    };
   } else if (body.type === "run.answer") {
     event = { kind: "answer", text: body.payload.text };
   } else if (body.type === "run.usage") {

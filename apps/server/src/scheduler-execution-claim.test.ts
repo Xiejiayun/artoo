@@ -8,6 +8,7 @@ import {
   eventLog,
   fileLeases,
   runs,
+  runEventIngest,
   schedulerDecisions,
   schedulerExecutionRequests,
   schedulerPreparedStarts,
@@ -45,6 +46,13 @@ import { createManagedWebSocketTransport } from "@artoo/artood";
 import { generateDeviceToken } from "./services/device-credential.js";
 import * as proposalService from "./services/scheduler-start-proposal-service.js";
 import * as grantService from "./services/scheduler-start-grant-service.js";
+import {
+  cancelRun,
+  failRunStart,
+  failRunDaemonDisconnect,
+  ingestRunEvent,
+  ingestWireRunEvent,
+} from "./services/run-service.js";
 import { buildTestServer, type TestServer, type BuildTestServerOptions } from "./test-support.js";
 import { mkdtemp, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -776,6 +784,67 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
     expect(await grantSchedulerStart(server.ctx, input, ready)).toEqual({ ...first, remaining_ms: 500 });
     await server.db.db.update(deviceTokens).set({ expiresAt: new Date(time + 20_000).toISOString() });
     expect(await grantSchedulerStart(server.ctx, input, ready)).toEqual(first);
+  });
+
+  it("rejects ordinary events, cancellation and absence claims for a consumed scheduler Run without changing reservations", async () => {
+    await setup();
+    const input = await stage(),
+      result = await claim(input),
+      runId = result.run.id,
+      before = await snapshot();
+    const stop = vi.fn(async () => {});
+    const channel = createInProcessChannel(),
+      send = vi.spyOn(channel.serverTransport, "send");
+    const binding = attachNodeBinding(server.ctx, channel.serverTransport, COMPUTER, [
+      "workspace-allocation.per-run-v1",
+    ]);
+    const envelope = {
+      runId,
+      nodeId: COMPUTER,
+      sequence: 0,
+      event: { kind: "lifecycle" as const, phase: "started" as const },
+    };
+    try {
+      for (const action of [
+        () => ingestRunEvent(server.ctx, envelope),
+        () =>
+          ingestWireRunEvent(server.ctx, {
+            kind: "run.event",
+            node_id: COMPUTER,
+            run_id: runId,
+            sequence: 0,
+            event: { type: "run.lifecycle", payload: { phase: "started" } },
+          }),
+        () => cancelRun(server.ctx, runId, stop),
+        () => failRunStart(server.ctx, runId, "process_start_failed", "ordinary rejection"),
+        () => failRunDaemonDisconnect(server.ctx, runId, COMPUTER, true),
+        () => binding.dispatchRunResume(runId),
+        () => binding.dispatchRunStop(runId),
+      ]) {
+        await expect(action()).rejects.toThrow("scoped node-owned attempt protocol");
+        expect(await snapshot()).toEqual(before);
+        expect(await server.db.db.select().from(runEventIngest)).toHaveLength(0);
+      }
+      expect(stop).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      binding.close();
+    }
+  });
+
+  it("retains scheduler leases when disconnect is unknown and rejects a later ordinary absence assertion", async () => {
+    await setup();
+    const input = await stage(),
+      result = await claim(input),
+      runId = result.run.id;
+    expect(await failRunDaemonDisconnect(server.ctx, runId, COMPUTER, false)).toEqual({ failed: true });
+    const before = await snapshot();
+    expect(before.runs[0]).toMatchObject({ status: "failed", failureReason: "daemon_disconnect" });
+    expect(before.leases[0]?.releasedAt).toBeNull();
+    await expect(failRunDaemonDisconnect(server.ctx, runId, COMPUTER, true)).rejects.toThrow(
+      "scoped node-owned attempt protocol",
+    );
+    expect(await snapshot()).toEqual(before);
   });
 
   it("rejects mode, binding and attempt changes without creating or replacing grant history", async () => {

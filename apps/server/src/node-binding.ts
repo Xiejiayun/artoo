@@ -123,6 +123,7 @@ import { inspectRecoveryValidationPublicationDispatch } from "./services/recover
 import { createRecoveryValidationReviewBinding } from "./services/recovery-validation-review-service.js";
 import { createRecoveryValidationBinding } from "./services/recovery-validation-service.js";
 import { cancelRun, failRunDaemonDisconnect, failRunStart, ingestWireRunEvent } from "./services/run-service.js";
+import { assertOrdinaryRunControl } from "./services/scheduler-run-control.js";
 import { assertSourceLineageDispatch } from "./services/source-lineage-fence.js";
 import { createSourceRecoveryBinding } from "./services/source-recovery-service.js";
 import { verificationCapabilityBinding } from "./services/verification-capabilities.js";
@@ -2307,6 +2308,7 @@ export function attachNodeBinding(
         .from(runs)
         .where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId)));
       if (!run || run.computerId !== computerId) throw AppError.permissionDenied("run is not owned by this node");
+      await assertOrdinaryRunControl(ctx, ctx.db.db, runId);
       if (run.status === "queued") {
         const [prepared] = await ctx.db.db
           .select({ id: assistantRunDispatches.runId })
@@ -2365,6 +2367,7 @@ export function attachNodeBinding(
     async dispatchRunStop(runId: string): Promise<void> {
       if (closed) throw AppError.conflict("node disconnected before process stop was confirmed");
       if (!(await ownsRun(runId))) throw AppError.permissionDenied("run is not owned by this node");
+      await assertOrdinaryRunControl(ctx, ctx.db.db, runId);
       const importedExecution = await importedExecutionForRun(runId);
       if (importedExecution) return stopImportedExecution(importedExecution);
       const importedRepair = await importedExecutionRepairForRun(runId);
