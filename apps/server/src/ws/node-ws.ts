@@ -1,6 +1,13 @@
 import { computers } from "@artoo/db";
 import { APPLICATION_PUBLICATION_FEATURE_V1 } from "@artoo/domain";
-import { parseDeviceToken, IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1 } from "@artoo/domain";
+import {
+  parseDeviceToken,
+  IMPORTED_DESIGN_CONTINUATION_FEATURE_V1,
+  IMPORTED_DESIGN_REVIEW_FEATURE_V1,
+  IMPORTED_EXECUTION_FEATURE_V1,
+  IMPORTED_EXECUTION_REVIEW_FEATURE_V1,
+  IMPORTED_VALIDATION_FEATURE_V1,
+} from "@artoo/domain";
 import { randomUUID } from "node:crypto";
 import type { NodeHello, NodeToServerMessage, NodeTransport } from "@artoo/protocol";
 import { and, eq, isNull } from "drizzle-orm";
@@ -12,12 +19,17 @@ import { attachNodeBinding, type NodeBinding } from "../node-binding.js";
 import { resolveNodeToken } from "../services/device-service.js";
 import { QUALIFIED_RECEIPT_PROFILE, requireQualifiedReceiptSchema } from "../services/run-event-receipt.js";
 import { recordDeviceActivity } from "../services/presence-service.js";
-import { activeRunIdsForComputer, activeSnapshotRunIdsForComputer, unconfirmedProcessRunIdsForComputer } from "../services/run-service.js";
+import {
+  activeRunIdsForComputer,
+  activeSnapshotRunIdsForComputer,
+  unconfirmedProcessRunIdsForComputer,
+} from "../services/run-service.js";
 import { recordHeartbeatRuntimes } from "../services/runtime-registry-service.js";
 import type { GraceWindowManager } from "./grace-window.js";
 import type { NodeRegistry } from "./node-registry.js";
 import type { DeviceConnectionRegistry } from "./device-connections.js";
 import { createServerNodeTransport, type RawServerSocket } from "./ws-node-transport.js";
+import { createSchedulerStartServerChannel } from "./scheduler-start-channel.js";
 
 /** Authenticated identity of a `/api/v1/node` connection (#28 slice 3a). */
 type NodeAuth = { mode: "dev" } | { mode: "device"; deviceId: string; computerId: string; tokenLookup: string };
@@ -33,10 +45,7 @@ type NodeAuth = { mode: "dev" } | { mode: "device"; deviceId: string; computerId
  *    which fails closed until the device<->computer enrollment slice exists. This
  *    is what prevents a production node token from binding an arbitrary computer.
  */
-async function authenticateNodeToken(
-  ctx: ServerContext,
-  token: string | undefined,
-): Promise<NodeAuth | null> {
+async function authenticateNodeToken(ctx: ServerContext, token: string | undefined): Promise<NodeAuth | null> {
   if (token === undefined || token === "") {
     return null;
   }
@@ -74,11 +83,15 @@ function helloComputerId(auth: NodeAuth, helloNodeId: string): string | null {
  * the first app frame and its node_id must be consistent with the credential.
  */
 export function registerNodeWsRoute(
-  app: FastifyInstance, ctx: ServerContext, registry: NodeRegistry,
-  deviceConnections?: DeviceConnectionRegistry, graceWindow?: GraceWindowManager,
+  app: FastifyInstance,
+  ctx: ServerContext,
+  registry: NodeRegistry,
+  deviceConnections?: DeviceConnectionRegistry,
+  graceWindow?: GraceWindowManager,
   artifactSource?: ContentAddressedBlobSource,
 ): void {
-  const artifactStore = typeof artifactSource === "string" ? resolveArtifactStore({ artifactDir: artifactSource }) : artifactSource;
+  const artifactStore =
+    typeof artifactSource === "string" ? resolveArtifactStore({ artifactDir: artifactSource }) : artifactSource;
   const disconnectSnapshots = new Map<string, Promise<string[]>>();
   app.get("/api/v1/node", { websocket: true }, (socket: unknown, req: FastifyRequest) => {
     const raw = socket as RawServerSocket;
@@ -87,17 +100,24 @@ export function registerNodeWsRoute(
     // Server-owned per-connection identity also fences ordinary paired nodes.
     const connectionId = randomUUID();
     let binding: NodeBinding | undefined, nodeId: string | undefined, auth: NodeAuth | undefined;
-    let terminated = false, registered = false, managedRequested = false, qualifiedReceiptsReady = false;
+    let terminated = false,
+      registered = false,
+      managedRequested = false,
+      qualifiedReceiptsReady = false;
     let releaseDeviceConn: (() => void) | undefined;
     let initializationTimer: ReturnType<typeof setTimeout> | undefined;
     let initializationDeadline: number | undefined;
     let managed: { id: string; nonce: string; active: boolean; firstPongPending: boolean } | undefined;
+    let schedulerStart: ReturnType<typeof createSchedulerStartServerChannel> | undefined;
     const earlyQueue: NodeToServerMessage[] = [];
     let checkingComputer = false;
     const computerQueue: NodeToServerMessage[] = [];
     const close = (code: number, reason: string): void => {
       if (terminated) return;
-      terminated = true; clearTimeout(initializationTimer); earlyQueue.length = 0; computerQueue.length = 0;
+      terminated = true;
+      clearTimeout(initializationTimer);
+      earlyQueue.length = 0;
+      computerQueue.length = 0;
       raw.close(code, reason);
     };
     function armManagedInitialization(): void {
@@ -108,21 +128,30 @@ export function registerNodeWsRoute(
     function activate(): void {
       if (terminated || registered || !binding || !nodeId || !auth) return;
       if (managedRequested && !managed?.active) return;
-      if (managedRequested && (raw.readyState !== 1 || initializationDeadline === undefined || performance.now() >= initializationDeadline)) {
-        close(1008, "managed session closed or initialization expired before activation"); return;
+      if (
+        managedRequested &&
+        (raw.readyState !== 1 || initializationDeadline === undefined || performance.now() >= initializationDeadline)
+      ) {
+        close(1008, "managed session closed or initialization expired before activation");
+        return;
       }
-      registered = true; clearTimeout(initializationTimer);
+      registered = true;
+      clearTimeout(initializationTimer);
       registry.register(nodeId, binding);
-      if (qualifiedReceiptsReady) void binding.announceSourceRecoverySession?.().catch(() => close(1008, "recovery session announcement failed"));
+      if (qualifiedReceiptsReady)
+        void binding.announceSourceRecoverySession?.().catch(() => close(1008, "recovery session announcement failed"));
       void setComputerOnline(ctx, nodeId);
       if (auth.mode === "device") void recordDeviceActivity(ctx, auth.deviceId, "node").catch(() => {});
       const resumeSnapshot = graceWindow?.disarm(nodeId) ?? [];
       const pendingSnapshot = disconnectSnapshots.get(nodeId);
       disconnectSnapshots.delete(nodeId);
-      const resumeNodeId = nodeId, resumeBinding = binding;
+      const resumeNodeId = nodeId,
+        resumeBinding = binding;
       void (async () => {
         const captured = pendingSnapshot === undefined ? [] : await pendingSnapshot;
-        const active = await activeSnapshotRunIdsForComputer(ctx, resumeNodeId, [...new Set([...resumeSnapshot, ...captured])]);
+        const active = await activeSnapshotRunIdsForComputer(ctx, resumeNodeId, [
+          ...new Set([...resumeSnapshot, ...captured]),
+        ]);
         const uncertain = await unconfirmedProcessRunIdsForComputer(ctx, resumeNodeId);
         for (const runId of [...new Set([...active, ...uncertain])]) {
           if (registry.get(resumeNodeId) !== resumeBinding || terminated) break;
@@ -131,59 +160,153 @@ export function registerNodeWsRoute(
       })().catch(() => {});
     }
     function attach(message: NodeHello, gated: boolean): void {
-      const privateTransport: NodeTransport = gated ? {
-        send: (message) => transport.send(message), close: () => transport.close(),
-        subscribe: (handler) => transport.subscribe((message) => {
-          if (terminated) return;
-          if (message.kind !== "run.event" && message.kind !== "command.ack" && message.kind !== "product.release.receipt" && message.kind !== "product.release.health"
-            && message.kind !== "product.source.review.ack.v1" && message.kind !== "product.source.review.result.v1"
-            && message.kind !== "product.source.operation.ack.v1" && message.kind !== "product.source.operation.result.v1"
-            && message.kind !== "product.source.design.ack.v1" && message.kind !== "product.source.design.result.v1"
-            && message.kind !== "product.source.design-review.ack.v1" && message.kind !== "product.source.design-review.result.v1"
-            && message.kind !== "product.source.execution.ack.v1" && message.kind !== "product.source.execution.result.v1"
-            && message.kind !== "product.source.recovery.register.v1" && message.kind !== "product.source.recovery.available.v1"
-            && message.kind !== "product.source.recovery.ack.v1" && message.kind !== "product.source.recovery.result.v1"
-            && message.kind !== "product.source.recovery-validation.ack.v1" && message.kind !== "product.source.recovery-validation.result.v1"
-            && message.kind !== "product.source.recovery-validation-review.ack.v1" && message.kind !== "product.source.recovery-validation-review.result.v1") return;
-          if (!registered || !managed?.active || registry.get(nodeId!) !== binding) {
-            close(1008, "managed application frame before current session activation"); return;
+      const privateTransport: NodeTransport = gated
+        ? {
+            send: (message) => transport.send(message),
+            close: () => transport.close(),
+            subscribe: (handler) =>
+              transport.subscribe((message) => {
+                if (terminated) return;
+                if (
+                  message.kind !== "run.event" &&
+                  message.kind !== "command.ack" &&
+                  message.kind !== "product.release.receipt" &&
+                  message.kind !== "product.release.health" &&
+                  message.kind !== "product.source.review.ack.v1" &&
+                  message.kind !== "product.source.review.result.v1" &&
+                  message.kind !== "product.source.operation.ack.v1" &&
+                  message.kind !== "product.source.operation.result.v1" &&
+                  message.kind !== "product.source.design.ack.v1" &&
+                  message.kind !== "product.source.design.result.v1" &&
+                  message.kind !== "product.source.design-review.ack.v1" &&
+                  message.kind !== "product.source.design-review.result.v1" &&
+                  message.kind !== "product.source.execution.ack.v1" &&
+                  message.kind !== "product.source.execution.result.v1" &&
+                  message.kind !== "product.source.recovery.register.v1" &&
+                  message.kind !== "product.source.recovery.available.v1" &&
+                  message.kind !== "product.source.recovery.ack.v1" &&
+                  message.kind !== "product.source.recovery.result.v1" &&
+                  message.kind !== "product.source.recovery-validation.ack.v1" &&
+                  message.kind !== "product.source.recovery-validation.result.v1" &&
+                  message.kind !== "product.source.recovery-validation-review.ack.v1" &&
+                  message.kind !== "product.source.recovery-validation-review.result.v1"
+                )
+                  return;
+                if (!registered || !managed?.active || registry.get(nodeId!) !== binding) {
+                  close(1008, "managed application frame before current session activation");
+                  return;
+                }
+                handler(message);
+              }),
           }
-          handler(message);
-        }),
-      } : transport;
+        : transport;
       const computerId = nodeId!;
-      binding = attachNodeBinding(ctx, privateTransport, computerId, message.execution_features,
+      binding = attachNodeBinding(
+        ctx,
+        privateTransport,
+        computerId,
+        message.execution_features,
         () => !terminated && registered && registry.get(computerId) === binding && (!gated || managed?.active === true),
-        message.verification_profiles, message.release_profiles, message.owned_result_profiles,
-        () => gated && !terminated && registered && managed?.active === true && registry.get(computerId) === binding, message.machine.os,
-        auth?.mode === "device" && artifactStore ? {
-          identity: { deviceId: auth.deviceId, computerId: auth.computerId, tokenLookup: auth.tokenLookup }, sessionId: managed?.id ?? connectionId, artifactStore,
-          qualifiedRunEventReceiptsReady: () => qualifiedReceiptsReady && raw.readyState === 1 && !terminated && registered
-            && registry.get(computerId) === binding && (!gated || managed?.active === true),
-        } : undefined, message.product_source_routing, message.application_publication_profiles);
-      if (message.workspace_roots) binding.workspaceRoots = Object.freeze({ version: 1, paths: Object.freeze([...message.workspace_roots.paths]) });
+        message.verification_profiles,
+        message.release_profiles,
+        message.owned_result_profiles,
+        () => gated && !terminated && registered && managed?.active === true && registry.get(computerId) === binding,
+        message.machine.os,
+        auth?.mode === "device" && artifactStore
+          ? {
+              identity: { deviceId: auth.deviceId, computerId: auth.computerId, tokenLookup: auth.tokenLookup },
+              sessionId: managed?.id ?? connectionId,
+              artifactStore,
+              qualifiedRunEventReceiptsReady: () =>
+                qualifiedReceiptsReady &&
+                raw.readyState === 1 &&
+                !terminated &&
+                registered &&
+                registry.get(computerId) === binding &&
+                (!gated || managed?.active === true),
+            }
+          : undefined,
+        message.product_source_routing,
+        message.application_publication_profiles,
+      );
+      if (message.workspace_roots)
+        binding.workspaceRoots = Object.freeze({
+          version: 1,
+          paths: Object.freeze([...message.workspace_roots.paths]),
+        });
       binding.disconnect = () => close(1008, "computer deleted");
     }
     async function initializeManaged(message: NodeHello): Promise<void> {
       const request = message.managed_receipts!;
       if (request.version !== 1 || request.required_contract !== QUALIFIED_RECEIPT_PROFILE) {
-        close(1008, "unsupported managed receipt request"); return;
+        close(1008, "unsupported managed receipt request");
+        return;
+      }
+      if (
+        message.scheduler_start &&
+        (message.scheduler_start.version !== 1 ||
+          auth?.mode !== "device" ||
+          !artifactStore ||
+          !message.execution_features?.includes("workspace-allocation.per-run-v1"))
+      ) {
+        close(1008, "scheduler start requires a supported paired allocation session");
+        return;
       }
       try {
         await requireQualifiedReceiptSchema(ctx);
         if (terminated) return;
-        if (raw.readyState !== 1 || initializationDeadline === undefined || performance.now() >= initializationDeadline) {
-          close(1008, "managed session closed or initialization expired"); return;
+        if (
+          raw.readyState !== 1 ||
+          initializationDeadline === undefined ||
+          performance.now() >= initializationDeadline
+        ) {
+          close(1008, "managed session closed or initialization expired");
+          return;
         }
         qualifiedReceiptsReady = true;
         managed = { id: randomUUID(), nonce: request.nonce, active: false, firstPongPending: false };
         attach(message, true);
-        await transport.send({ kind: "command", id: `session:${managed.id}`, idempotency_key: `session:${managed.id}`,
-          type: "node.session.ready", payload: { version: 1, node_id: nodeId!, hello_nonce: managed.nonce,
-            session_id: managed.id, receipt_contract: QUALIFIED_RECEIPT_PROFILE, sequence_max: 2147483647,
-            liveness: { probe_interval_ms: 10000, probe_timeout_ms: 10000 } } });
+        if (message.scheduler_start) {
+          const sessionId = managed.id,
+            computerId = nodeId!;
+          schedulerStart = createSchedulerStartServerChannel(ctx, {
+            computerId,
+            sessionId,
+            namespace: message.scheduler_start.journal_namespace,
+            isCurrent: () =>
+              raw.readyState === 1 &&
+              !terminated &&
+              registered &&
+              managed?.active === true &&
+              managed.id === sessionId &&
+              registry.get(computerId) === binding &&
+              binding?.getPairedNodeSession?.()?.sessionId === sessionId,
+            send: (reply) => transport.send(reply),
+            close: (reason) => close(1008, reason),
+            onRejected: (error, operation) =>
+              app.log.debug({ err: error, operation }, "Scheduler start exchange rejected"),
+          });
+        }
+        await transport.send({
+          kind: "command",
+          id: `session:${managed.id}`,
+          idempotency_key: `session:${managed.id}`,
+          type: "node.session.ready",
+          payload: {
+            version: 1,
+            node_id: nodeId!,
+            hello_nonce: managed.nonce,
+            session_id: managed.id,
+            receipt_contract: QUALIFIED_RECEIPT_PROFILE,
+            sequence_max: 2147483647,
+            ...(message.scheduler_start ? { scheduler_start: message.scheduler_start } : {}),
+            liveness: { probe_interval_ms: 10000, probe_timeout_ms: 10000 },
+          },
+        });
         // Registration deliberately waits for the first authenticated probe/pong.
-      } catch { close(1008, "managed receipt session initialization failed"); }
+      } catch {
+        close(1008, "managed receipt session initialization failed");
+      }
     }
     async function initializeOrdinaryImportedDesignReceipts(): Promise<void> {
       // H3's ordinary Windows transport waits for committed run.event ACKs.
@@ -191,11 +314,20 @@ export function registerNodeWsRoute(
       const candidate = binding;
       try {
         await requireQualifiedReceiptSchema(ctx);
-        if (terminated || raw.readyState !== 1 || !registered || binding !== candidate || registry.get(nodeId!) !== candidate) return;
+        if (
+          terminated ||
+          raw.readyState !== 1 ||
+          !registered ||
+          binding !== candidate ||
+          registry.get(nodeId!) !== candidate
+        )
+          return;
         qualifiedReceiptsReady = true;
         await candidate?.announceSourceRecoverySession?.();
         await candidate?.announceApplicationPublicationSession?.();
-      } catch { close(1008, "imported design receipt schema unavailable"); }
+      } catch {
+        close(1008, "imported design receipt schema unavailable");
+      }
     }
     const handleMessage = (message: NodeToServerMessage): void => {
       const currentAuth = auth;
@@ -205,27 +337,57 @@ export function registerNodeWsRoute(
         if (computerQueue.length > MAX_PREAUTH_FRAMES) close(1008, "too many frames before computer validation");
         return;
       }
-      if (nodeId === undefined && message.kind !== "node.hello") { close(1008, "node.hello required"); return; }
+      if (nodeId === undefined && message.kind !== "node.hello") {
+        close(1008, "node.hello required");
+        return;
+      }
       if (message.kind === "node.hello") {
         if (nodeId !== undefined) return;
         const computerId = helloComputerId(currentAuth, message.node_id);
-        if (computerId === null) { close(1008, "node.hello node_id does not match credential"); return; }
+        if (computerId === null) {
+          close(1008, "node.hello node_id does not match credential");
+          return;
+        }
         nodeId = computerId;
         managedRequested = message.managed_receipts !== undefined;
+        if (message.scheduler_start && !managedRequested) {
+          close(1008, "scheduler start requires managed receipts");
+          return;
+        }
         if (managedRequested) armManagedInitialization();
         checkingComputer = true;
         void (async () => {
-          const [computer] = await ctx.db.db.select({ deletedAt: computers.deletedAt }).from(computers).where(and(
-            eq(computers.id, computerId), eq(computers.organizationId, ctx.organizationId)));
+          const [computer] = await ctx.db.db
+            .select({ deletedAt: computers.deletedAt })
+            .from(computers)
+            .where(and(eq(computers.id, computerId), eq(computers.organizationId, ctx.organizationId)));
           if (terminated) return;
-          if (computer?.deletedAt != null) { close(1008, "computer deleted"); return; }
+          if (computer?.deletedAt != null) {
+            close(1008, "computer deleted");
+            return;
+          }
           checkingComputer = false;
           if (managedRequested) void initializeManaged(message);
           else {
-            attach(message, false); activate();
-            if (currentAuth.mode === "device" && artifactStore && message.execution_features?.some(feature => [IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1,
-            PRODUCT_SOURCE_RECOVERY_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1,
-            APPLICATION_PUBLICATION_FEATURE_V1].includes(feature))) {
+            attach(message, false);
+            activate();
+            if (
+              currentAuth.mode === "device" &&
+              artifactStore &&
+              message.execution_features?.some((feature) =>
+                [
+                  IMPORTED_DESIGN_CONTINUATION_FEATURE_V1,
+                  IMPORTED_DESIGN_REVIEW_FEATURE_V1,
+                  IMPORTED_EXECUTION_FEATURE_V1,
+                  IMPORTED_EXECUTION_REVIEW_FEATURE_V1,
+                  IMPORTED_VALIDATION_FEATURE_V1,
+                  PRODUCT_SOURCE_RECOVERY_FEATURE_V1,
+                  IMPORTED_RECOVERY_VALIDATION_FEATURE_V1,
+                  IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1,
+                  APPLICATION_PUBLICATION_FEATURE_V1,
+                ].includes(feature),
+              )
+            ) {
               void initializeOrdinaryImportedDesignReceipts();
             }
           }
@@ -240,26 +402,60 @@ export function registerNodeWsRoute(
       }
       if (message.kind === "node.session.probe") {
         const session = managed;
-        if (!managedRequested || !session || message.node_id !== nodeId || message.session_id !== session.id
-          || (registered && registry.get(nodeId!) !== binding)) { close(1008, "managed probe session mismatch"); return; }
+        if (
+          !managedRequested ||
+          !session ||
+          message.node_id !== nodeId ||
+          message.session_id !== session.id ||
+          (registered && registry.get(nodeId!) !== binding)
+        ) {
+          close(1008, "managed probe session mismatch");
+          return;
+        }
         if (!session.active && session.firstPongPending) return;
         if (!session.active) session.firstPongPending = true;
-        void transport.send({ kind: "command", id: `pong:${session.id}:${message.probe_id}`,
-          idempotency_key: `pong:${session.id}:${message.probe_id}`, type: "node.session.pong",
-          payload: { node_id: nodeId!, session_id: session.id, probe_id: message.probe_id } }).then(() => {
-          if (terminated || managed !== session) return;
-          if (raw.readyState !== 1 || (!registered && (initializationDeadline === undefined || performance.now() >= initializationDeadline))) {
-            close(1008, "managed pong completed after closing or initialization expiry"); return;
-          }
-          session.active = true; activate();
-        }, () => close(1008, "managed pong write failed"));
+        void transport
+          .send({
+            kind: "command",
+            id: `pong:${session.id}:${message.probe_id}`,
+            idempotency_key: `pong:${session.id}:${message.probe_id}`,
+            type: "node.session.pong",
+            payload: { node_id: nodeId!, session_id: session.id, probe_id: message.probe_id },
+          })
+          .then(
+            () => {
+              if (terminated || managed !== session) return;
+              if (
+                raw.readyState !== 1 ||
+                (!registered && (initializationDeadline === undefined || performance.now() >= initializationDeadline))
+              ) {
+                close(1008, "managed pong completed after closing or initialization expiry");
+                return;
+              }
+              session.active = true;
+              activate();
+            },
+            () => close(1008, "managed pong write failed"),
+          );
         return;
       }
       if (managedRequested && (!managed?.active || !registered || registry.get(nodeId!) !== binding)) {
-        close(1008, "managed application frame before current session activation"); return;
+        close(1008, "managed application frame before current session activation");
+        return;
+      }
+      if (message.kind === "scheduler.start.propose.v1" || message.kind === "scheduler.start.ready.v1") {
+        if (!schedulerStart || message.node_id !== nodeId || message.session_id !== managed?.id) {
+          close(1008, "scheduler start session was not negotiated or no longer matches");
+          return;
+        }
+        void schedulerStart(message);
+        return;
       }
       if (message.kind === "node.heartbeat") {
-        if (!registered || registry.get(nodeId!) !== binding) { close(1008, "heartbeat from replaced node session"); return; }
+        if (!registered || registry.get(nodeId!) !== binding) {
+          close(1008, "heartbeat from replaced node session");
+          return;
+        }
         void touchHeartbeat(ctx, nodeId!);
         void recordHeartbeatRuntimes(ctx, nodeId!, message.runtimes).catch(() => {});
         if (currentAuth.mode === "device") void recordDeviceActivity(ctx, currentAuth.deviceId, "node").catch(() => {});
@@ -270,37 +466,68 @@ export function registerNodeWsRoute(
       if (terminated) return;
       if (message.kind === "node.hello" && message.managed_receipts !== undefined) armManagedInitialization();
       earlyQueue.push(message);
-      if (earlyQueue.length > MAX_PREAUTH_FRAMES) { earlyQueue.length = 0; close(1008, "too many frames before authentication"); }
+      if (earlyQueue.length > MAX_PREAUTH_FRAMES) {
+        earlyQueue.length = 0;
+        close(1008, "too many frames before authentication");
+      }
     };
     const unsubscribe = transport.subscribe((message) => dispatch(message));
     void (async () => {
       let result: NodeAuth | null;
-      try { result = await authenticateNodeToken(ctx, token); }
-      catch { earlyQueue.length = 0; close(1008, "node authentication error"); return; }
-      if (result === null) { earlyQueue.length = 0; close(1008, "invalid node credential"); return; }
-      if (terminated) { earlyQueue.length = 0; return; }
+      try {
+        result = await authenticateNodeToken(ctx, token);
+      } catch {
+        earlyQueue.length = 0;
+        close(1008, "node authentication error");
+        return;
+      }
+      if (result === null) {
+        earlyQueue.length = 0;
+        close(1008, "invalid node credential");
+        return;
+      }
+      if (terminated) {
+        earlyQueue.length = 0;
+        return;
+      }
       auth = result;
-      if (result.mode === "device" && deviceConnections !== undefined) releaseDeviceConn = deviceConnections.add(result.deviceId, { close });
+      if (result.mode === "device" && deviceConnections !== undefined)
+        releaseDeviceConn = deviceConnections.add(result.deviceId, { close });
       dispatch = handleMessage;
       for (const queued of earlyQueue) {
         if (terminated) break;
         handleMessage(queued);
         // Only legacy replay may precede async auth completion. Managed peers
         // have no business-frame authority until ready plus the first pong.
-        if (!managedRequested && (queued.kind === "run.event" || queued.kind === "command.ack" || queued.kind === "product.release.receipt" || queued.kind === "product.release.health"
-          || queued.kind === "product.source.review.ack.v1" || queued.kind === "product.source.review.result.v1"
-          || queued.kind === "product.source.operation.ack.v1" || queued.kind === "product.source.operation.result.v1")) binding?.receive(queued);
+        if (
+          !managedRequested &&
+          (queued.kind === "run.event" ||
+            queued.kind === "command.ack" ||
+            queued.kind === "product.release.receipt" ||
+            queued.kind === "product.release.health" ||
+            queued.kind === "product.source.review.ack.v1" ||
+            queued.kind === "product.source.review.result.v1" ||
+            queued.kind === "product.source.operation.ack.v1" ||
+            queued.kind === "product.source.operation.result.v1")
+        )
+          binding?.receive(queued);
       }
       earlyQueue.length = 0;
     })();
     raw.on("close", () => {
-      terminated = true; clearTimeout(initializationTimer); earlyQueue.length = 0; computerQueue.length = 0;
-      releaseDeviceConn?.(); unsubscribe(); binding?.close();
+      terminated = true;
+      clearTimeout(initializationTimer);
+      earlyQueue.length = 0;
+      computerQueue.length = 0;
+      releaseDeviceConn?.();
+      unsubscribe();
+      binding?.close();
       // A failed private handshake must never unregister another live binding.
       if (registered && nodeId !== undefined && binding !== undefined && registry.unregister(nodeId, binding)) {
         void setComputerOffline(ctx, nodeId);
         if (graceWindow !== undefined) {
-          const closedNodeId = nodeId, capture = activeRunIdsForComputer(ctx, closedNodeId);
+          const closedNodeId = nodeId,
+            capture = activeRunIdsForComputer(ctx, closedNodeId);
           disconnectSnapshots.set(closedNodeId, capture);
           void (async () => {
             const snapshot = await capture;
@@ -337,9 +564,15 @@ async function updatePresence(
     await ctx.db.db
       .update(computers)
       .set(patch)
-      .where(and(eq(computers.id, nodeId), eq(computers.organizationId, ctx.organizationId), isNull(computers.deletedAt)));
+      .where(
+        and(eq(computers.id, nodeId), eq(computers.organizationId, ctx.organizationId), isNull(computers.deletedAt)),
+      );
   } catch {
     // best-effort presence; ignore (e.g. db shutting down on disconnect)
   }
 }
-import { PRODUCT_SOURCE_RECOVERY_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1 } from "@artoo/domain";
+import {
+  PRODUCT_SOURCE_RECOVERY_FEATURE_V1,
+  IMPORTED_RECOVERY_VALIDATION_FEATURE_V1,
+  IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1,
+} from "@artoo/domain";

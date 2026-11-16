@@ -41,7 +41,14 @@ import {
 import { scheduleTask } from "./services/scheduler.js";
 import { grantSchedulerStart, grantSchedulerStartInTransaction } from "./services/scheduler-start-grant-service.js";
 import { randomUUID } from "node:crypto";
-import { buildTestServer, type TestServer } from "./test-support.js";
+import { createManagedWebSocketTransport } from "@artoo/artood";
+import { generateDeviceToken } from "./services/device-credential.js";
+import * as proposalService from "./services/scheduler-start-proposal-service.js";
+import * as grantService from "./services/scheduler-start-grant-service.js";
+import { buildTestServer, type TestServer, type BuildTestServerOptions } from "./test-support.js";
+import { mkdtemp, rmdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const COMPUTER = "computer_local_mock",
   INSTANCE = "ai_claim";
@@ -61,8 +68,14 @@ const switches: SchedulerRolloutFlag[] = [
 
 describe("internal scheduling consumption kernel (real DB, no Provider or node execution)", () => {
   let server: TestServer;
+  const links: ReturnType<typeof createManagedWebSocketTransport>[] = [];
+  const artifactDirectories: string[] = [];
   afterEach(async () => {
+    for (const link of links.splice(0)) await link.close();
     await server?.close();
+    // These wire cases write no blobs. An unexpected nonempty directory is retained.
+    for (const directory of artifactDirectories.splice(0)) await rmdir(directory);
+    vi.restoreAllMocks();
   });
   function flags(disabled?: SchedulerRolloutFlag) {
     server.ctx.schedulerRollout = loadSchedulerRollout({
@@ -72,8 +85,8 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
       }),
     });
   }
-  async function setup() {
-    server = await buildTestServer();
+  async function setup(options?: BuildTestServerOptions) {
+    server = await buildTestServer(options);
     flags();
     await server.db.db.update(computers).set({ os: "linux" }).where(eq(computers.id, COMPUTER));
     // Controlled inventory only: no CLI, credentials, subprocess or Provider is invoked.
@@ -206,6 +219,54 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
       },
       input,
     );
+  async function waitFor(predicate: () => boolean | Promise<boolean>) {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      if (await predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("Controlled scheduler socket did not reach its expected state");
+  }
+  async function liveChannel() {
+    const artifactDir = await mkdtemp(join(tmpdir(), "artoo-scheduler-wire-"));
+    artifactDirectories.push(artifactDir);
+    await setup({ artifactDir });
+    const token = generateDeviceToken();
+    await server.db.db
+      .update(deviceTokens)
+      .set({ tokenLookup: token.lookup, tokenHash: token.secretHash })
+      .where(eq(deviceTokens.id, "claim-token"));
+    // Restore the production registry resolvers instead of setup's internal-kernel fixtures.
+    server.ctx.getPairedNodeSession = (id) => server.nodeRegistry.get(id)?.getPairedNodeSession?.();
+    server.ctx.supportsExecutionFeature = (id, feature) =>
+      server.nodeRegistry.get(id)?.supportsExecutionFeature(feature) ?? false;
+    const address = await server.app.listen({ port: 0, host: "127.0.0.1" });
+    const namespace = randomUUID();
+    const connect = async () => {
+      const link = createManagedWebSocketTransport({
+        url: `${address.replace(/^http/, "ws")}/api/v1/node?token=${token.raw}`,
+        hello: {
+          kind: "node.hello",
+          node_id: COMPUTER,
+          protocol_version: "2026-06-11",
+          artood_version: "controlled-fixture",
+          machine: { hostname: "controlled-fixture", os: "linux", arch: "x64" },
+          execution_features: ["workspace-allocation.per-run-v1"],
+        },
+        namespace,
+        schedulerStart: true,
+      });
+      links.push(link);
+      link.start();
+      await link.ready;
+      await waitFor(() => server.ctx.getPairedNodeSession?.(COMPUTER)?.sessionId === link.currentSession?.sessionId);
+      return link;
+    };
+    const link = await connect(),
+      input = { ...(await stage()), sessionId: link.currentSession!.sessionId };
+    await claim(input);
+    return { link, input, connect };
+  }
   async function snapshot() {
     return {
       tasks: await server.db.db.select().from(tasks),
@@ -927,6 +988,210 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
       expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
     },
   );
+
+  it("rejects unsupported, dev-token and ordinary scheduler registrations over real sockets", async () => {
+    const artifactDir = await mkdtemp(join(tmpdir(), "artoo-scheduler-wire-"));
+    artifactDirectories.push(artifactDir);
+    await setup({ artifactDir });
+    const token = generateDeviceToken();
+    await server.db.db
+      .update(deviceTokens)
+      .set({ tokenLookup: token.lookup, tokenHash: token.secretHash })
+      .where(eq(deviceTokens.id, "claim-token"));
+    const address = await server.app.listen({ port: 0, host: "127.0.0.1" });
+    for (const candidate of [
+      { token: token.raw, version: 2, managed: true, allocation: true },
+      { token: "dev", version: 1, managed: true, allocation: true },
+      { token: token.raw, version: 1, managed: false, allocation: true },
+      { token: token.raw, version: 1, managed: true, allocation: false },
+    ]) {
+      const socket = new WebSocket(`${address.replace(/^http/, "ws")}/api/v1/node?token=${candidate.token}`);
+      try {
+        const closed = new Promise<number>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error("Unsupported scheduler registration was not closed")), 3000);
+          socket.addEventListener(
+            "close",
+            (event) => {
+              clearTimeout(timer);
+              resolve(event.code);
+            },
+            { once: true },
+          );
+        });
+        socket.addEventListener("open", () =>
+          socket.send(
+            JSON.stringify({
+              kind: "node.hello",
+              node_id: COMPUTER,
+              protocol_version: "2026-06-11",
+              artood_version: "controlled-fixture",
+              machine: { hostname: "fixture", os: "linux", arch: "x64" },
+              ...(candidate.allocation ? { execution_features: ["workspace-allocation.per-run-v1"] } : {}),
+              ...(candidate.managed
+                ? { managed_receipts: { version: 1, nonce: randomUUID(), required_contract: "run-event-body-v1" } }
+                : {}),
+              scheduler_start: { version: candidate.version, journal_namespace: randomUUID() },
+            }),
+          ),
+        );
+        expect(await closed).toBe(1008);
+      } finally {
+        socket.close();
+      }
+      expect(server.nodeRegistry.get(COMPUTER)).toBeUndefined();
+    }
+    expect(await server.db.db.select().from(schedulerStartGrants)).toHaveLength(0);
+    expect(await server.db.db.select().from(runs)).toHaveLength(0);
+  });
+
+  it("exchanges an existing proposal and immutable grant over a real paired WebSocket without dispatch", async () => {
+    const { link, input } = await liveChannel(),
+      lane = link.openSchedulerStartSession();
+    const observed = vi.fn();
+    link.transport.subscribe(observed);
+    const proposal = await lane.propose(input);
+    expect(proposal.execution_authorized).toBe(false);
+    expect(proposal.proposal.prepared_start).toMatchObject({
+      request_id: input.requestId,
+      session_id: input.sessionId,
+      actor_user_id: "user_owner",
+      device_id: session.deviceId,
+      computer_id: COMPUTER,
+    });
+    const ready = {
+      version: 1 as const,
+      request_id: input.requestId,
+      run_id: proposal.proposal.prepared_start.run_id,
+      journal_namespace: lane.session.namespace,
+      node_attempt_id: randomUUID(),
+      ready_id: randomUUID(),
+      proposal_digest: proposal.proposal_digest,
+    };
+    const first = await lane.grant({ taskId: input.taskId, ready });
+    expect(first.remaining_ms).toBe(5000);
+    server.ctx.clock = { now: () => new Date("2026-06-13T00:00:01.000Z"), nowIso: () => "2026-06-13T00:00:01.000Z" };
+    expect(await lane.grant({ taskId: input.taskId, ready })).toEqual({ ...first, remaining_ms: 4000 });
+    await expect(
+      link.transport.send({
+        kind: "scheduler.start.ready.v1",
+        node_id: COMPUTER,
+        session_id: input.sessionId,
+        exchange_id: randomUUID(),
+        task_id: input.taskId,
+        ready,
+      }),
+    ).rejects.toThrow("generation-bound");
+    expect(await server.db.db.select().from(schedulerStartGrants)).toHaveLength(1);
+    expect(await server.db.db.select().from(runs)).toHaveLength(1);
+    expect(observed).not.toHaveBeenCalled();
+    expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
+    flags("daemon_claim");
+    await expect(lane.propose(input)).rejects.toThrow("proposal was rejected");
+    await expect(lane.grant({ taskId: input.taskId, ready })).rejects.toThrow("grant was rejected");
+    expect(await server.db.db.select().from(schedulerStartGrants)).toHaveLength(1);
+  });
+
+  it("keeps heartbeat independent of awaited proposal work and withholds a replaced session's reply", async () => {
+    const { link, input, connect } = await liveChannel(),
+      lane = link.openSchedulerStartSession();
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+      started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+    const original = proposalService.prepareSchedulerStartProposal;
+    const delayed = vi.spyOn(proposalService, "prepareSchedulerStartProposal").mockImplementation(async (...args) => {
+      entered();
+      await gate;
+      return original(...args);
+    });
+    const pending = lane.propose(input),
+      failed = expect(pending).rejects.toThrow();
+    try {
+      await started;
+      server.ctx.clock = { now: () => new Date("2026-06-13T00:00:01.000Z"), nowIso: () => "2026-06-13T00:00:01.000Z" };
+      await link.transport.send({
+        kind: "node.heartbeat",
+        node_id: COMPUTER,
+        sequence: 1,
+        resources: { cpu_load: 0, memory_used_pct: 0, disk_free_gb: 1 },
+        running_instances: [],
+        runtimes: [{ runtime: "codex", status: "available", capabilities: [] }],
+      });
+      await waitFor(async () => {
+        const [row] = await server.db.db.select().from(computers).where(eq(computers.id, COMPUTER));
+        return Date.parse(row!.lastHeartbeatAt!) === Date.parse("2026-06-13T00:00:01.000Z");
+      });
+      const replacement = await connect();
+      expect(replacement.currentSession!.sessionId).not.toBe(input.sessionId);
+      release();
+      // Old-session probes are denied by the real registry gate and close this generation.
+      await link.transport.send({
+        kind: "node.heartbeat",
+        node_id: COMPUTER,
+        sequence: 2,
+        resources: { cpu_load: 0, memory_used_pct: 0, disk_free_gb: 1 },
+        running_instances: [],
+        runtimes: [],
+      });
+      await failed;
+      expect(lane.signal.aborted).toBe(true);
+      delayed.mockRestore();
+      await expect(replacement.openSchedulerStartSession().propose(input)).rejects.toThrow("proposal was rejected");
+      expect(await server.db.db.select().from(schedulerStartGrants)).toHaveLength(0);
+      expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
+    } finally {
+      release();
+      delayed.mockRestore();
+    }
+  });
+
+  it("rejects revoked paired credentials again after ready work has been queued", async () => {
+    const { link, input } = await liveChannel(),
+      lane = link.openSchedulerStartSession(),
+      proposal = await lane.propose(input);
+    const ready = {
+      version: 1 as const,
+      request_id: input.requestId,
+      run_id: proposal.proposal.prepared_start.run_id,
+      journal_namespace: lane.session.namespace,
+      node_attempt_id: randomUUID(),
+      ready_id: randomUUID(),
+      proposal_digest: proposal.proposal_digest,
+    };
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+      started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+    const original = grantService.grantSchedulerStart;
+    const delayed = vi.spyOn(grantService, "grantSchedulerStart").mockImplementation(async (...args) => {
+      entered();
+      await gate;
+      return original(...args);
+    });
+    const pending = lane.grant({ taskId: input.taskId, ready }),
+      failed = expect(pending).rejects.toThrow("grant was rejected");
+    try {
+      await started;
+      await server.db.db
+        .update(deviceTokens)
+        .set({ status: "revoked", revokedAt: server.ctx.clock.nowIso() })
+        .where(eq(deviceTokens.id, "claim-token"));
+      release();
+      await failed;
+      expect(await server.db.db.select().from(schedulerStartGrants)).toHaveLength(0);
+      expect(await server.db.db.select().from(runs)).toHaveLength(1);
+      expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
+    } finally {
+      release();
+      delayed.mockRestore();
+    }
+  });
 
   it("requires the original exact consent again for a consumed prepared Run", async () => {
     await setup();

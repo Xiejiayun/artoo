@@ -658,11 +658,11 @@ The internal comparison helper compares persisted post-assignment evidence witho
 pretending the Task is still ready or silently refreshing its user permission.
 Its contract explicitly says `execution_authorized:false`. Callers must still
 fence concurrent writes; equality alone checks no current user consent, node
-eligibility, protected local profile or physical process. No route, poller,
-transport consumer or pre-spawn grant uses it yet. The ordinary `run.start`
-rejection remains in place. Node-owned attempt admission, authorization/eligibility
-revalidation, durable replay protection and a physical-start receipt are still
-required before live dispatch can be enabled.
+eligibility, protected local profile or physical process. The revalidated
+proposal/grant channel described below uses the original evidence; no poller
+consumes these records. Ordinary `run.start` rejection remains in place.
+Physical dispatch must still compose current authorization with private node
+admission, replay protection and genuine process-closure ownership.
 
 Regression coverage includes actual bound execution approval, post-assignment
 Task/approval/context/Run/decision/lease/configuration drift, atomic receipt-write
@@ -813,8 +813,9 @@ clock earlier than the original issue time rejects replay. The scoped grant
 audit alone is excluded from Task input versions so it cannot invalidate its
 own prepared binding; other Task events remain inputs.
 
-This remains an internal kernel with no HTTP/WS/poller or launch consumer. A
-future node consumer must own a fresh private preparation capability, keep the
+The negotiated paired WS channel below can call this kernel for an already
+consumed request. There is no HTTP route, claim poller or launch consumer. A
+physical node consumer must own a fresh private preparation capability, keep the
 first ready exchange's monotonic start tick across retries, conservatively
 subtract the complete round-trip latency from `remaining_ms`, and check the
 private deadline/channel immediately before materialization and physical spawn.
@@ -988,6 +989,65 @@ evidence; executed results are recorded separately in the PR. Live transport,
 claim/renewal, mixed-node/restart acceptance, failover and Provider acceptance
 remain incomplete. No rollout flag or production behavior is activated here.
 
+### Negotiated proposal/ready/grant transport (Step 4 in progress)
+
+Optional `node.hello.scheduler_start` registers version 1 and the configured
+journal namespace. It requires the existing receipt-ready managed handshake,
+paired credential, per-run allocation feature and configured artifact store
+needed by the existing paired binding. Unsupported versions, dev-token nodes,
+ordinary transport and incomplete configurations fail the handshake. The server
+echoes the exact negotiation before the first probe/pong; absence or changed
+values cannot silently downgrade an opted-in node. Old peers omit the extension.
+
+`createManagedWebSocketTransport` enables this only through an explicit local
+`schedulerStart:true` option. Untrusted fields in a supplied hello cannot enable
+it. The managed runner does not select this option yet, so normal startup and
+rollout flags do not activate a new execution path.
+
+`openSchedulerStartSession()` returns an exchange lane tied to the exact current
+socket generation and its original abort signal. Proposal and ready messages
+carry strict versioned envelopes, unique exchange IDs and exact Task/request
+bindings. Replies are consumed by that lane and never forwarded as executable
+commands. The client checks the complete proposal digest and original request,
+ready, computer and session identities. Raw transport sends cannot bypass this
+lane. One outstanding exchange is allowed; proposal observation is bounded to
+ten seconds and ready/grant observation to five, including delayed continuation
+after a reply. Neither is permission to extend the journal's stricter original
+monotonic grant window. Closing or losing the generation aborts the same signal
+even after a successful reply; requests and replies are never replayed on reconnect.
+
+The server derives computer/device/token/session identity from the authenticated
+current registry binding. It only reconstructs metadata and grants for an
+already consumed request through the existing read-committed revalidation
+transactions. It consumes no permission, creates no new Run and dispatches no
+`run.start`. Original-user consent, scoped flags, credential expiry/revocation,
+current eligibility and exact prepared evidence remain mandatory. A replaced
+session receives no completed reply. At most one operation stays outstanding
+through bounded local response-write completion; a concurrent request closes
+the connection. Heartbeat/probe handling progresses independently of awaited
+database work. Rejected exchanges expose no context or credential details and
+release no reservations.
+
+Controlled real WebSocket/PGlite cases exercise proposal/grant/replay, immutable
+single-Run/grant persistence, disabled scopes, credential revocation after queued
+ready work, heartbeat progress while proposal work waits and session replacement.
+Transport-state cases cover negotiation/downgrade rejection, ordinary compatibility,
+matching reply identity, pending limits, expiry and no reconnect replay. These
+are metadata/grant exchange evidence. Live claiming, renewal, journal-to-Run
+startup composition, restart/failover and Provider acceptance remain incomplete.
+
+Local checks passed staged quality, typecheck and workspace build, 149 tests in
+six compatibility suites, nine focused client/server boundary cases and a real
+socket registration case covering four rejected modes. Those focused runs overlap
+the compatibility suites. No full-suite or unified final E2E pass is claimed here.
+
+PR #154 merged durable node admission at `2e0037c`. Its protected macOS CI passed
+19 journal cases (one unsupported-platform case skipped), three actual v4/v5/v6
+author/verifier/server-ACK cases and ten real Git startup-boundary cases. The new
+controlled author reported actual physical closure after grant expiry and Stop.
+The shared-checks job, required package aggregate and Mac desktop job also passed;
+broader Vitest and iOS results were still pending when this next item began.
+
 ## Explicit delegation (independent Step 7)
 
 Existing `parent_task_id` also records conversation continuations and research
@@ -1147,3 +1207,8 @@ unchanged checks, which does not make the complete run green. Scheduler Web
 acceptance passed 4/4 and capacity acceptance 1/1. PR #153 merged this bounded
 configuration/failure-ownership change; normal readiness performance, intermittent
 browser closure and unified final acceptance remain unresolved.
+
+PR #153 subsequently passed both full CI Vitest shards and their shared aggregate
+on its source revision. This is separate hosted Windows evidence; it does not
+rewrite the recorded local startup/Web failures or establish final integrated
+or live Provider acceptance.

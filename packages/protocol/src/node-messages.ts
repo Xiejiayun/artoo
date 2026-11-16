@@ -1,21 +1,104 @@
-import {productSourceOperationCommandSchema,productSourceOperationStopSchema,productSourceOperationStatusSchema,productSourceOperationReceiptSchema} from "./product-source-operations.js";
-import { importedProductReviewCommandSchema, importedProductReviewStopSchema, importedProductReviewStatusSchema, importedProductReviewReceiptSchema } from "./imported-product-review.js";
-import { importedDesignContinuationCommandSchema, importedDesignContinuationStopSchema, importedDesignContinuationStatusSchema, importedDesignContinuationReceiptSchema } from "./imported-design-continuation.js";
-import { importedDesignReviewCommandSchema, importedDesignReviewStopSchema, importedDesignReviewStatusSchema, importedDesignReviewReceiptSchema } from "./imported-design-review.js";
-import { importedExecutionCommandSchema, importedExecutionStopSchema, importedExecutionStatusSchema, importedExecutionReceiptSchema } from "./imported-execution.js";
-import { importedExecutionReviewCommandSchema, importedExecutionReviewStopSchema, importedExecutionReviewStatusSchema, importedExecutionReviewReceiptSchema } from "./imported-execution-review.js";
-import { importedExecutionRepairCommandSchema, importedExecutionRepairStopSchema, importedExecutionRepairStatusSchema, importedExecutionRepairReceiptSchema } from "./imported-execution-repair.js";
-import { importedValidationCommandSchema, importedValidationStopSchema, importedValidationStatusSchema, importedValidationReceiptSchema } from "./imported-validation.js";
-import { importedValidationReviewCommandSchema, importedValidationReviewStopSchema, importedValidationReviewStatusSchema, importedValidationReviewReceiptSchema } from "./imported-validation-review.js";
-import { productSourceRecoveryCommandSchema, productSourceRecoveryStopSchema, productSourceRecoveryStatusSchema, productSourceRecoveryReceiptSchema, productSourceRecoveryRegisteredSchema, productSourceRecoverySessionSchema } from "./source-recovery.js";
-import { sourceLifecycleRegisteredCommandSchema, sourceCleanCheckpointCommittedCommandSchema, sourceLifecycleRejectedCommandSchema } from "./source-clean-lifecycle.js";
-import { importedRecoveryValidationCommandSchema, importedRecoveryValidationStopSchema, importedRecoveryValidationStatusSchema, importedRecoveryValidationReceiptSchema } from "./imported-recovery-validation.js";
-import { importedCleanValidationCommandSchema, importedCleanValidationStopSchema, importedCleanValidationStatusSchema, importedCleanValidationReceiptSchema } from "./imported-clean-validation.js";
-import { importedRecoveryValidationReviewCommandSchema, importedRecoveryValidationReviewStopSchema, importedRecoveryValidationReviewStatusSchema, importedRecoveryValidationReviewReceiptSchema } from "./imported-recovery-validation-review.js";
-import { importedCleanValidationReviewCommandSchema, importedCleanValidationReviewStopSchema, importedCleanValidationReviewStatusSchema, importedCleanValidationReviewReceiptSchema } from "./imported-clean-validation-review.js";
+import {
+  productSourceOperationCommandSchema,
+  productSourceOperationStopSchema,
+  productSourceOperationStatusSchema,
+  productSourceOperationReceiptSchema,
+} from "./product-source-operations.js";
+import {
+  importedProductReviewCommandSchema,
+  importedProductReviewStopSchema,
+  importedProductReviewStatusSchema,
+  importedProductReviewReceiptSchema,
+} from "./imported-product-review.js";
+import {
+  importedDesignContinuationCommandSchema,
+  importedDesignContinuationStopSchema,
+  importedDesignContinuationStatusSchema,
+  importedDesignContinuationReceiptSchema,
+} from "./imported-design-continuation.js";
+import {
+  importedDesignReviewCommandSchema,
+  importedDesignReviewStopSchema,
+  importedDesignReviewStatusSchema,
+  importedDesignReviewReceiptSchema,
+} from "./imported-design-review.js";
+import {
+  importedExecutionCommandSchema,
+  importedExecutionStopSchema,
+  importedExecutionStatusSchema,
+  importedExecutionReceiptSchema,
+} from "./imported-execution.js";
+import {
+  importedExecutionReviewCommandSchema,
+  importedExecutionReviewStopSchema,
+  importedExecutionReviewStatusSchema,
+  importedExecutionReviewReceiptSchema,
+} from "./imported-execution-review.js";
+import {
+  importedExecutionRepairCommandSchema,
+  importedExecutionRepairStopSchema,
+  importedExecutionRepairStatusSchema,
+  importedExecutionRepairReceiptSchema,
+} from "./imported-execution-repair.js";
+import {
+  importedValidationCommandSchema,
+  importedValidationStopSchema,
+  importedValidationStatusSchema,
+  importedValidationReceiptSchema,
+} from "./imported-validation.js";
+import {
+  importedValidationReviewCommandSchema,
+  importedValidationReviewStopSchema,
+  importedValidationReviewStatusSchema,
+  importedValidationReviewReceiptSchema,
+} from "./imported-validation-review.js";
+import {
+  productSourceRecoveryCommandSchema,
+  productSourceRecoveryStopSchema,
+  productSourceRecoveryStatusSchema,
+  productSourceRecoveryReceiptSchema,
+  productSourceRecoveryRegisteredSchema,
+  productSourceRecoverySessionSchema,
+} from "./source-recovery.js";
+import {
+  sourceLifecycleRegisteredCommandSchema,
+  sourceCleanCheckpointCommittedCommandSchema,
+  sourceLifecycleRejectedCommandSchema,
+} from "./source-clean-lifecycle.js";
+import {
+  importedRecoveryValidationCommandSchema,
+  importedRecoveryValidationStopSchema,
+  importedRecoveryValidationStatusSchema,
+  importedRecoveryValidationReceiptSchema,
+} from "./imported-recovery-validation.js";
+import {
+  importedCleanValidationCommandSchema,
+  importedCleanValidationStopSchema,
+  importedCleanValidationStatusSchema,
+  importedCleanValidationReceiptSchema,
+} from "./imported-clean-validation.js";
+import {
+  importedRecoveryValidationReviewCommandSchema,
+  importedRecoveryValidationReviewStopSchema,
+  importedRecoveryValidationReviewStatusSchema,
+  importedRecoveryValidationReviewReceiptSchema,
+} from "./imported-recovery-validation-review.js";
+import {
+  importedCleanValidationReviewCommandSchema,
+  importedCleanValidationReviewStopSchema,
+  importedCleanValidationReviewStatusSchema,
+  importedCleanValidationReviewReceiptSchema,
+} from "./imported-clean-validation-review.js";
 import { z } from "zod";
-import { applicationPublicationStartCommandSchema, applicationPublicationStopCommandSchema, applicationPublicationStatusCommandSchema,
-  applicationPublicationSessionCommandSchema, applicationPublicationReceiptAckCommandSchema, applicationPublicationObservationAckCommandSchema } from "./application-publication.js";
+import { schedulerStartRegistrationSchema, schedulerStartResponseCommandSchema } from "./scheduler-start.js";
+import {
+  applicationPublicationStartCommandSchema,
+  applicationPublicationStopCommandSchema,
+  applicationPublicationStatusCommandSchema,
+  applicationPublicationSessionCommandSchema,
+  applicationPublicationReceiptAckCommandSchema,
+  applicationPublicationObservationAckCommandSchema,
+} from "./application-publication.js";
 
 import {
   NativeSkillInventoryV1Schema,
@@ -33,10 +116,16 @@ import {
   ProductReleaseRequestSchema,
   ProductReleaseReceiptSchema,
   ProductReleaseHealthReportSchema,
-  RunUsagePayloadSchema
+  RunUsagePayloadSchema,
 } from "@artoo/domain";
-import { ProductSourceExportV1Schema, ProductSourceExportV2Schema, ProductSourceRoutingV1Schema, NodeOwnedResultProfileDescriptorsV1Schema, NodeOwnedResultVerificationEvidenceV1Schema,
-  OwnedResultRunAdmissionV1Schema } from "@artoo/domain";
+import {
+  ProductSourceExportV1Schema,
+  ProductSourceExportV2Schema,
+  ProductSourceRoutingV1Schema,
+  NodeOwnedResultProfileDescriptorsV1Schema,
+  NodeOwnedResultVerificationEvidenceV1Schema,
+  OwnedResultRunAdmissionV1Schema,
+} from "@artoo/domain";
 
 import { nodeErrorCodeSchema } from "./errors.js";
 
@@ -53,7 +142,7 @@ import { nodeErrorCodeSchema } from "./errors.js";
 export const machineSchema = z.object({
   hostname: z.string().min(1),
   os: z.string().min(1),
-  arch: z.string().min(1)
+  arch: z.string().min(1),
 });
 
 export const MANAGED_RECEIPT_CONTRACT = "run-event-body-v1" as const;
@@ -62,32 +151,66 @@ const sessionIdentifier = z.string().min(1).max(128);
 
 // --- Node -> Server -------------------------------------------------------
 
-export const nodeHelloSchema = z.object({
-  kind: z.literal("node.hello"),
-  node_id: z.string().min(1),
-  protocol_version: z.string().min(1),
-  artood_version: z.string().min(1),
-  machine: machineSchema,
-  // Informational workspace choices from this session; execution still checks
-  // the node-local allowlist and real filesystem paths for every task.
-  workspace_roots: z.object({ version: z.literal(1), paths: z.array(z.string().min(1).max(4096)
-    .regex(/^(?:[A-Za-z]:[\\/]|\/|\\\\)/).regex(/^[^\u0000-\u001f\u007f]+$/u)).min(1).max(32) }).strict().optional(),
-  execution_features: z.array(z.string().min(1).max(128)).max(32).optional(),
-  verification_profiles: VerificationProfileAdvertisementsSchema.optional(),
-  release_profiles: ReleaseProfileAdvertisementsSchema.optional(),
-  application_publication_profiles: ApplicationPublicationProfileAdvertisementsV1Schema.optional(),
-  owned_result_profiles: NodeOwnedResultProfileDescriptorsV1Schema.optional(),
-  product_source_routing: ProductSourceRoutingV1Schema.optional(),
-  managed_receipts: z.object({ version: z.number().int().positive(), nonce: z.string().guid(),
-    required_contract: z.string().min(1).max(128) }).optional()
-}).superRefine((value, ctx) => {
-  if (value.application_publication_profiles?.length && (!value.execution_features?.includes("application-publication.v1")
-    || value.application_publication_profiles.some(profile => profile.computer_id !== value.node_id)))
-    ctx.addIssue({ code: "custom", path: ["application_publication_profiles"], message: "Application publication profiles require their original node and explicit execution feature" });
-});
+export const nodeHelloSchema = z
+  .object({
+    kind: z.literal("node.hello"),
+    node_id: z.string().min(1),
+    protocol_version: z.string().min(1),
+    artood_version: z.string().min(1),
+    machine: machineSchema,
+    // Informational workspace choices from this session; execution still checks
+    // the node-local allowlist and real filesystem paths for every task.
+    workspace_roots: z
+      .object({
+        version: z.literal(1),
+        paths: z
+          .array(
+            z
+              .string()
+              .min(1)
+              .max(4096)
+              .regex(/^(?:[A-Za-z]:[\\/]|\/|\\\\)/)
+              .regex(/^[^\u0000-\u001f\u007f]+$/u),
+          )
+          .min(1)
+          .max(32),
+      })
+      .strict()
+      .optional(),
+    execution_features: z.array(z.string().min(1).max(128)).max(32).optional(),
+    verification_profiles: VerificationProfileAdvertisementsSchema.optional(),
+    release_profiles: ReleaseProfileAdvertisementsSchema.optional(),
+    application_publication_profiles: ApplicationPublicationProfileAdvertisementsV1Schema.optional(),
+    owned_result_profiles: NodeOwnedResultProfileDescriptorsV1Schema.optional(),
+    scheduler_start: schedulerStartRegistrationSchema.optional(),
+    product_source_routing: ProductSourceRoutingV1Schema.optional(),
+    managed_receipts: z
+      .object({
+        version: z.number().int().positive(),
+        nonce: z.string().guid(),
+        required_contract: z.string().min(1).max(128),
+      })
+      .optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (
+      value.application_publication_profiles?.length &&
+      (!value.execution_features?.includes("application-publication.v1") ||
+        value.application_publication_profiles.some((profile) => profile.computer_id !== value.node_id))
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["application_publication_profiles"],
+        message: "Application publication profiles require their original node and explicit execution feature",
+      });
+  });
 
-export const nodeSessionProbeSchema = z.object({ kind: z.literal("node.session.probe"),
-  node_id: sessionIdentifier, session_id: z.string().guid(), probe_id: z.string().guid() });
+export const nodeSessionProbeSchema = z.object({
+  kind: z.literal("node.session.probe"),
+  node_id: sessionIdentifier,
+  session_id: z.string().guid(),
+  probe_id: z.string().guid(),
+});
 
 export const runtimeStatusSchema = z.object({
   // Absent means the daemon has not reported discovery, not an empty inventory.
@@ -98,7 +221,7 @@ export const runtimeStatusSchema = z.object({
   // Capability tags this runtime advertises (e.g. "code.read", "code.modify").
   // Optional for back-compat: pre-capability heartbeats omit it and parse to [],
   // never undefined, so the scheduler can always read an array.
-  capabilities: z.array(z.string()).default([])
+  capabilities: z.array(z.string()).default([]),
 });
 
 export const nodeHeartbeatSchema = z.object({
@@ -108,12 +231,12 @@ export const nodeHeartbeatSchema = z.object({
   resources: z.object({
     cpu_load: z.number(),
     memory_used_pct: z.number(),
-    disk_free_gb: z.number()
+    disk_free_gb: z.number(),
   }),
   // Required complete snapshot, also sent by released registry-mode daemons.
   // [] explicitly means no runtimes; absence has never been a delta/no-op frame.
   runtimes: z.array(runtimeStatusSchema),
-  running_instances: z.array(z.string())
+  running_instances: z.array(z.string()),
 });
 
 // A command.ack is a discriminated union on `status`: an accepted ack carries
@@ -123,26 +246,23 @@ export const nodeHeartbeatSchema = z.object({
 const commandAckBase = {
   kind: z.literal("command.ack"),
   node_id: z.string().min(1),
-  command_id: z.string().min(1)
+  command_id: z.string().min(1),
 };
 
 export const commandAckAcceptedSchema = z.object({
   ...commandAckBase,
   status: z.literal("accepted"),
-  message: z.string().nullable().optional()
+  message: z.string().nullable().optional(),
 });
 
 export const commandAckRejectedSchema = z.object({
   ...commandAckBase,
   status: z.literal("rejected"),
   error_code: nodeErrorCodeSchema,
-  message: z.string().min(1)
+  message: z.string().min(1),
 });
 
-export const commandAckSchema = z.discriminatedUnion("status", [
-  commandAckAcceptedSchema,
-  commandAckRejectedSchema
-]);
+export const commandAckSchema = z.discriminatedUnion("status", [commandAckAcceptedSchema, commandAckRejectedSchema]);
 
 // --- Server -> Node (transport-only commands) -----------------------------
 // run.start is added in the domain-dependent phase because its payload is the
@@ -152,24 +272,39 @@ const commandEnvelope = {
   kind: z.literal("command"),
   id: z.string().min(1),
   idempotency_key: z.string().min(1),
-  deadline_at: z.string().datetime().optional()
+  deadline_at: z.string().datetime().optional(),
 };
 
-export const nodeSessionReadyCommandSchema = z.object({ ...commandEnvelope, type: z.literal("node.session.ready"),
-  payload: z.object({ version: z.number().int().positive(), node_id: sessionIdentifier,
-    hello_nonce: z.string().guid(), session_id: z.string().guid(), receipt_contract: z.string().min(1).max(128),
-    sequence_max: z.number().int().positive(), liveness: z.object({
-      probe_interval_ms: z.number().int().positive(), probe_timeout_ms: z.number().int().positive() }) }) });
-export const nodeSessionPongCommandSchema = z.object({ ...commandEnvelope, type: z.literal("node.session.pong"),
-  payload: z.object({ node_id: sessionIdentifier, session_id: z.string().guid(), probe_id: z.string().guid() }) });
+export const nodeSessionReadyCommandSchema = z.object({
+  ...commandEnvelope,
+  type: z.literal("node.session.ready"),
+  payload: z.object({
+    version: z.number().int().positive(),
+    node_id: sessionIdentifier,
+    hello_nonce: z.string().guid(),
+    session_id: z.string().guid(),
+    receipt_contract: z.string().min(1).max(128),
+    sequence_max: z.number().int().positive(),
+    scheduler_start: schedulerStartRegistrationSchema.optional(),
+    liveness: z.object({
+      probe_interval_ms: z.number().int().positive(),
+      probe_timeout_ms: z.number().int().positive(),
+    }),
+  }),
+});
+export const nodeSessionPongCommandSchema = z.object({
+  ...commandEnvelope,
+  type: z.literal("node.session.pong"),
+  payload: z.object({ node_id: sessionIdentifier, session_id: z.string().guid(), probe_id: z.string().guid() }),
+});
 
 export const runStopCommandSchema = z.object({
   ...commandEnvelope,
   type: z.literal("run.stop"),
   payload: z.object({
     run_id: z.string().min(1),
-    reason: z.string()
-  })
+    reason: z.string(),
+  }),
 });
 
 export const artifactCollectCommandSchema = z.object({
@@ -177,8 +312,8 @@ export const artifactCollectCommandSchema = z.object({
   type: z.literal("artifact.collect"),
   payload: z.object({
     run_id: z.string().min(1),
-    paths: z.array(z.string())
-  })
+    paths: z.array(z.string()),
+  }),
 });
 
 // run.resume (#115 P2-S3): sent to a reconnected node to continue an
@@ -188,113 +323,194 @@ export const runResumeCommandSchema = z.object({
   ...commandEnvelope,
   type: z.literal("run.resume"),
   payload: z.object({
-    run_id: z.string().min(1)
-  })
+    run_id: z.string().min(1),
+  }),
 });
 
 /** Receipt sent after a run event has committed, enabling safe replay. */
 export const runEventAckCommandSchema = z.object({
   ...commandEnvelope,
   type: z.literal("run.event.ack"),
-  payload: z.object({
-    run_id: z.string().min(1), sequence: z.number().int().nonnegative().max(2147483647),
-    status: z.enum(["accepted", "rejected"]), message: z.string().optional(),
-    application_verification: ApplicationPublicationVerificationAckV1Schema.optional(),
-  }).superRefine((value, ctx) => {
-    if (value.application_verification && value.status !== "accepted") ctx.addIssue({ code: "custom", path: ["application_verification"],
-      message: "Only an accepted committed event can bind an application verification evidence identity" });
-  }),
+  payload: z
+    .object({
+      run_id: z.string().min(1),
+      sequence: z.number().int().nonnegative().max(2147483647),
+      status: z.enum(["accepted", "rejected"]),
+      message: z.string().optional(),
+      application_verification: ApplicationPublicationVerificationAckV1Schema.optional(),
+    })
+    .superRefine((value, ctx) => {
+      if (value.application_verification && value.status !== "accepted")
+        ctx.addIssue({
+          code: "custom",
+          path: ["application_verification"],
+          message: "Only an accepted committed event can bind an application verification evidence identity",
+        });
+    }),
 });
 
 // run.start carries the domain RunStartPayload (imported, not redefined — the
 // payload is owned by @artoo/domain). The wire envelope (id/idempotency_key/
 // deadline_at) is owned here.
 const ownedResultModeMarkers = {
-  requirement: z.never().optional(), run_start: z.never().optional(),
-  owned_result: z.never().optional(), owned_result_assignment: z.never().optional(),
-  owned_result_requirement: z.never().optional(), owned_result_admission: z.never().optional(),
-  owned_result_profile: z.never().optional(), owned_result_profiles: z.never().optional(),
+  requirement: z.never().optional(),
+  run_start: z.never().optional(),
+  owned_result: z.never().optional(),
+  owned_result_assignment: z.never().optional(),
+  owned_result_requirement: z.never().optional(),
+  owned_result_admission: z.never().optional(),
+  owned_result_profile: z.never().optional(),
+  owned_result_profiles: z.never().optional(),
 };
 // Inspect raw payload keys before the ordinary domain codec can strip them.
 // Unrelated legacy extension fields retain their existing compatibility.
-const legacyRunStartPayloadSchema = z.unknown().superRefine((raw, ctx) => {
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    for (const key of Object.keys(ownedResultModeMarkers)) if (Object.hasOwn(raw, key)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: "Owned result requests require run.start.owned-result.v1" });
-    }
-    const pack = (raw as Record<string, unknown>).context_pack;
-    const payload = pack && typeof pack === "object" ? (pack as Record<string, unknown>).payload : undefined;
-    if (payload && typeof payload === "object") {
-      for (const key of ["imported_recovery_validation", "imported_recovery_validation_review_subject", "imported_clean_validation", "imported_clean_validation_review_subject"]) {
-        if (Object.hasOwn(payload, key) && (payload as Record<string, unknown>)[key] !== undefined)
-          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["context_pack", "payload", key], message: "Recovery contexts require their dedicated command and current local admission" });
+const legacyRunStartPayloadSchema = z
+  .unknown()
+  .superRefine((raw, ctx) => {
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      for (const key of Object.keys(ownedResultModeMarkers))
+        if (Object.hasOwn(raw, key)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: "Owned result requests require run.start.owned-result.v1",
+          });
+        }
+      const pack = (raw as Record<string, unknown>).context_pack;
+      const payload = pack && typeof pack === "object" ? (pack as Record<string, unknown>).payload : undefined;
+      if (payload && typeof payload === "object") {
+        for (const key of [
+          "imported_recovery_validation",
+          "imported_recovery_validation_review_subject",
+          "imported_clean_validation",
+          "imported_clean_validation_review_subject",
+        ]) {
+          if (Object.hasOwn(payload, key) && (payload as Record<string, unknown>)[key] !== undefined)
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["context_pack", "payload", key],
+              message: "Recovery contexts require their dedicated command and current local admission",
+            });
+        }
       }
     }
-  }
-}).pipe(RunStartPayloadSchema).superRefine((start, ctx) => {
-  const context = start.context_pack.payload;
-  const publication = context?.application_publication, grant = context?.app_publication, required = start.verification?.application_publication;
-  if (!start.verification?.application && !context?.app_delivery && !grant && !publication && !required) return;
-  if (!start.verification?.application || !(context?.app_delivery || grant) || !context?.verification_capabilities?.application
-    || context.app_delivery && (grant || publication || required)
-    || start.workspace_allocation || start.workspace.branch != null || context.release_capabilities
-    || Object.keys(context).some(key => key.startsWith("imported_") || key === "transferred_product_input" || key === "product_research_revision")) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["verification", "application"],
-      message: "Application development requires its ordinary inline workspace context without handoff, managed allocation or static publication" });
-  }
-  if (grant || publication || required) {
-    const binding = publication?.capabilities.binding, verification = start.verification;
-    if (!grant || !publication || !required || !binding || !context?.goal_context
-      || publication.agent_instance_id !== start.agent_instance_id || binding.project_id !== context.project.id
-      || grant.publication_profile_id !== publication.authorization.grant.publication_profile_id
-      || grant.publication_profile_id !== binding.publication_profile_id || required.authorization_event_id !== publication.authorization.event_id
-      || required.publisher_session_id !== publication.publisher_session_id || required.publication_profile_id !== binding.publication_profile_id
-      || required.publication_profile_digest !== binding.publication_profile_digest || required.publication_contract_digest !== binding.publication_contract_digest
-      || binding.verification_profile_id !== verification?.profile_id || binding.verification_profile_digest !== verification?.capability_binding?.profile_digest
-      || binding.verification_profile_id !== context.verification_capabilities?.profile_id
-      || binding.verification_profile_digest !== context.verification_capabilities?.profile_digest
-      || binding.application_config_digest !== verification?.application?.config_digest
-      || binding.application_contract_digest !== verification?.application?.contract_digest
-      || binding.application_config_digest !== context.verification_capabilities?.application?.config_digest
-      || binding.application_contract_digest !== context.verification_capabilities?.application?.contract_digest)
-      ctx.addIssue({ code: "custom", path: ["verification", "application_publication"],
-        message: "Publication verification must bind the original grant, user event, agent instance, paired session and protected verifier capabilities" });
-  }
-});
+  })
+  .pipe(RunStartPayloadSchema)
+  .superRefine((start, ctx) => {
+    const context = start.context_pack.payload;
+    const publication = context?.application_publication,
+      grant = context?.app_publication,
+      required = start.verification?.application_publication;
+    if (!start.verification?.application && !context?.app_delivery && !grant && !publication && !required) return;
+    if (
+      !start.verification?.application ||
+      !(context?.app_delivery || grant) ||
+      !context?.verification_capabilities?.application ||
+      (context.app_delivery && (grant || publication || required)) ||
+      start.workspace_allocation ||
+      start.workspace.branch != null ||
+      context.release_capabilities ||
+      Object.keys(context).some(
+        (key) =>
+          key.startsWith("imported_") || key === "transferred_product_input" || key === "product_research_revision",
+      )
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["verification", "application"],
+        message:
+          "Application development requires its ordinary inline workspace context without handoff, managed allocation or static publication",
+      });
+    }
+    if (grant || publication || required) {
+      const binding = publication?.capabilities.binding,
+        verification = start.verification;
+      if (
+        !grant ||
+        !publication ||
+        !required ||
+        !binding ||
+        !context?.goal_context ||
+        publication.agent_instance_id !== start.agent_instance_id ||
+        binding.project_id !== context.project.id ||
+        grant.publication_profile_id !== publication.authorization.grant.publication_profile_id ||
+        grant.publication_profile_id !== binding.publication_profile_id ||
+        required.authorization_event_id !== publication.authorization.event_id ||
+        required.publisher_session_id !== publication.publisher_session_id ||
+        required.publication_profile_id !== binding.publication_profile_id ||
+        required.publication_profile_digest !== binding.publication_profile_digest ||
+        required.publication_contract_digest !== binding.publication_contract_digest ||
+        binding.verification_profile_id !== verification?.profile_id ||
+        binding.verification_profile_digest !== verification?.capability_binding?.profile_digest ||
+        binding.verification_profile_id !== context.verification_capabilities?.profile_id ||
+        binding.verification_profile_digest !== context.verification_capabilities?.profile_digest ||
+        binding.application_config_digest !== verification?.application?.config_digest ||
+        binding.application_contract_digest !== verification?.application?.contract_digest ||
+        binding.application_config_digest !== context.verification_capabilities?.application?.config_digest ||
+        binding.application_contract_digest !== context.verification_capabilities?.application?.contract_digest
+      )
+        ctx.addIssue({
+          code: "custom",
+          path: ["verification", "application_publication"],
+          message:
+            "Publication verification must bind the original grant, user event, agent instance, paired session and protected verifier capabilities",
+        });
+    }
+  });
 export const runStartCommandSchema = z.object({
   ...commandEnvelope,
   ...ownedResultModeMarkers,
   type: z.literal("run.start"),
-  payload: legacyRunStartPayloadSchema
+  payload: legacyRunStartPayloadSchema,
 });
 
-export const runStartOwnedResultCommandSchema = z.object({
-  ...commandEnvelope, type: z.literal("run.start.owned-result.v1"), payload: OwnedResultRunAdmissionV1Schema,
-}).strict();
+export const runStartOwnedResultCommandSchema = z
+  .object({
+    ...commandEnvelope,
+    type: z.literal("run.start.owned-result.v1"),
+    payload: OwnedResultRunAdmissionV1Schema,
+  })
+  .strict();
 
 export const productReleaseCommandSchema = z.object({
-  ...commandEnvelope, type: z.literal("product.release"), payload: ProductReleaseRequestSchema,
+  ...commandEnvelope,
+  type: z.literal("product.release"),
+  payload: ProductReleaseRequestSchema,
 });
 export const productReleaseCancelCommandSchema = z.object({
-  ...commandEnvelope, type: z.literal("product.release.cancel"), payload: ProductReleaseRequestSchema,
+  ...commandEnvelope,
+  type: z.literal("product.release.cancel"),
+  payload: ProductReleaseRequestSchema,
 });
 
 export const productReleaseReceiptMessageSchema = z.object({
-  kind: z.literal("product.release.receipt"), node_id: z.string().min(1), payload: ProductReleaseReceiptSchema,
+  kind: z.literal("product.release.receipt"),
+  node_id: z.string().min(1),
+  payload: ProductReleaseReceiptSchema,
 });
 export const productReleaseHealthMessageSchema = z.object({
-  kind: z.literal("product.release.health"), node_id: z.string().min(1), payload: ProductReleaseHealthReportSchema,
+  kind: z.literal("product.release.health"),
+  node_id: z.string().min(1),
+  payload: ProductReleaseHealthReportSchema,
 });
 /** Commits one immutable health observation; a socket write alone is not a receipt. */
 export const productReleaseHealthAckCommandSchema = z.object({
-  ...commandEnvelope, type: z.literal("product.release.health.ack"),
-  payload: z.object({ event_id: sessionIdentifier, release_id: sessionIdentifier,
-    sequence: z.number().int().min(1).max(2147483647), status: z.enum(["accepted", "rejected"]),
-    message: z.string().max(2000).optional() }).strict(),
+  ...commandEnvelope,
+  type: z.literal("product.release.health.ack"),
+  payload: z
+    .object({
+      event_id: sessionIdentifier,
+      release_id: sessionIdentifier,
+      sequence: z.number().int().min(1).max(2147483647),
+      status: z.enum(["accepted", "rejected"]),
+      message: z.string().max(2000).optional(),
+    })
+    .strict(),
 });
 
 // Name each existing option so declaration emit preserves exact types without expanding the entire graph.
 type CommandSchemaOptions = [
+  typeof schedulerStartResponseCommandSchema,
   typeof applicationPublicationSessionCommandSchema,
   typeof applicationPublicationStartCommandSchema,
   typeof applicationPublicationStopCommandSchema,
@@ -377,26 +593,74 @@ type CommandSchemaOptions = [
 
 /** All Server -> Node commands, discriminated on `type`. */
 export const commandSchema: z.ZodDiscriminatedUnion<CommandSchemaOptions, "type"> = z.discriminatedUnion("type", [
+  schedulerStartResponseCommandSchema,
   applicationPublicationSessionCommandSchema,
-  applicationPublicationStartCommandSchema, applicationPublicationStopCommandSchema, applicationPublicationStatusCommandSchema,
-  applicationPublicationReceiptAckCommandSchema, applicationPublicationObservationAckCommandSchema,
-  sourceLifecycleRegisteredCommandSchema, sourceCleanCheckpointCommittedCommandSchema, sourceLifecycleRejectedCommandSchema,
+  applicationPublicationStartCommandSchema,
+  applicationPublicationStopCommandSchema,
+  applicationPublicationStatusCommandSchema,
+  applicationPublicationReceiptAckCommandSchema,
+  applicationPublicationObservationAckCommandSchema,
+  sourceLifecycleRegisteredCommandSchema,
+  sourceCleanCheckpointCommittedCommandSchema,
+  sourceLifecycleRejectedCommandSchema,
   productSourceRecoverySessionSchema,
   productSourceRecoveryRegisteredSchema,
-  productSourceRecoveryCommandSchema, productSourceRecoveryStopSchema, productSourceRecoveryStatusSchema, productSourceRecoveryReceiptSchema,
-  importedRecoveryValidationCommandSchema, importedRecoveryValidationStopSchema, importedRecoveryValidationStatusSchema, importedRecoveryValidationReceiptSchema,
-  importedCleanValidationCommandSchema, importedCleanValidationStopSchema, importedCleanValidationStatusSchema, importedCleanValidationReceiptSchema,
-  importedRecoveryValidationReviewCommandSchema, importedRecoveryValidationReviewStopSchema, importedRecoveryValidationReviewStatusSchema, importedRecoveryValidationReviewReceiptSchema,
-  importedCleanValidationReviewCommandSchema, importedCleanValidationReviewStopSchema, importedCleanValidationReviewStatusSchema, importedCleanValidationReviewReceiptSchema,
-  importedDesignContinuationCommandSchema, importedDesignContinuationStopSchema, importedDesignContinuationStatusSchema, importedDesignContinuationReceiptSchema,
-  importedDesignReviewCommandSchema, importedDesignReviewStopSchema, importedDesignReviewStatusSchema, importedDesignReviewReceiptSchema,
-  importedExecutionCommandSchema, importedExecutionStopSchema, importedExecutionStatusSchema, importedExecutionReceiptSchema,
-  importedExecutionReviewCommandSchema, importedExecutionReviewStopSchema, importedExecutionReviewStatusSchema, importedExecutionReviewReceiptSchema,
-  importedExecutionRepairCommandSchema, importedExecutionRepairStopSchema, importedExecutionRepairStatusSchema, importedExecutionRepairReceiptSchema,
-  importedValidationCommandSchema, importedValidationStopSchema, importedValidationStatusSchema, importedValidationReceiptSchema,
-  importedValidationReviewCommandSchema, importedValidationReviewStopSchema, importedValidationReviewStatusSchema, importedValidationReviewReceiptSchema,
-  importedProductReviewCommandSchema, importedProductReviewStopSchema, importedProductReviewStatusSchema, importedProductReviewReceiptSchema,
-  productSourceOperationCommandSchema,productSourceOperationStopSchema,productSourceOperationStatusSchema,productSourceOperationReceiptSchema,
+  productSourceRecoveryCommandSchema,
+  productSourceRecoveryStopSchema,
+  productSourceRecoveryStatusSchema,
+  productSourceRecoveryReceiptSchema,
+  importedRecoveryValidationCommandSchema,
+  importedRecoveryValidationStopSchema,
+  importedRecoveryValidationStatusSchema,
+  importedRecoveryValidationReceiptSchema,
+  importedCleanValidationCommandSchema,
+  importedCleanValidationStopSchema,
+  importedCleanValidationStatusSchema,
+  importedCleanValidationReceiptSchema,
+  importedRecoveryValidationReviewCommandSchema,
+  importedRecoveryValidationReviewStopSchema,
+  importedRecoveryValidationReviewStatusSchema,
+  importedRecoveryValidationReviewReceiptSchema,
+  importedCleanValidationReviewCommandSchema,
+  importedCleanValidationReviewStopSchema,
+  importedCleanValidationReviewStatusSchema,
+  importedCleanValidationReviewReceiptSchema,
+  importedDesignContinuationCommandSchema,
+  importedDesignContinuationStopSchema,
+  importedDesignContinuationStatusSchema,
+  importedDesignContinuationReceiptSchema,
+  importedDesignReviewCommandSchema,
+  importedDesignReviewStopSchema,
+  importedDesignReviewStatusSchema,
+  importedDesignReviewReceiptSchema,
+  importedExecutionCommandSchema,
+  importedExecutionStopSchema,
+  importedExecutionStatusSchema,
+  importedExecutionReceiptSchema,
+  importedExecutionReviewCommandSchema,
+  importedExecutionReviewStopSchema,
+  importedExecutionReviewStatusSchema,
+  importedExecutionReviewReceiptSchema,
+  importedExecutionRepairCommandSchema,
+  importedExecutionRepairStopSchema,
+  importedExecutionRepairStatusSchema,
+  importedExecutionRepairReceiptSchema,
+  importedValidationCommandSchema,
+  importedValidationStopSchema,
+  importedValidationStatusSchema,
+  importedValidationReceiptSchema,
+  importedValidationReviewCommandSchema,
+  importedValidationReviewStopSchema,
+  importedValidationReviewStatusSchema,
+  importedValidationReviewReceiptSchema,
+  importedProductReviewCommandSchema,
+  importedProductReviewStopSchema,
+  importedProductReviewStatusSchema,
+  importedProductReviewReceiptSchema,
+  productSourceOperationCommandSchema,
+  productSourceOperationStopSchema,
+  productSourceOperationStatusSchema,
+  productSourceOperationReceiptSchema,
   nodeSessionReadyCommandSchema,
   nodeSessionPongCommandSchema,
   runStartCommandSchema,
@@ -419,7 +683,7 @@ export const adapterRunEventBodySchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run.answer"), payload: RunAnswerPayloadSchema }),
   z.object({ type: z.literal("run.usage"), payload: RunUsagePayloadSchema }),
   z.object({ type: z.literal("run.lifecycle"), payload: RunLifecyclePayloadSchema }),
-  z.object({ type: z.literal("artifact.created"), payload: ArtifactPayloadSchema })
+  z.object({ type: z.literal("artifact.created"), payload: ArtifactPayloadSchema }),
 ]);
 
 /** Retention/verification evidence is node-owned, never adapter-supplied. */
@@ -437,7 +701,7 @@ export const runEventMessageSchema = z.object({
   node_id: z.string().min(1),
   run_id: z.string().min(1),
   sequence: z.number().int().nonnegative().max(2147483647),
-  event: runEventBodySchema
+  event: runEventBodySchema,
 });
 
 export type Machine = z.infer<typeof machineSchema>;

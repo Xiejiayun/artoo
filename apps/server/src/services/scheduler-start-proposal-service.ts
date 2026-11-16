@@ -19,7 +19,8 @@ function freeze(value: object): void {
   Object.freeze(value);
 }
 
-/** Internal false-authority metadata only. No transport/poller calls this.
+/** False-authority metadata for an already consumed request. The negotiated
+ * paired scheduler channel may read it; no poller consumes permissions here.
  * A proposal cannot stand in for the future node-ready grant transaction. */
 export function prepareSchedulerStartProposal(ctx: ServerContext, input: SchedulerExecutionClaimInput) {
   return ctx.db.db.transaction((tx) => prepareSchedulerStartProposalInTransaction(ctx, tx, input), {
