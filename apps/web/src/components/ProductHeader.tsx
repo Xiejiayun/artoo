@@ -11,6 +11,7 @@ const TABS = [
   { to: "/board", label: "Board" },
   { to: "/goals", label: "Plan" },
   { to: "/runs", label: "Runs" },
+  { to: "/review", label: "Review" },
   { to: "/release", label: "Release" },
   { to: "/channels", label: "Thread" },
   { to: "/", label: "Workspace" },

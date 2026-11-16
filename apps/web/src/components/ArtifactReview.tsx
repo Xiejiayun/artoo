@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { Check, FileText, RotateCcw } from "lucide-react";
 
 import type { Artifact, Task, TaskReview } from "@artoo/domain";
@@ -49,6 +50,8 @@ export function ArtifactReview({ task, artifacts, reviews, versionCursor }: Arti
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.task(submission.taskId) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.tasks(submission.projectId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.projectControlView(submission.projectId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.auditBundle(submission.taskId) }),
       ]);
     },
     onError: async (error, submission) => {
@@ -71,11 +74,12 @@ export function ArtifactReview({ task, artifacts, reviews, versionCursor }: Arti
             <li key={artifact.id} className="artifact" data-type={artifact.type} data-artifact-id={artifact.id} aria-label={`Artifact ${artifact.id}`}>
               <header className="action-row"><strong className="artifact-filename">{artifactFilename(artifact)}</strong><Badge>{artifact.type}</Badge></header>
               <dl className="artifact-metadata">
-                <div><dt>Originating run</dt><dd>{artifact.run_id ? <code>{artifact.run_id}</code> : "Originating run not recorded"}</dd></div>
+                <div><dt>Originating run</dt><dd>{artifact.run_id ? <Link to={`/runs?task=${encodeURIComponent(task.id)}&run=${encodeURIComponent(artifact.run_id)}&project=${encodeURIComponent(task.project_id)}`}><code>{artifact.run_id}</code></Link> : "Originating run not recorded"}</dd></div>
                 <div><dt>Created</dt><dd><RecordedTime value={artifact.created_at} /></dd></div>
                 <div><dt>Artifact ID</dt><dd><code>{artifact.id}</code></dd></div>
               </dl>
               <ArtifactDownload artifact={artifact} />
+              <ArtifactTextPreview key={artifact.id} artifact={artifact} />
             </li>
           ))}
         </ul>
@@ -99,6 +103,21 @@ export function ArtifactReview({ task, artifacts, reviews, versionCursor }: Arti
       ) : null}
     </section>
   );
+}
+
+/** Load actual stored text only on request. Render as escaped text, never HTML. */
+function ArtifactTextPreview({ artifact }: { artifact: Artifact }): React.ReactNode {
+  const api = useApi();
+  const [open, setOpen] = useState(false);
+  const preview = useMutation({ mutationFn: async () => {
+    const blob = await api.downloadArtifact(artifact.id);
+    if (blob.size > 256 * 1024) throw new Error("This artifact is too large for inline preview. Download it to inspect the full content.");
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer());
+    if (text.includes(String.fromCharCode(0))) throw new Error("This artifact contains binary data. Use its download to inspect it.");
+    return text;
+  }, onSuccess: () => setOpen(true) });
+  if (!artifact.uri.startsWith("/api/v1/artifacts/") || !["patch", "report", "test_result", "contract"].includes(artifact.type)) return null;
+  return <div className="cowork-artifact-preview"><Button size="sm" loading={preview.isPending} onClick={() => preview.data === undefined ? preview.mutate() : setOpen((value) => !value)}>{open ? "Hide artifact text" : "Preview artifact text"}</Button><ActionError error={preview.error} />{open && <pre tabIndex={0} aria-label={`Artifact ${artifact.id} recorded text`}>{preview.data || "(Empty recorded artifact)"}</pre>}</div>;
 }
 
 function artifactFilename(artifact: Artifact): string {

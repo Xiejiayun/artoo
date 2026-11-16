@@ -22,6 +22,7 @@ const MemoryPage = lazyPage(() => import("../components/MemoryPage.js"), "Memory
 const RunsAuditPage = lazyPage(() => import("../components/RunsAuditPage.js"), "RunsAuditPage");
 const SettingsPage = lazyPage(() => import("../components/SettingsPage.js"), "SettingsPage");
 const ReleasePage = lazyPage(() => import("../components/ReleasePage.js"), "ReleasePage");
+const ReviewPage = lazyPage(() => import("../components/ReviewPage.js"), "ReviewPage");
 const OverviewPage = lazyPage(() => import("../components/OverviewPage.js"), "OverviewPage");
 
 /**
@@ -68,6 +69,7 @@ export function AppRoutes(): React.ReactNode {
           <Route path="/overview" element={<OverviewPage />} />
           <Route path="/board" element={<BoardView />} />
           <Route path="/goals" element={<GoalsPage />} />
+          <Route path="/review" element={<ReviewPage />} />
           <Route path="/channels" element={<ChannelsPage />} />
           <Route path="/release" element={<ReleasePage />} />
           <Route path="/settings" element={<SettingsPage />} />

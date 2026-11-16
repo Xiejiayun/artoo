@@ -40,6 +40,7 @@ import {
   type ProductSourceExportV1,
   type ProductSourceExportV2,
   type NodeOwnedResultVerificationEvidenceV1,
+  type SchedulerPermitUnusedV1,
   type TaskStatus,
 } from "@artoo/domain";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
@@ -57,6 +58,7 @@ import { qualifyRunEventMessage } from "./run-event-receipt.js";
 import { transitionRun, transitionTask } from "./transition-service.js";
 import { assertOrdinaryRunControl } from "./scheduler-run-control.js";
 import { authorizeSchedulerRunEvent } from "./scheduler-run-service.js";
+import { settleUnusedSchedulerPermit } from "./scheduler-unused-permit-service.js";
 import { unconfirmedDisconnectRunIds } from "./execution-state.js";
 import { previewForActiveSynthesis } from "./discussion-plan.js";
 import {
@@ -198,6 +200,7 @@ export async function cancelRun(ctx: ServerContext, runId: string, stopProcess: 
 }
 
 export type RunIngestEvent =
+  | { kind: "scheduler_permit_unused"; proof: SchedulerPermitUnusedV1 }
   | { kind: "lifecycle"; phase: "started" | "completed" | "failed" | "cancelled"; failureReason?: string }
   | { kind: "output"; stream: "stdout" | "stderr"; text: string; activity?: RunActivityPayload }
   | { kind: "answer"; text: string }
@@ -270,6 +273,8 @@ async function ingestRunEventInternal(
   ownedResultSession?: OwnedResultSession,
   schedulerMessage?: SchedulerRunEventMessage,
 ): Promise<IngestResult> {
+  if (env.event.kind === "scheduler_permit_unused" && (!schedulerMessage || wireIdentity === null))
+    throw AppError.permissionDenied("Unused permit evidence requires its original scoped node-owned lane");
   if (!Number.isInteger(env.sequence) || env.sequence < 0 || env.sequence > 2147483647) {
     throw AppError.validation("run event sequence must fit a nonnegative int32");
   }
@@ -447,7 +452,9 @@ async function ingestRunEventInternal(
         }
       }
     }
-    if (ev.kind === "product_source_export" || ev.kind === "product_source_semantic_export") {
+    if (ev.kind === "scheduler_permit_unused") {
+      eventId = await settleUnusedSchedulerPermit(ctx, tx, { binding: schedulerMessage!.binding, proof: ev.proof, run, task: taskRow, sequence: env.sequence });
+    } else if (ev.kind === "product_source_export" || ev.kind === "product_source_semantic_export") {
       if (run.status !== "running" || taskRow.status !== "running")
         throw AppError.conflict("Product source export requires its active run and task");
       const proof =
@@ -898,7 +905,7 @@ async function ingestRunEventInternal(
 
     // A terminal run lifecycle on a goal-linked task changes budget usage
     // (retries/cost/concurrency); enforce after commit.
-    if (ev.kind === "lifecycle" && ev.phase !== "started") {
+    if ((ev.kind === "lifecycle" && ev.phase !== "started") || ev.kind === "scheduler_permit_unused") {
       budgetGoalId = taskRow.goalId ?? null;
     }
 
@@ -1200,6 +1207,8 @@ function mapRunEvent(message: RunEventMessage): IngestEnvelope | null {
       text: body.payload.text,
       ...(body.payload.activity ? { activity: body.payload.activity } : {}),
     };
+  } else if (body.type === "scheduler.permit_unused") {
+    event = { kind: "scheduler_permit_unused", proof: body.payload };
   } else if (body.type === "run.answer") {
     event = { kind: "answer", text: body.payload.text };
   } else if (body.type === "run.usage") {

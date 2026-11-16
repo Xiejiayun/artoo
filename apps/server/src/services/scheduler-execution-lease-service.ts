@@ -300,23 +300,33 @@ export async function closeSchedulerExecutionLease(
   raw: SchedulerExecutionLeaseBindingV1,
   reason: "expired" | "revoked",
 ) {
+  return ctx.db.db.transaction((tx) => closeSchedulerExecutionLeaseInTransaction(ctx, tx, raw, reason));
+}
+
+/** Internal owner composition only. A caller must separately authenticate any
+ * node evidence before using this fence in its receipt transaction. */
+export async function closeSchedulerExecutionLeaseInTransaction(
+  ctx: ServerContext,
+  tx: DrizzleDb,
+  raw: SchedulerExecutionLeaseBindingV1,
+  reason: "expired" | "revoked",
+) {
   const binding = SchedulerExecutionLeaseBindingV1Schema.parse(raw);
   if (reason !== "expired" && reason !== "revoked") throw AppError.validation("Invalid execution lease closure reason");
-  return ctx.db.db.transaction(async (tx) => {
-    const now = ctx.clock.nowIso();
-    const [updated] = await tx
-      .update(a)
-      .set({ state: reason, observedAt: now, closedAt: now })
-      .where(
-        and(
-          identity(ctx, binding),
-          sql`${a.observedAt} <= ${now}::timestamptz`,
-          reason === "expired" ? sql`${a.expiresAt} <= ${now}::timestamptz` : undefined,
-        ),
-      )
-      .returning(returned);
-    if (!updated) throw AppError.conflict("Execution lease closure is stale or not yet eligible");
-    await auditLease(ctx, tx, binding, reason, now);
-    return SchedulerExecutionLeaseV1Schema.parse({ version: 1, ...updated });
-  });
+  const now = ctx.clock.nowIso();
+  const [updated] = await tx
+    .update(a)
+    .set({ state: reason, observedAt: now, closedAt: now })
+    .where(
+      and(
+        identity(ctx, binding),
+        eq(a.state, "active"),
+        sql`${a.observedAt} <= ${now}::timestamptz`,
+        reason === "expired" ? sql`${a.expiresAt} <= ${now}::timestamptz` : undefined,
+      ),
+    )
+    .returning(returned);
+  if (!updated) throw AppError.conflict("Execution lease closure is stale or not yet eligible");
+  await auditLease(ctx, tx, binding, reason, now);
+  return SchedulerExecutionLeaseV1Schema.parse({ version: 1, ...updated });
 }

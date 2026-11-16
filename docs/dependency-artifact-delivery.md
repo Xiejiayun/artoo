@@ -31,7 +31,14 @@ The node constructs this route from its configured server origin and frozen ids,
 rejects redirects, bounds response and aggregate sizes, and independently checks
 provenance and digest before exposing a read-only input snapshot to the CLI.
 Binary content must retain its binary identity rather than be decoded as text.
-The node integration is a separate implementation slice.
+The managed scheduler path now performs this transfer before journal ready and
+hands a private, payload-bound, once-consumed input snapshot to the existing
+physical Run owner. Cancellation closes untaken snapshots; taken snapshots stay
+with the owner until actual resource closure. Changed inventory or identity is
+retained as an error rather than recursively deleted. This path remains behind
+the existing local scheduler opt-in and native platform qualification guards.
+It requires frozen source-Run artifacts; it does not extend ordinary manual
+execution or invent a source Run for legacy manually attached artifacts.
 
 Regression sources cover controlled two-computer/two-Agent inventory, real
 device-token authentication, source upload and acceptance, exact delivery,

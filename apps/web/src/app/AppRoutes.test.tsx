@@ -46,6 +46,14 @@ function appClient() {
 }
 
 describe("AppRoutes", () => {
+  it("exposes the human Review workbench without replacing the Release destination", async () => {
+    renderWithProviders(<AppRoutes />, { client: appClient(), route: "/review" });
+    await act(async () => { await vi.dynamicImportSettled(); });
+    expect(await screen.findByRole("heading", { name: "Review", level: 1 })).toBeInTheDocument();
+    const views = within(screen.getByRole("navigation", { name: "Project views" }));
+    expect(views.getByRole("link", { name: "Review" })).toHaveAttribute("aria-current", "page");
+    expect(views.getByRole("link", { name: "Release" })).toHaveAttribute("href", "/release");
+  });
   it("renders the workspace and primary nav at /", async () => {
     renderWithProviders(<AppRoutes />, { client: appClient(), route: "/" });
     expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
