@@ -710,6 +710,56 @@ request rejection, access/consent/session/expiry/inventory/input changes and an
 observed PostgreSQL resource-lock wait followed by disabled eligibility. Executed
 results remain distinct from these coverage sources and from live acceptance.
 
+### Durable node attempt preparation (Step 4 foundation)
+
+The separate strict version-1 `SchedulerStartProposalV1` binds the immutable
+prepared-start snapshot and the entire Run start payload. It preserves the
+snapshot's `execution_authorized:false`, requires matching Run/Task/instance and
+inline project identity, and rejects unknown fields even inside legacy nested
+codecs. Its canonical digest includes a distinct proposal discriminator. This
+metadata contract is not an ordinary `run.start` command or a launch grant.
+
+The explicit offline `upgradeLocalJournalForSchedulerPreparation` API appends
+local journal migration 005. It upgrades v3 through the existing v4 extension to
+v5, without rewriting core payloads, receipts or outbox data. It requires the
+same stopped/joined runners, closed journal and verified backup as the existing
+offline upgrader, and rejects retained live/unknown rows. Open/startup never
+upgrades a journal. The older owned-result upgrader reports the actual v4 or v5
+version and cannot downgrade v5. Old binaries reject this new schema version.
+The protected filesystem boundary still supports only qualified local macOS
+storage; Windows and Linux remain unsupported for this physical journal.
+
+`prepareSchedulerStart` checks the saved namespace, versioned stable key, exact
+node target and complete per-run allocation before its worker transaction. The
+worker independently rechecks the proposal, then atomically reserves the Run
+and inserts a unique random node attempt ID and immutable proposal binding. The
+node attempt ID is separate from the private producer nonce: the reserved Run
+has **no producer nonce or producer incarnation**, and preparation returns no
+`FreshLaunchPermit`, payload or producer handle. No materialization or process
+starts. The public record carries only scoped identity and a false-authority
+digest; proposal content stays in the existing protected local journal boundary.
+
+An identical preparation on its original worker returns pending history; a
+different worker or restart returns unknown history with the same attempt ID.
+Neither reacquires launch authority. Changed proposals conflict. Ordinary and
+owned-result admission cannot consume a scheduler reservation, including after
+removing its per-run fields. An earlier Run-wide stop prevents preparation, and
+stopping an unowned preparation records a permanent not-started fence. Ordinary
+non-scheduler admission retains its existing behavior.
+
+The dedicated macOS CI fixture uses the actual boundary, worker and SQLite for
+offline migration and closed-file backup restoration before new work,
+concurrent independent connections, response-loss/restart replay, immutable
+identity, transaction rollback, ordinary-mode conflicts and stop fences. The
+cross-platform fixture only confirms unsupported-platform rejection. The existing
+owned-result vertical fixture also runs on both v4 and v5, retaining its actual
+controlled author/verifier, process-closure, server commit and ACK assertions.
+Executed results belong to the implementation PR; these tests launch no provider
+or target product. There is still no WS/HTTP consumer, ready/grant exchange,
+monotonic grant deadline, pre-spawn authority, lease renewal or failover. The
+ordinary consumed-Run dispatch guard remains intact. A later slice must supply
+those authorities before any live scheduler execution is connected.
+
 ## Explicit delegation (independent Step 7)
 
 Existing `parent_task_id` also records conversation continuations and research

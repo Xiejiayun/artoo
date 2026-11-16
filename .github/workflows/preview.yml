@@ -15,6 +15,41 @@ concurrency:
   group: preview-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  scheduler-journal:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build --workspace @artoo/server
+      - run: npm run build --workspace @artoo/artood
+      - name: Real protected local journal migration, preparation, concurrency and restart
+        shell: bash
+        run: |
+          set -o pipefail
+          node --test --test-concurrency=1 apps/artood/test-fixtures/scheduler-preparation-real.test.mjs 2>&1 | tee "$RUNNER_TEMP/scheduler-journal.log"
+      - name: Preserve owned-result author, verifier and ACK behavior on v4 and v5
+        shell: bash
+        env:
+          ARTOO_NATIVE_EVIDENCE_DIRECTORY: ${{ runner.temp }}/owned-result-journal
+        run: |
+          set -o pipefail
+          mkdir -p "$ARTOO_NATIVE_EVIDENCE_DIRECTORY"
+          node --test --test-concurrency=1 apps/artood/test-fixtures/owned-result-vertical-real.test.mjs 2>&1 | tee "$RUNNER_TEMP/owned-result-journal.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scheduler-journal-evidence
+          path: |
+            ${{ runner.temp }}/scheduler-journal.log
+            ${{ runner.temp }}/owned-result-journal.log
+            ${{ runner.temp }}/owned-result-journal/*.json
+          if-no-files-found: warn
+          retention-days: 14
   shared:
     if: always()
     needs: [shared-checks, shared-vitest, shared-windows-process]

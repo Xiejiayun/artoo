@@ -109,4 +109,5 @@ export * from "./scheduler-queue-metadata.js";
 export * from "./scheduler-intent.js";
 export * from "./scheduler-execution-request.js";
 export * from "./scheduler-prepared-start.js";
+export * from "./scheduler-start-proposal.js";
 export * from "./task-delegation.js";
