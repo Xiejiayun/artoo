@@ -9,6 +9,7 @@ import {
   canTransitionGoal,
   type Goal,
   type GoalAutomation,
+  type Plan,
 } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
 import { usePollMs } from "../app/RealtimeContext.js";
@@ -25,6 +26,8 @@ import { ActionError } from "./ActionError.js";
 import { RoomConversation } from "./RoomConversation.js";
 import { PreparedGoalRequest } from "./PreparedGoalRequest.js";
 import { GoalDiscussion } from "./GoalDiscussion.js";
+import { PlanRevisionDialog } from "./PlanRevisionDialog.js";
+import { PlanningStages } from "./PlanningStages.js";
 import { taskUpdatedLabel } from "./taskPresentation.js";
 import "../ui/work-insights.css";
 
@@ -465,6 +468,8 @@ function GoalDetail({ goal }: { goal: Goal }): React.ReactNode {
   const navigate = useNavigate();
   const { setSelectedTaskId } = useSelection();
   const [proposing, setProposing] = useState(false);
+  const [editingPlan, setEditingPlan] = useState<Plan | null>(null);
+  const [view, setView] = useState<"plan" | "team">("plan");
   const [confirmCancel, setConfirmCancel] = useState(false);
   const poll5s = usePollMs(5000);
   const automation = useQuery({
@@ -550,6 +555,10 @@ function GoalDetail({ goal }: { goal: Goal }): React.ReactNode {
         )}
       </header>
       <GoalOverview goal={goal} automation={automation.data?.automation} plans={plans.data?.plans} />
+      <PlanningStages goal={goal} plans={plans.data?.plans} automatic={autonomous} />
+      <div className="cowork-goal-views" role="group" aria-label="Goal workspace"><Button aria-pressed={view === "plan"} onClick={() => setView("plan")}>Plan & dependencies</Button><Button aria-pressed={view === "team"} onClick={() => setView("team")}>Team conversation & handoffs</Button><Link to={`/board?goal=${encodeURIComponent(goal.id)}`}>Team board ↗</Link><Link to={`/agents?project=${encodeURIComponent(goal.project_id)}`}>Configure squad ↗</Link></div>
+      {view === "team" && <section className="cowork-goal-team" aria-label="Shared team workspace"><h3><MessageSquare size={16} aria-hidden="true" />Shared goal context</h3><p>Discuss the outcome, record decisions, hand work to another Agent, and resolve blockers in the same goal context.</p>{goal.room_id ? <RoomConversation key={goal.room_id} roomId={goal.room_id} projectId={goal.project_id} goalId={goal.id} /> : <p>This goal has no shared conversation room.</p>}</section>}
+      <div className="cowork-goal-plan" hidden={view !== "plan"}>
       <ActionError error={automation.error} />
       {automation.data?.automation && <AutonomousProgress goal={goal} automation={automation.data.automation} />}
       <details className="delivery-criteria">
@@ -675,6 +684,7 @@ function GoalDetail({ goal }: { goal: Goal }): React.ReactNode {
             </ol>
             {manual && plan.status === "proposed" && (
               <div className="action-row">
+                {canProposePlan(goal.status, !!goal.current_plan_id) && <Button disabled={planAction.isPending} onClick={() => setEditingPlan(plan)}>Edit as new proposal</Button>}
                 <Button
                   variant="primary"
                   disabled={planAction.isPending}
@@ -746,14 +756,8 @@ function GoalDetail({ goal }: { goal: Goal }): React.ReactNode {
           ))}
         </section>
       </details>
-      {goal.room_id && (
-        <section className="insights-goal-conversation" aria-label="Goal conversation">
-          <h3>
-            <MessageSquare size={16} aria-hidden="true" /> Goal conversation
-          </h3>
-          <RoomConversation key={goal.room_id} roomId={goal.room_id} projectId={goal.project_id} goalId={goal.id} />
-        </section>
-      )}
+      </div>
+      {editingPlan && <PlanRevisionDialog key={editingPlan.id} plan={editingPlan} onClose={() => setEditingPlan(null)} onCreated={async () => { setEditingPlan(null); await refresh(); }} />}
     </article>
   );
 }
