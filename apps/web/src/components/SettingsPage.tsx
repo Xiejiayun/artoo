@@ -17,6 +17,8 @@ import { ActionError } from "./ActionError.js";
 import { AIDataSharingSettings } from "./AIDataSharing.js";
 import { DesktopSettings } from "./DesktopSetup.js";
 import { ConnectNodeDialog } from "./ConnectNodeDialog.js";
+import { ProjectSquadEditor } from "./ProjectSquadEditor.js";
+import { SchedulingPolicyEditor } from "./SchedulingPolicyEditor.js";
 import "../ui/settings.css";
 
 export function SettingsPage(): React.ReactNode {
@@ -116,6 +118,7 @@ export function SettingsPage(): React.ReactNode {
         </div>
       </section>
       {project && <SchedulerBaseline key={project.id} projectId={project.id} />}
+      {project && bootstrap.data && <section className="settings-section"><div className="settings-section__body u-stack"><ProjectSquadEditor key={project.id} projectId={project.id} bootstrap={bootstrap.data} /><SchedulingPolicyEditor key={`policy:${project.id}`} kind="project" id={project.id} bootstrap={bootstrap.data} /></div></section>}
       {window.artooDesktop?.getConnection && <DesktopSettings />}
       <section id="pairing-settings" className="settings-section" aria-label="Device pairing">
         <header className="settings-section__heading">

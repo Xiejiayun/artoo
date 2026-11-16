@@ -32,7 +32,7 @@ export function AgentRegistration({ computerId, computerName, runtimes, allowedR
   const mutation = useMutation({ mutationFn: () => api.registerAgent(computerId, {
     runtime, workspace_root: workspace.trim(), project_id: instanceProjectId || null,
     ...(creatingAgent ? { display_name: name.trim() || undefined, ...(capabilities.trim() ? { capabilities: capabilities.split(",").map((item) => item.trim()).filter(Boolean) } : {}) } : { agent_id: agentId }),
-  }, newIdempotencyKey()), onSuccess: async () => { await query.invalidateQueries({ queryKey: queryKeys.bootstrap }); setOpen(false); setName(""); setCapabilities(""); } });
+  }, newIdempotencyKey()), onSuccess: async () => { await Promise.all([query.invalidateQueries({ queryKey: queryKeys.bootstrap }), query.invalidateQueries({ queryKey: queryKeys.projectSquad() })]); setOpen(false); setName(""); setCapabilities(""); } });
   const openForm = (): void => {
     mutation.reset();
     const agent = agents.find((item) => item.id === preferredAgentId) ?? agents[0];

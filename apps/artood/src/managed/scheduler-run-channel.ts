@@ -13,6 +13,7 @@ type Issued = Extract<Reply, { status: "issued" }>;
 export interface SchedulerRunAuthority {
   readonly binding: Readonly<SchedulerExecutionLeaseBindingV1>;
   readonly signal: AbortSignal;
+  readonly stopRequested: boolean;
   status(): Promise<{ readonly stop_requested: boolean }>;
   forget(): void;
 }
@@ -70,7 +71,7 @@ export function createSchedulerRunClientChannel(options: {
       if (credentials.has(grant.run_id)) throw new Error("Scheduler run already has original event authority");
       const reply = await exchange(schedulerRunAcquireMessageSchema.parse({ kind: "scheduler.run.acquire.v1", node_id: session.nodeId,
         session_id: session.sessionId, exchange_id: randomUUID(), grant }), "acquire");
-      if (reply.status !== "issued" || reply.lease.state !== "active" || reply.stop_requested) throw new Error("Scheduler run acquisition did not issue fresh event authority");
+      if (reply.status !== "issued" || reply.lease.state !== "active") throw new Error("Scheduler run acquisition did not issue fresh event authority");
       const binding = Object.freeze(reply.lease.binding);
       for (const [key, value] of Object.entries(binding)) {
         if (key in grant && key !== "scope" && key !== "version" && value !== grant[key as keyof SchedulerStartGrantV1])
@@ -79,7 +80,7 @@ export function createSchedulerRunClientChannel(options: {
       const local = new AbortController();
       const forget = () => { credentials.delete(grant.run_id); local.abort(new Error("Scheduler run event authority forgotten")); };
       credentials.set(grant.run_id, { binding, credential: reply.credential, forget });
-      return Object.freeze<SchedulerRunAuthority>({ binding, signal: local.signal, forget,
+      return Object.freeze<SchedulerRunAuthority>({ binding, signal: local.signal, stopRequested: reply.stop_requested, forget,
         async status() {
           assertCurrent(); local.signal.throwIfAborted();
           const current = credentials.get(grant.run_id);

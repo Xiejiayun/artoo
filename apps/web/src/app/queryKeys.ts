@@ -5,6 +5,10 @@
  */
 export const queryKeys = {
   bootstrap: ["bootstrap"] as const,
+  agentConfiguration: (id: string) => ["agent-configuration", id] as const,
+  projectSquad: (id?: string) => id ? ["project-squad", id] as const : ["project-squad"] as const,
+  computerAdmission: (id: string) => ["computer-admission", id] as const,
+  schedulingPolicy: (kind: string, id: string) => ["scheduling-policy", kind, id] as const,
   session: ["session"] as const,
   allTasks: ["tasks"] as const,
   allApprovals: ["approvals"] as const,

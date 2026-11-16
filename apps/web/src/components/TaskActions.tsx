@@ -7,6 +7,7 @@ import type { Approval, Task } from "@artoo/domain";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { useApi, useCommands } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { useProjectSquad } from "../app/useProjectSquad.js";
 import { Button, PresenceBadge, Select, Textarea } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
 import "../ui/work-management.css";
@@ -55,7 +56,8 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
   const availabilityReasonId = useId();
   const approvalBlockReason = executionApprovalBlockReason(task.id, approvals);
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap(), enabled: task.status === "ready" });
-  const instances = bootstrap.data?.agent_instances.filter((instance) => instance.project_id === task.project_id && instance.status !== "disabled" && instance.config.enabled !== false) ?? [];
+  const squad = useProjectSquad(task.project_id, bootstrap.data);
+  const instances = squad.instances.filter((instance) => instance.status !== "disabled" && instance.config.enabled !== false);
   const assigneeUnavailable = !!assignee && !!bootstrap.data && !instances.some((instance) => instance.id === assignee);
   const assignmentLabel = (instance: (typeof instances)[number]): string => {
     const computer = bootstrap.data?.computers.find((item) => item.id === instance.computer_id);
@@ -108,7 +110,7 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
 
   return (
     <div className="work-task-actions">
-      <ActionError error={ready.error ?? assign.error ?? retry.error ?? requestApproval.error} />
+      <ActionError error={ready.error ?? assign.error ?? retry.error ?? requestApproval.error ?? (task.status === "ready" ? squad.error : null)} />
       {task.status === "backlog" ? (
         <div className="work-next-step">
           <div><span className="work-eyebrow">Next step</span><p>Ready to hand off?</p><span>Check the brief and acceptance criteria, then choose an agent.</span></div>

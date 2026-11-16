@@ -47,7 +47,13 @@ export function fakeApi(overrides: Partial<ApiClient>): ApiClient {
     baseUrl: "http://test.local/api/v1",
     fetch: () => Promise.reject(new Error("network disabled in component test")),
   });
-  return Object.assign(base, { messageVisibility: async () => [], getGoalAutomation: async () => ({ automation: null }), getGoalRelease: async () => ({ release: null }) }, overrides);
+  const api = Object.assign(base, { messageVisibility: async () => [], getGoalAutomation: async () => ({ automation: null }), getGoalRelease: async () => ({ release: null }) }, overrides);
+  // Test fixtures retain the API's explicit legacy projection; production never infers membership after a failed read.
+  if (!overrides.getProjectSquad) api.getProjectSquad = async (projectId) => {
+    const snapshot = await api.bootstrap();
+    return { squad: { version: 1, project_id: projectId, revision: 0, source: "legacy_instances", agent_ids: [...new Set(snapshot.agent_instances.filter((instance) => instance.project_id === projectId).map((instance) => instance.agent_id))] } };
+  };
+  return api;
 }
 
 export function bootstrapFixture(partial: Partial<BootstrapResponse> = {}): BootstrapResponse {

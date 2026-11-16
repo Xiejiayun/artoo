@@ -28,7 +28,7 @@ function fixture() {
   };
   const acquire = async () => { const pending = client.acquire(grant); await Promise.resolve(); channel.receive(reply()); return pending; };
   const frame: RunEventMessage = { kind: "run.event", node_id: session.nodeId, run_id: grant.run_id, sequence: 0,
-    event: { type: "run.lifecycle", payload: { phase: "running" } } };
+    event: { type: "run.lifecycle", payload: { phase: "started" } } };
   return { session, grant, lease, credential, sent, channel, client, reply, acquire, frame };
 }
 it("keeps event credentials private and wraps the unchanged inner durable frame only at exposure", async () => {
@@ -61,10 +61,12 @@ it("does not inherit old credentials or queued work after generation loss", asyn
   expect(() => f.channel.encode(f.frame)).toThrow("generation lost");
   await expect(f.client.acquire(f.grant)).rejects.toThrow("generation lost");
 });
-it("denies pre-existing Stop before installing any event writer", async () => {
+it("retains pre-existing Stop on the original authority for the physical owner to fence startup", async () => {
   const f = fixture(), pending = f.client.acquire(f.grant);
   await Promise.resolve();
   f.channel.receive(f.reply({ status: "issued", lease: f.lease, credential: f.credential, stop_requested: true }));
-  await expect(pending).rejects.toThrow("did not issue fresh");
-  expect(() => f.channel.encode(f.frame)).toThrow("no event authority");
+  const authority = await pending;
+  expect(authority.stopRequested).toBe(true);
+  expect(JSON.stringify(authority)).not.toContain(f.credential.secret);
+  authority.forget();
 });
