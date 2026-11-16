@@ -22,6 +22,7 @@ const MemoryPage = lazyPage(() => import("../components/MemoryPage.js"), "Memory
 const RunsAuditPage = lazyPage(() => import("../components/RunsAuditPage.js"), "RunsAuditPage");
 const SettingsPage = lazyPage(() => import("../components/SettingsPage.js"), "SettingsPage");
 const ReleasePage = lazyPage(() => import("../components/ReleasePage.js"), "ReleasePage");
+const OverviewPage = lazyPage(() => import("../components/OverviewPage.js"), "OverviewPage");
 
 /**
  * Product nav + route surface (no router/providers — App supplies BrowserRouter;
@@ -64,6 +65,7 @@ export function AppRoutes(): React.ReactNode {
         <Suspense fallback={<LoadingView label="Loading…" shape="page" />}>
         <Routes>
           <Route path="/" element={<WorkspaceLayout />} />
+          <Route path="/overview" element={<OverviewPage />} />
           <Route path="/board" element={<BoardView />} />
           <Route path="/goals" element={<GoalsPage />} />
           <Route path="/channels" element={<ChannelsPage />} />
