@@ -49,6 +49,7 @@ export const queryKeys = {
   tasks: (projectId: string) => ["tasks", projectId] as const,
   projectControlView: (projectId?: string) => projectId ? ["project-control-view", projectId] as const : ["project-control-view"] as const,
   task: (taskId: string) => ["task", taskId] as const,
+  taskAgentReviews: (taskId: string) => ["task-agent-reviews", taskId] as const,
   delegationTrees: (projectId: string) => ["delegation-trees", projectId] as const,
   delegationTree: (projectId: string, taskId: string) => ["delegation-trees", projectId, taskId] as const,
   messages: (roomId: string, threadRootId?: string) =>
