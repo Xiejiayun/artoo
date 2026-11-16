@@ -1,5 +1,10 @@
 # Cowork scheduler refactor
 
+The proposed combined UI/backend delivery order is recorded in
+[UI and scheduler implementation plan (2026-11-16)](cowork-ui-scheduler-implementation-2026-11-16.md).
+It incorporates the supplied interactive UI source; it is a plan, not completed
+implementation, platform qualification or rollout evidence.
+
 Source: `Artoo 重构设计与实现方案.docx`, supplied by the user, 2026-11-14.
 SHA-256: `1fd6936d9145f567f1b61a53e2d30e8f938b4480f76782612987e68d79b2f648`.
 The reference explicitly did not inspect Artoo's source and has no authentication.
