@@ -1,10 +1,11 @@
-import { agentInstances, agents, projectSquads, runs, schedulerExecutionRequests, schedulerStartGrants, tasks } from "@artoo/db";
+import { agentInstances, runs, schedulerExecutionRequests, schedulerStartGrants, tasks } from "@artoo/db";
 import type { DrizzleDb } from "@artoo/storage";
-import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { ServerContext } from "../context.js";
 import { schedulerRolloutEnabled } from "../config/scheduler-rollout.js";
 import { AppError } from "../errors.js";
 import { claimSchedulerExecutionRequest } from "./lifecycle-service.js";
+import { projectSquadInstanceMembership } from "./project-squad-membership.js";
 
 const requiredFlags = ["execution_requests", "daemon_claim", "isolated_workspaces", "capacity_admission", "attempt_credentials"] as const;
 const enabled = (ctx: ServerContext, projectId: string) => requiredFlags.every((flag) => schedulerRolloutEnabled(ctx.schedulerRollout, flag, { organizationId: ctx.organizationId, projectId }));
@@ -15,10 +16,7 @@ export type SchedulerPollAssignment = { task_id: string; request_id: string; run
 export async function schedulerProjectHasConsumer(ctx: ServerContext, tx: DrizzleDb, projectId: string) {
   if (!enabled(ctx, projectId)) return false;
   const pool = await tx.select({ computerId: agentInstances.computerId }).from(agentInstances)
-    .innerJoin(agents, and(eq(agents.id, agentInstances.agentId), eq(agents.organizationId, ctx.organizationId), isNull(agents.deletedAt)))
-    .leftJoin(projectSquads, and(eq(projectSquads.projectId, projectId), eq(projectSquads.organizationId, ctx.organizationId)))
-    .where(and(eq(agentInstances.organizationId, ctx.organizationId), isNull(agentInstances.deletedAt), sql`${agentInstances.runtime}<>'mock' AND ${agentInstances.status}<>'disabled'`,
-      or(and(isNull(projectSquads.projectId), eq(agentInstances.projectId, projectId)), and(sql`${projectSquads.agentIds} ? ${agentInstances.agentId}`, or(eq(agentInstances.projectId, projectId), isNull(agentInstances.projectId))))));
+    .where(and(projectSquadInstanceMembership(ctx.organizationId, projectId), sql`${agentInstances.runtime}<>'mock' AND ${agentInstances.status}<>'disabled'`));
   return pool.some((candidate) => ctx.supportsSchedulerClaim?.(candidate.computerId) === true);
 }
 
