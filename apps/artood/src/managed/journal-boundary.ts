@@ -1,8 +1,10 @@
 import { constants, closeSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
   realpathSync, statfsSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { JournalLocation } from "./journal-types.js";
+import { inspectWindowsJournalBoundary } from "./windows-journal-boundary.js";
+import { createWindowsJournalDirectory, flushWindowsJournalDirectory } from "./windows-journal-native.js";
 
 export interface FileIdentity { readonly dev: string; readonly ino: string }
 export interface Marker extends JournalLocation {
@@ -19,8 +21,11 @@ export function nonempty(value: unknown, name: string): asserts value is string 
   }
 }
 function localAncestry(directory: string): void {
-  // This first candidate qualifies only the local macOS filesystem kind hosting
-  // the trusted system root. Other filesystems/platforms require separate work.
+  if (process.platform === "win32") {
+    inspectWindowsJournalBoundary(directory, [], false); return;
+  }
+  // The macOS candidate retains its original filesystem qualification. A
+  // Windows branch uses native NTFS/ACL/flush evidence, never these mode bits.
   if (process.platform !== "darwin" || !isAbsolute(directory) || resolve(directory) !== directory || directory === sep) {
     throw new Error("Journal requires a canonical absolute local macOS directory");
   }
@@ -35,6 +40,7 @@ function localAncestry(directory: string): void {
   }
 }
 function privateDirectory(directory: string): FileIdentity {
+  if (process.platform === "win32") return inspectWindowsJournalBoundary(directory).directoryIdentity;
   localAncestry(directory);
   const stat = lstatSync(directory, { bigint: true });
   if (stat.uid !== BigInt(process.getuid!()) || (stat.mode & 0o777n) !== 0o700n) throw new Error("Journal directory must be owned and mode 0700");
@@ -48,37 +54,72 @@ function privateFile(path: string): FileIdentity {
   }
   return identity(stat);
 }
+function inspect(directory: string, files: readonly string[]) {
+  if (process.platform === "win32") return inspectWindowsJournalBoundary(directory, files);
+  return { directoryIdentity: privateDirectory(directory), files: new Map(files.map(name => [name, privateFile(join(directory, name))])) };
+}
 export function syncDirectory(directory: string): void {
+  if (process.platform === "win32") {
+    const before = lstatSync(directory, { bigint: true });
+    if (!before.isDirectory() || before.isSymbolicLink() || realpathSync.native(directory) !== directory) throw new Error("Journal sync directory is not physical");
+    flushWindowsJournalDirectory(directory, identity(before));
+    if (!same(identity(lstatSync(directory, { bigint: true })), identity(before)) || realpathSync.native(directory) !== directory) {
+      throw new Error("Journal directory changed during durability confirmation");
+    }
+    return;
+  }
   const fd = openSync(directory, constants.O_RDONLY | constants.O_NOFOLLOW);
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
 export function syncDatabase(path: string): void {
+  const expected = process.platform === "win32" ? (() => {
+    if (basename(path) !== "journal.sqlite") throw new Error("Invalid journal database path");
+    return inspect(dirname(path), ["journal.sqlite"]).files.get("journal.sqlite")!;
+  })() : undefined;
   const fd = openSync(path, constants.O_RDWR | constants.O_NOFOLLOW);
-  try { fsyncSync(fd); } finally { closeSync(fd); }
+  try {
+    if (expected && !same(identity(fstatSync(fd, { bigint: true })), expected)) throw new Error("Journal database handle identity changed");
+    fsyncSync(fd);
+    if (expected && !same(identity(lstatSync(path, { bigint: true })), expected)) throw new Error("Journal database name identity changed");
+  } finally { closeSync(fd); }
 }
 export function beginProvision(location: JournalLocation): Marker {
   nonempty(location.directory, "directory"); nonempty(location.controllerScope, "controller scope"); nonempty(location.nodeId, "node ID");
   localAncestry(dirname(location.directory));
-  mkdirSync(location.directory, { mode: 0o700 }); // Exclusive leaf: never adopts/reset an existing namespace.
+  if (process.platform === "win32") {
+    createWindowsJournalDirectory(location.directory);
+    // Namespace creation must survive power loss as well as its child entries.
+    // A failed native flush leaves a private, unqualified directory to inspect;
+    // it never adopts, deletes or resets that uncertain namespace automatically.
+    syncDirectory(dirname(location.directory));
+  } else mkdirSync(location.directory, { mode: 0o700 }); // Exclusive leaf: never adopts/reset an existing namespace.
   const directoryIdentity = privateDirectory(location.directory);
   const databasePath = join(location.directory, "journal.sqlite");
   const fd = openSync(databasePath, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
   try { fsyncSync(fd); } finally { closeSync(fd); }
-  return { version: 1, namespace: randomUUID(), ...location, directoryIdentity, databaseIdentity: privateFile(databasePath) };
+  const completed = inspect(location.directory, ["journal.sqlite"]);
+  if (!same(completed.directoryIdentity, directoryIdentity)) throw new Error("Provisioned journal directory identity changed");
+  return { version: 1, namespace: randomUUID(), ...location, directoryIdentity, databaseIdentity: completed.files.get("journal.sqlite")! };
 }
 export function finishProvision(marker: Marker): Boundary {
-  if (!same(privateDirectory(marker.directory), marker.directoryIdentity)
-    || !same(privateFile(join(marker.directory, "journal.sqlite")), marker.databaseIdentity)) throw new Error("Provisioned journal identity changed");
+  const before = inspect(marker.directory, ["journal.sqlite"]);
+  if (!same(before.directoryIdentity, marker.directoryIdentity)
+    || !same(before.files.get("journal.sqlite")!, marker.databaseIdentity)) throw new Error("Provisioned journal identity changed");
   const path = join(marker.directory, "namespace.json");
   const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
   try { writeFileSync(fd, JSON.stringify(marker) + "\n"); fsyncSync(fd); } finally { closeSync(fd); }
   syncDirectory(marker.directory);
-  return { marker, markerIdentity: privateFile(path), databasePath: join(marker.directory, "journal.sqlite") };
+  const completed = inspect(marker.directory, ["journal.sqlite", "namespace.json"]);
+  if (!same(completed.directoryIdentity, marker.directoryIdentity) || !same(completed.files.get("journal.sqlite")!, marker.databaseIdentity)) {
+    throw new Error("Provisioned journal identity changed while writing its marker");
+  }
+  return { marker, markerIdentity: completed.files.get("namespace.json")!, databasePath: join(marker.directory, "journal.sqlite") };
 }
 export function openBoundary(location: JournalLocation, expectedNamespace: string): Boundary {
   nonempty(expectedNamespace, "expected namespace");
-  const directoryIdentity = privateDirectory(location.directory), path = join(location.directory, "namespace.json");
-  const markerIdentity = privateFile(path), fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const current = inspect(location.directory, ["journal.sqlite", "namespace.json"]), directoryIdentity = current.directoryIdentity;
+  const path = join(location.directory, "namespace.json"), markerIdentity = current.files.get("namespace.json")!;
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   let parsed: Marker;
   try {
     const stat = fstatSync(fd, { bigint: true });
@@ -93,9 +134,11 @@ export function openBoundary(location: JournalLocation, expectedNamespace: strin
 }
 export function assertBoundary(boundary: Boundary): void {
   const { marker } = boundary;
-  if (!same(privateDirectory(marker.directory), marker.directoryIdentity)
-    || !same(privateFile(boundary.databasePath), marker.databaseIdentity)
-    || !same(privateFile(join(marker.directory, "namespace.json")), boundary.markerIdentity)) {
+  if (boundary.databasePath !== join(marker.directory, "journal.sqlite")) throw new Error("Journal database path binding changed");
+  const current = inspect(marker.directory, ["journal.sqlite", "namespace.json"]);
+  if (!same(current.directoryIdentity, marker.directoryIdentity)
+    || !same(current.files.get("journal.sqlite")!, marker.databaseIdentity)
+    || !same(current.files.get("namespace.json")!, boundary.markerIdentity)) {
     throw new Error("Journal namespace path identity changed; continuity is unknown");
   }
   // Identity alone does not detect an in-place marker edit.
