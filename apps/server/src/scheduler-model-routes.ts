@@ -1,4 +1,5 @@
 import { schedulerCapacityStatus } from "./services/scheduler-capacity-service.js";
+import { schedulerExecutionConsumerStatus } from "./services/scheduler-claim-consumer-service.js";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requestContext } from "./auth/auth-routes.js";
@@ -26,15 +27,12 @@ const pinImportInput = z.object({ apply: z.boolean() }).strict();
 const cancelIntentInput = z.object({ version: z.literal(1) }).strict();
 const cancelExecutionRequestInput = z.object({ version: z.literal(2) }).strict();
 
-// Request storage is available independently from the future node claim consumer.
-const executionRequestStatus = { consumer_available: false, execution_authorized: false } as const;
-
 export function registerSchedulerModelRoutes(app: FastifyInstance, ctx: ServerContext) {
   app.get("/api/v1/tasks/:id/scheduler-execution-requests", async (request) => {
     const c = requestContext(ctx, request);
     return {
       requests: await listSchedulerExecutionRequests(c, (request.params as { id: string }).id),
-      ...executionRequestStatus,
+      ...await schedulerExecutionConsumerStatus(c, (request.params as { id: string }).id),
     };
   });
   app.post("/api/v1/tasks/:id/scheduler-execution-requests", async (request, reply) => {
@@ -44,14 +42,14 @@ export function registerSchedulerModelRoutes(app: FastifyInstance, ctx: ServerCo
       (request.params as { id: string }).id,
       request.body,
     );
-    return reply.status(201).send({ request: executionRequest, ...executionRequestStatus });
+    return reply.status(201).send({ request: executionRequest, ...await schedulerExecutionConsumerStatus(c, (request.params as { id: string }).id) });
   });
   app.post("/api/v1/tasks/:id/scheduler-execution-requests/:requestId/cancel", async (request) => {
     if (!cancelExecutionRequestInput.safeParse(request.body).success)
       throw AppError.validation("Explicit version 2 cancellation is required");
     const c = requestContext(ctx, request);
     const { id, requestId } = request.params as { id: string; requestId: string };
-    return { request: await cancelSchedulerExecutionRequest(c, id, requestId), ...executionRequestStatus };
+    return { request: await cancelSchedulerExecutionRequest(c, id, requestId), ...await schedulerExecutionConsumerStatus(c, id) };
   });
   app.get("/api/v1/tasks/:id/scheduler-intents", async (request) => {
     const c = requestContext(ctx, request);

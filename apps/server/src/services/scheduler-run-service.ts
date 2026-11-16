@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { appendEvent, runs, tasks, schedulerExecutionLeases, schedulerRunCredentials, schedulerRunStopIntents, schedulerStartGrants } from "@artoo/db";
+import { appendEvent, runs, tasks, schedulerExecutionRequests, schedulerExecutionLeases, schedulerRunCredentials, schedulerRunStopIntents, schedulerRequestStopIntents, schedulerStartGrants } from "@artoo/db";
 import { SchedulerRunCredentialV1Schema, SchedulerStartGrantV1Schema,
   type SchedulerRunCredentialV1, type SchedulerExecutionLeaseBindingV1, type SchedulerExecutionLeaseV1 } from "@artoo/domain";
 import type { SchedulerRunEventMessage } from "@artoo/protocol";
@@ -35,7 +35,18 @@ async function authenticate(tx: DrizzleDb, binding: SchedulerExecutionLeaseBindi
     throw AppError.permissionDenied("Scheduler lifecycle credential is not valid for this attempt");
 }
 async function stopRequested(tx: DrizzleDb, leaseId: string) {
-  return (await tx.select({ id: schedulerRunStopIntents.leaseId }).from(schedulerRunStopIntents).where(eq(schedulerRunStopIntents.leaseId, leaseId))).length > 0;
+  const [lease] = await tx.select({ requestId: l.requestId }).from(l).where(eq(l.id, leaseId));
+  return (await tx.select({ id: schedulerRunStopIntents.leaseId }).from(schedulerRunStopIntents).where(eq(schedulerRunStopIntents.leaseId, leaseId))).length > 0 || !!lease && (await tx.select({ id: schedulerRequestStopIntents.requestId }).from(schedulerRequestStopIntents).where(eq(schedulerRequestStopIntents.requestId, lease.requestId))).length > 0;
+}
+
+/** Safe read-model projection. This never exposes a hash or credential. */
+export async function schedulerRequestStopRequested(ctx: ServerContext, tx: DrizzleDb, requestId: string, leaseId?: string) {
+  const [request] = await tx.select({ id: schedulerExecutionRequests.id }).from(schedulerExecutionRequests).where(and(eq(schedulerExecutionRequests.id, requestId), eq(schedulerExecutionRequests.organizationId, ctx.organizationId)));
+  if (!request) return false;
+  if ((await tx.select({ id: schedulerRequestStopIntents.requestId }).from(schedulerRequestStopIntents).where(eq(schedulerRequestStopIntents.requestId, requestId))).length) return true;
+  if (!leaseId) return false;
+  const [lease] = await tx.select({ id: l.id }).from(l).where(and(eq(l.id, leaseId), eq(l.requestId, requestId), eq(l.organizationId, ctx.organizationId)));
+  return lease ? stopRequested(tx, leaseId) : false;
 }
 
 export type SchedulerRunAcquisition =
@@ -119,15 +130,18 @@ export async function authorizeSchedulerRunEvent(ctx: ServerContext, tx: Drizzle
 export async function requestSchedulerRunStop(ctx: ServerContext, runId: string) {
   return ctx.db.transaction(async (tx) => {
     await requireCurrentTeamMember(ctx, tx);
-    const [found] = await tx.select({ binding: l.binding }).from(l).innerJoin(g, eq(g.requestId, l.requestId)).where(and(eq(l.organizationId, ctx.organizationId), eq(g.runId, runId)));
-    if (!found) return null;
+    const [request] = await tx.select().from(schedulerExecutionRequests).where(and(eq(schedulerExecutionRequests.organizationId, ctx.organizationId), eq(schedulerExecutionRequests.consumedRunId, runId), eq(schedulerExecutionRequests.state, "consumed")));
+    if (!request) return null;
+    const [found] = await tx.select({ binding: l.binding }).from(l).where(and(eq(l.organizationId, ctx.organizationId), eq(l.requestId, request.id)));
     const [run] = await tx.select().from(runs).where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId))).for("update");
     if (!run) throw AppError.notFound("Run not found");
     if (run.status === "cancelled") return { stop_requested: false as const };
     if (run.endedAt !== null || !["queued", "starting", "running", "paused", "awaiting_input"].includes(run.status)) throw AppError.conflict("Run is already terminal");
-    if (!(await stopRequested(tx, found.binding.lease_id))) {
-      await tx.insert(schedulerRunStopIntents).values({ leaseId: found.binding.lease_id, requestedByUserId: ctx.actorUserId, requestedAt: ctx.clock.nowIso() });
-      await appendEvent(tx, buildEvent(ctx, { type: "scheduler.run.stop_requested", actorType: "user", actorId: ctx.actorUserId, correlationId: found.binding.request_id, projectId: found.binding.project_id, taskId: found.binding.task_id, runId, payload: { version: 1, binding: found.binding, process_exit_confirmed: false } }));
+    if (!(await schedulerRequestStopRequested(ctx, tx, request.id, found?.binding.lease_id))) {
+      await tx.insert(schedulerRequestStopIntents).values({ requestId: request.id, requestedByUserId: ctx.actorUserId, requestedAt: ctx.clock.nowIso() });
+      // Retain the original lease projection for mixed-version readers.
+      if (found) await tx.insert(schedulerRunStopIntents).values({ leaseId: found.binding.lease_id, requestedByUserId: ctx.actorUserId, requestedAt: ctx.clock.nowIso() });
+      await appendEvent(tx, buildEvent(ctx, { type: "scheduler.run.stop_requested", actorType: "user", actorId: ctx.actorUserId, correlationId: request.id, projectId: request.projectId, taskId: request.taskId, runId, payload: { version: 1, request_id: request.id, ...(found ? { binding: found.binding } : {}), process_exit_confirmed: false } }));
     }
     return { stop_requested: true as const };
   });

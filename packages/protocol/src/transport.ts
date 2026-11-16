@@ -313,7 +313,8 @@ export type NodeToServerMessage =
   | import("./scheduler-start.js").SchedulerStartRequestMessage
   | import("./scheduler-lease.js").SchedulerLeaseRequestMessage
   | import("./scheduler-run.js").SchedulerRunRequestMessage
-  | import("./scheduler-run.js").SchedulerRunEventMessage;
+  | import("./scheduler-run.js").SchedulerRunEventMessage
+  | import("./scheduler-claim.js").SchedulerClaimPollMessage;
 export type ServerToNodeMessage =
   | ExistingServerToNodeMessage
   | ApplicationPublicationStartCommand
@@ -324,4 +325,5 @@ export type ServerToNodeMessage =
   | ApplicationPublicationObservationAckCommand
   | import("./scheduler-start.js").SchedulerStartResponseCommand
   | import("./scheduler-lease.js").SchedulerLeaseResponseCommand
-  | import("./scheduler-run.js").SchedulerRunResponseCommand;
+  | import("./scheduler-run.js").SchedulerRunResponseCommand
+  | import("./scheduler-claim.js").SchedulerClaimResponseCommand;

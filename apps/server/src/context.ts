@@ -34,6 +34,8 @@ export type ImportedSourceReceiptFamily =
  * Clock and IdGen are injected (Gate 0) so flows are deterministic under test.
  */
 export interface ServerContext {
+  /** Current paired private claim consumer, resolved through the live registry. */
+  supportsSchedulerClaim?(computerId: string): boolean;
   /** Local phased scheduler migration configuration; absent means all off. */
   schedulerRollout?: SchedulerRolloutConfig;
   /** Startup-only signing capability; no private key or request-selected identity. */
