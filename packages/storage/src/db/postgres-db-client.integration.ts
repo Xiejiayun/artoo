@@ -1345,6 +1345,7 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
               daemon_claim: true,
               isolated_workspaces: true,
               capacity_admission: true,
+              attempt_credentials: true,
             },
           },
         },
@@ -1654,11 +1655,98 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
       await observer!.query("ROLLBACK");
     }
     expect((await observer!.query("SELECT * FROM scheduler_execution_leases")).rows).toEqual(leaseHistory);
+    const attemptCredentials = requireBuilt(
+      "../../../../apps/server/dist/services/scheduler-attempt-credential-service.js",
+    ) as {
+      acquireSchedulerAttemptCredential(
+        ctx: object,
+        input: object,
+        grant: object,
+      ): Promise<
+        | { status: "issued"; credential: { credential_id: string; secret: string }; lease: object }
+        | { status: "retained"; lease: object }
+      >;
+      renewSchedulerAttemptCredential(
+        ctx: object,
+        input: object,
+        binding: object,
+        credential: object,
+      ): Promise<{ binding: object; expires_at: string }>;
+    };
+    // Independent PostgreSQL transactions, not the embedded adapter's transaction queue.
+    const acquired = await Promise.allSettled(
+      contexts.map((ctx) => attemptCredentials.acquireSchedulerAttemptCredential(ctx, first, grant.grant)),
+    );
+    const issued = acquired.flatMap((result) =>
+      result.status === "fulfilled" && result.value.status === "issued" ? [result.value] : [],
+    );
+    expect(issued).toHaveLength(1);
+    for (const result of acquired) {
+      if (result.status === "rejected") expect(result.reason).toMatchObject({ httpStatus: 409 });
+    }
+    const credential = issued[0]!.credential;
+    expect((await observer!.query("SELECT count(*)::int AS n FROM scheduler_attempt_credentials")).rows).toEqual([
+      { n: 1 },
+    ]);
+    expect(
+      (
+        await observer!.query(
+          "SELECT count(*)::int AS n FROM event_log WHERE type='scheduler.attempt_credential.issued'",
+        )
+      ).rows,
+    ).toEqual([{ n: 1 }]);
+    const retained = await attemptCredentials.acquireSchedulerAttemptCredential(contexts[1]!, first, grant.grant);
+    expect(retained.status).toBe("retained");
+    expect(JSON.stringify(retained)).not.toContain(credential.secret);
+    credentialNow += 1000;
+    const scopedRenewals = await Promise.allSettled(
+      contexts.map((ctx) => attemptCredentials.renewSchedulerAttemptCredential(ctx, first, leaseBinding, credential)),
+    );
+    expect(scopedRenewals.some((result) => result.status === "fulfilled")).toBe(true);
+    for (const result of scopedRenewals) {
+      if (result.status === "rejected") expect(result.reason).toMatchObject({ httpStatus: 409 });
+      else expect(result.value.binding).toEqual(leaseBinding);
+    }
+    expect(
+      (
+        await observer!.query(`SELECT c.expires_at=l.expires_at AS same_expiry
+      FROM scheduler_attempt_credentials c JOIN scheduler_execution_leases l ON l.id=c.lease_id`)
+      ).rows,
+    ).toEqual([{ same_expiry: true }]);
+    const scopedHistory = (await observer!.query("SELECT * FROM scheduler_attempt_credentials")).rows;
+    const scopedLeaseHistory = (await observer!.query("SELECT * FROM scheduler_execution_leases")).rows;
+    expect(JSON.stringify(scopedHistory)).not.toContain(credential.secret);
+    await observer!.query("BEGIN");
+    try {
+      const held = await observer!.query("SELECT id FROM scheduler_attempt_credentials WHERE id=$1 FOR UPDATE", [
+        credential.credential_id,
+      ]);
+      expect(held.rows).toHaveLength(1);
+      await expect(
+        attemptCredentials.renewSchedulerAttemptCredential(contexts[1]!, first, leaseBinding, credential),
+      ).rejects.toMatchObject({ httpStatus: 409 });
+    } finally {
+      await observer!.query("ROLLBACK");
+    }
+    await expect(
+      attemptCredentials.renewSchedulerAttemptCredential(contexts[1]!, first, leaseBinding, {
+        ...credential,
+        secret: "A".repeat(43),
+      }),
+    ).rejects.toMatchObject({ httpStatus: 403 });
+    expect((await observer!.query("SELECT * FROM scheduler_attempt_credentials")).rows).toEqual(scopedHistory);
+    expect((await observer!.query("SELECT * FROM scheduler_execution_leases")).rows).toEqual(scopedLeaseHistory);
     await expect(
       executionLeases.closeSchedulerExecutionLease(contexts[1]!, leaseBinding, "expired"),
     ).rejects.toMatchObject({ httpStatus: 409 });
     const closure = await executionLeases.closeSchedulerExecutionLease(contexts[1]!, leaseBinding, "revoked");
     expect(closure.state).toBe("revoked");
+    expect(
+      (await observer!.query("SELECT revoked_at=observed_at AS revoked FROM scheduler_attempt_credentials")).rows,
+    ).toEqual([{ revoked: true }]);
+    await expect(
+      attemptCredentials.renewSchedulerAttemptCredential(contexts[1]!, first, leaseBinding, credential),
+    ).rejects.toMatchObject({ httpStatus: 409 });
     await expect(executionLeases.renewSchedulerExecutionLease(contexts[1]!, first, leaseBinding)).rejects.toMatchObject(
       { httpStatus: 409 },
     );

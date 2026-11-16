@@ -41,6 +41,8 @@ const metadataEvents = [
   "scheduler.execution_lease.renewed",
   "scheduler.execution_lease.expired",
   "scheduler.execution_lease.revoked",
+  "scheduler.attempt_credential.issued",
+  "scheduler.attempt_credential.renewed",
 ];
 
 export async function schedulerTaskVersion(ctx: ServerContext, tx: DrizzleDb, taskId: string, inputsOnly: boolean) {

@@ -4,6 +4,7 @@ import {
   SchedulerExecutionLeaseBindingV1Schema,
   SchedulerExecutionLeaseV1Schema,
   type SchedulerExecutionLeaseBindingV1,
+  type SchedulerExecutionLeaseV1,
   type SchedulerStartGrantV1,
 } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
@@ -146,79 +147,101 @@ function identity(ctx: ServerContext, binding: SchedulerExecutionLeaseBindingV1)
   );
 }
 
-/** Internal logical-ownership kernel, not an endpoint or a process/Run lifecycle
- * authority. The caller supplies registry-authenticated input separately from the
- * binding. Reconnect cannot transfer the original session. Late renewal cannot
- * revive ownership, even if a process is still alive. */
-export async function renewSchedulerExecutionLease(
+/** Shared internal transaction guard for ownership operations. It retains the
+ * original paired identity through all awaited callback work. The callback is
+ * trusted server code; no callback, DB handle or renewal function crosses wire. */
+export async function withCurrentSchedulerExecutionLease<T>(
   ctx: ServerContext,
+  tx: DrizzleDb,
   input: SchedulerExecutionClaimInput,
   raw: SchedulerExecutionLeaseBindingV1,
-  leaseMs = 30_000,
-) {
-  const binding = SchedulerExecutionLeaseBindingV1Schema.parse(raw),
-    duration = leaseDuration.parse(leaseMs);
-  return ctx.db.db.transaction(
-    async (tx) => {
-      const claim = await prepareSchedulerExecutionClaim(ctx, tx, input);
-      if (
-        claim.kind !== "replay" ||
-        binding.organization_id !== ctx.organizationId ||
-        binding.project_id !== claim.row.projectId ||
-        binding.task_id !== input.taskId ||
-        binding.request_id !== input.requestId ||
-        binding.run_id !== claim.result.run.id ||
-        binding.computer_id !== claim.session.computerId ||
-        binding.device_id !== claim.session.deviceId ||
-        binding.session_id !== claim.session.sessionId ||
-        binding.actor_user_id !== claim.row.actorUserId ||
-        binding.agent_instance_id !== claim.result.run.agent_instance_id
-      )
-        throw AppError.conflict("Execution lease requires its exact original consumed assignment");
-      const permission = checkSchedulerExecutionRequestSnapshot(claim.row);
-      await requireAiSharingAuthorization(claim.original, tx, {
-        consentId: permission.ai_sharing.consent_id,
-        policyVersion: permission.ai_sharing.policy_version,
-      });
-      // Lifecycle can lock Run -> Task. We already hold Task; never wait in reverse.
-      const [run] = await tx
-        .select()
-        .from(runs)
-        .where(
-          and(
-            eq(runs.id, binding.run_id),
-            eq(runs.organizationId, ctx.organizationId),
-            inArray(runs.status, ["queued", "starting", "running", "paused", "awaiting_input"]),
-          ),
-        )
-        .for("share", { noWait: true })
-        .catch(rethrowLeaseContention);
-      if (
-        !run ||
-        run.endedAt !== null ||
-        run.taskId !== binding.task_id ||
-        run.computerId !== binding.computer_id ||
-        run.agentInstanceId !== binding.agent_instance_id ||
-        run.requestedByUserId !== binding.actor_user_id ||
-        run.aiDataSharingConsentId !== permission.ai_sharing.consent_id ||
-        run.aiDataSharingPolicyVersion !== permission.ai_sharing.policy_version
-      )
-        throw AppError.conflict("Execution lease Run is no longer its original active assignment");
-      const [task] = await tx
-        .select({ id: tasks.id })
-        .from(tasks)
-        .where(
-          and(
-            eq(tasks.id, binding.task_id),
-            eq(tasks.organizationId, ctx.organizationId),
-            eq(tasks.projectId, binding.project_id),
-            inArray(tasks.status, ["assigned", "running", "awaiting_approval"]),
-            eq(tasks.assigneeType, "agent"),
-            eq(tasks.assigneeId, claim.row.agentId),
-          ),
-        );
-      if (!task) throw AppError.conflict("Execution lease Task no longer has its original active assignment");
-      const now = ctx.clock.nowIso();
+  complete: (current: {
+    lease: SchedulerExecutionLeaseV1;
+    renew(leaseMs?: number): Promise<SchedulerExecutionLeaseV1>;
+  }) => Promise<T>,
+): Promise<T> {
+  const binding = SchedulerExecutionLeaseBindingV1Schema.parse(raw);
+  const claim = await prepareSchedulerExecutionClaim(ctx, tx, input);
+  if (
+    claim.kind !== "replay" ||
+    binding.organization_id !== ctx.organizationId ||
+    binding.project_id !== claim.row.projectId ||
+    binding.task_id !== claim.row.taskId ||
+    binding.request_id !== claim.row.id ||
+    binding.run_id !== claim.result.run.id ||
+    binding.computer_id !== claim.session.computerId ||
+    binding.device_id !== claim.session.deviceId ||
+    binding.session_id !== claim.session.sessionId ||
+    binding.actor_user_id !== claim.row.actorUserId ||
+    binding.agent_instance_id !== claim.result.run.agent_instance_id
+  )
+    throw AppError.conflict("Execution lease requires its exact original consumed assignment");
+  const permission = checkSchedulerExecutionRequestSnapshot(claim.row);
+  await requireAiSharingAuthorization(claim.original, tx, {
+    consentId: permission.ai_sharing.consent_id,
+    policyVersion: permission.ai_sharing.policy_version,
+  });
+  // Lifecycle can lock Run -> Task. We already hold Task; never wait in reverse.
+  const [run] = await tx
+    .select()
+    .from(runs)
+    .where(
+      and(
+        eq(runs.id, binding.run_id),
+        eq(runs.organizationId, ctx.organizationId),
+        inArray(runs.status, ["queued", "starting", "running", "paused", "awaiting_input"]),
+      ),
+    )
+    .for("share", { noWait: true })
+    .catch(rethrowLeaseContention);
+  if (
+    !run ||
+    run.endedAt !== null ||
+    run.taskId !== binding.task_id ||
+    run.computerId !== binding.computer_id ||
+    run.agentInstanceId !== binding.agent_instance_id ||
+    run.requestedByUserId !== binding.actor_user_id ||
+    run.aiDataSharingConsentId !== permission.ai_sharing.consent_id ||
+    run.aiDataSharingPolicyVersion !== permission.ai_sharing.policy_version
+  )
+    throw AppError.conflict("Execution lease Run is no longer its original active assignment");
+  const [task] = await tx
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.id, binding.task_id),
+        eq(tasks.organizationId, ctx.organizationId),
+        eq(tasks.projectId, binding.project_id),
+        inArray(tasks.status, ["assigned", "running", "awaiting_approval"]),
+        eq(tasks.assigneeType, "agent"),
+        eq(tasks.assigneeId, claim.row.agentId),
+      ),
+    );
+  if (!task) throw AppError.conflict("Execution lease Task no longer has its original active assignment");
+
+  const now = ctx.clock.nowIso();
+  const [locked] = await tx
+    .select(returned)
+    .from(a)
+    .where(
+      and(
+        identity(ctx, binding),
+        sql`${a.observedAt} <= ${now}::timestamptz AND ${a.expiresAt} > ${now}::timestamptz`,
+        sql`(${claim.credential.expiresAt}::timestamptz IS NULL OR ${a.expiresAt} <= ${claim.credential.expiresAt}::timestamptz)`,
+      ),
+    )
+    .for("update", { noWait: true })
+    .catch(rethrowLeaseContention);
+  if (!locked) throw AppError.conflict("Execution lease is stale, expired or its clock regressed");
+  let renewed = false;
+  const result = await complete({
+    lease: SchedulerExecutionLeaseV1Schema.parse({ version: 1, ...locked }),
+    async renew(leaseMs = 30_000) {
+      if (renewed) throw AppError.conflict("One renewal per execution lease operation is required");
+      renewed = true;
+      const duration = leaseDuration.parse(leaseMs),
+        now = ctx.clock.nowIso();
       const [updated] = await tx
         .update(a)
         .set({
@@ -235,22 +258,36 @@ export async function renewSchedulerExecutionLease(
         .returning(returned);
       if (!updated) throw AppError.conflict("Execution lease is stale, expired or its clock regressed");
       await auditLease(ctx, tx, binding, "renewed", now);
-      // All awaited persistence precedes original session/credential comparison.
-      // Recheck the lease too: awaited audit work cannot return an expired renewal.
-      const finalNow = ctx.clock.nowIso();
-      const [current] = await tx
-        .select(returned)
-        .from(a)
-        .where(
-          and(
-            identity(ctx, binding),
-            sql`${a.observedAt} <= ${finalNow}::timestamptz AND ${a.expiresAt} > ${finalNow}::timestamptz`,
-          ),
-        );
-      if (!current) throw AppError.conflict("Execution lease expired during renewal");
-      assertSchedulerClaimCurrent(ctx, claim.session, claim.credential);
-      return SchedulerExecutionLeaseV1Schema.parse({ version: 1, ...current });
+      return SchedulerExecutionLeaseV1Schema.parse({ version: 1, ...updated });
     },
+  });
+  const finalNow = ctx.clock.nowIso();
+  const [current] = await tx
+    .select({ id: a.id })
+    .from(a)
+    .where(
+      and(
+        identity(ctx, binding),
+        sql`${a.observedAt} <= ${finalNow}::timestamptz AND ${a.expiresAt} > ${finalNow}::timestamptz`,
+      ),
+    );
+  if (!current) throw AppError.conflict("Execution lease expired during renewal");
+  assertSchedulerClaimCurrent(ctx, claim.session, claim.credential);
+  return result;
+}
+
+/** Internal logical ownership only. Network callers additionally require their
+ * independently scoped attempt credential; this function is not a wire handler. */
+export async function renewSchedulerExecutionLease(
+  ctx: ServerContext,
+  input: SchedulerExecutionClaimInput,
+  raw: SchedulerExecutionLeaseBindingV1,
+  leaseMs = 30_000,
+) {
+  const duration = leaseDuration.parse(leaseMs),
+    binding = SchedulerExecutionLeaseBindingV1Schema.parse(raw);
+  return ctx.db.db.transaction(
+    (tx) => withCurrentSchedulerExecutionLease(ctx, tx, input, binding, (current) => current.renew(duration)),
     { isolationLevel: "read committed" },
   );
 }
