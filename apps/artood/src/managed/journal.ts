@@ -101,7 +101,12 @@ class JournalWorker {
   private exitCode: number | undefined;
   private readonly timeout: number;
   constructor(
-    action: "provision" | "open" | "upgrade_owned_results" | "upgrade_scheduler_preparation",
+    action:
+      | "provision"
+      | "open"
+      | "upgrade_owned_results"
+      | "upgrade_scheduler_preparation"
+      | "upgrade_scheduler_grants",
     location: JournalLocation,
     expectedNamespace?: string,
     timeout = 5000,
@@ -269,22 +274,32 @@ export async function provisionLocalJournal(
  * journals and take a verified backup before calling; never used by startup. */
 export function upgradeLocalJournalForOwnedResults(
   options: JournalOptions,
-): Promise<{ readonly namespace: string; readonly schemaVersion: 4 | 5 }> {
+): Promise<{ readonly namespace: string; readonly schemaVersion: 4 | 5 | 6 }> {
   return upgradeLocalJournal(options, "upgrade_owned_results");
 }
 /** Same offline/verified-backup requirements. Never invoked by journal open or
  * node startup; version 5 retains the owned-result extension without downgrade. */
 export async function upgradeLocalJournalForSchedulerPreparation(
   options: JournalOptions,
-): Promise<{ readonly namespace: string; readonly schemaVersion: 5 }> {
+): Promise<{ readonly namespace: string; readonly schemaVersion: 5 | 6 }> {
   const receipt = await upgradeLocalJournal(options, "upgrade_scheduler_preparation");
-  if (receipt.schemaVersion !== 5) throw new Error("Missing explicit scheduler preparation migration receipt");
-  return Object.freeze({ namespace: receipt.namespace, schemaVersion: 5 });
+  if (receipt.schemaVersion !== 5 && receipt.schemaVersion !== 6)
+    throw new Error("Missing explicit scheduler preparation migration receipt");
+  return Object.freeze({ namespace: receipt.namespace, schemaVersion: receipt.schemaVersion });
+}
+/** Same offline/verified-backup requirements. Storage only: no producer claim,
+ * grant consumer or launch permit is created by upgrading or reopening. */
+export async function upgradeLocalJournalForSchedulerStartGrants(
+  options: JournalOptions,
+): Promise<{ readonly namespace: string; readonly schemaVersion: 6 }> {
+  const receipt = await upgradeLocalJournal(options, "upgrade_scheduler_grants");
+  if (receipt.schemaVersion !== 6) throw new Error("Missing explicit scheduler start grant migration receipt");
+  return Object.freeze({ namespace: receipt.namespace, schemaVersion: 6 });
 }
 async function upgradeLocalJournal(
   options: JournalOptions,
-  action: "upgrade_owned_results" | "upgrade_scheduler_preparation",
-): Promise<{ readonly namespace: string; readonly schemaVersion: 4 | 5 }> {
+  action: "upgrade_owned_results" | "upgrade_scheduler_preparation" | "upgrade_scheduler_grants",
+): Promise<{ readonly namespace: string; readonly schemaVersion: 4 | 5 | 6 }> {
   nonempty(options.expectedNamespace, "expected namespace");
   const worker = new JournalWorker(
     action,
@@ -296,7 +311,7 @@ async function upgradeLocalJournal(
     const ready = await worker.ready;
     if (
       ready.kind !== "upgraded" ||
-      (ready.schemaVersion !== 4 && ready.schemaVersion !== 5) ||
+      (ready.schemaVersion !== 4 && ready.schemaVersion !== 5 && ready.schemaVersion !== 6) ||
       ready.namespace !== options.expectedNamespace
     )
       throw new Error("Missing explicit journal migration receipt");
@@ -482,7 +497,7 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
     const ownedResult = resultRequest && snapshotOwnedResultRunAdmission(resultRequest);
     if (
       ownedResult &&
-      ((ready.schemaVersion !== 4 && ready.schemaVersion !== 5) ||
+      ((ready.schemaVersion !== 4 && ready.schemaVersion !== 5 && ready.schemaVersion !== 6) ||
         mode !== "per-run" ||
         ownedResult.launch.key !== key ||
         ownedResult.request.requirement.profile.node_id !== location.nodeId)
@@ -536,11 +551,14 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
     incarnation: ready.incarnation,
     pragmas: Object.freeze(ready.pragmas),
     failed: worker.failed,
-    ...(ready.schemaVersion === 4 || ready.schemaVersion === 5 ? { ownedResultFinalizationVersion: 1 as const } : {}),
-    ...(ready.schemaVersion === 5 ? { schedulerPreparationVersion: 1 as const } : {}),
+    ...(ready.schemaVersion === 4 || ready.schemaVersion === 5 || ready.schemaVersion === 6
+      ? { ownedResultFinalizationVersion: 1 as const }
+      : {}),
+    ...(ready.schemaVersion === 5 || ready.schemaVersion === 6 ? { schedulerPreparationVersion: 1 as const } : {}),
+    ...(ready.schemaVersion === 6 ? { schedulerStartGrantStorageVersion: 1 as const } : {}),
     async prepareSchedulerStart(request) {
       const runId = query(request);
-      if (ready.schemaVersion !== 5)
+      if (ready.schemaVersion !== 5 && ready.schemaVersion !== 6)
         throw new Error("Scheduler preparation requires an explicit offline journal upgrade");
       if (request.idempotencyKey !== `${runId}:scheduler-prepare:v1`)
         throw new Error("Scheduler preparation requires its stable versioned idempotency key");

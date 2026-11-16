@@ -199,6 +199,8 @@ export interface Journal {
   readonly ownedResultFinalizationVersion?: 1;
   /** Explicit v5 migration. Preparation alone cannot reach a producer. */
   readonly schedulerPreparationVersion?: 1;
+  /** Explicit v6 storage migration only; no grant admission or execution consumer. */
+  readonly schedulerStartGrantStorageVersion?: 1;
   /** First unexpected failure; resolves before cleanup, never rejects. Clean close leaves it pending. */
   readonly failed: Promise<Error>;
   admitStart(request: StartRequest): Promise<AdmissionResult>;

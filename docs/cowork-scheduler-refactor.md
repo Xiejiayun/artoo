@@ -869,6 +869,39 @@ protected macOS SQLite fixture checks fresh-only capability, restart/abort and
 the still-unowned durable record. Native subprocess acceptance remains a
 separate later admission/transport test; no Provider is involved here.
 
+### Offline node grant storage (Step 4 foundation)
+
+Local SQLite migration `006-scheduler-start-grants` adds immutable storage for a
+future exact server grant, with unique Run/request/attempt/ready/grant identities
+and a composite foreign key to the original preparation. This is separate from
+PostgreSQL migrations. No existing journal migration, producer nonce, payload,
+receipt or outbox entry is rewritten. The stored JSON/digest and worker identity
+are metadata; this slice has no grant writer, grant admission or execution consumer.
+
+`upgradeLocalJournalForSchedulerStartGrants` is an explicit offline API. Stop and
+join runners, close journals and verify a backup first. It upgrades v3/v4/v5 in
+one transaction, retaining the original inode, and refuses retained live/unknown
+Runs, including an unowned preparation. Open/startup never upgrades a journal.
+The earlier upgrade APIs accept an existing v6 journal and return its actual
+version; they cannot downgrade it. Older binaries reject v6. Missing grant
+columns, immutable triggers or the preparation identity index reject open.
+
+The optional `schedulerStartGrantStorageVersion` describes storage only. Ordinary
+v4 owned-result execution and v5 preparation behavior remain available on v6;
+preparation still leaves both producer owner fields NULL and ordinary admission
+still rejects its Run. Upgrading/reopening cannot mint a launch permit. A later
+admission must consume a genuine private window, persist and validate the exact
+grant atomically with the private producer claim, and retain deadline checks
+through materialization and physical spawn.
+
+Real SQLite tests cover relational identity, uniqueness, immutable records and
+transaction rollback. Protected macOS fixtures additionally cover each prior
+version, verified backup/restore, repeated older upgrade calls, inode/history
+preservation, retained-preparation rejection and incomplete-extension rejection.
+The existing controlled author/verifier/server-ACK fixture also runs on v6.
+Executed results are recorded in the implementation PR; none is live Provider
+or production rollout acceptance.
+
 ## Explicit delegation (independent Step 7)
 
 Existing `parent_task_id` also records conversation continuations and research
@@ -959,3 +992,15 @@ results and remaining latest-main acceptance are recorded separately in the PR.
 Implementation, automated verification, merge, production activation and elapsed
 observation are separate statuses. A local fixture, reference test, old Preview
 CI, or a passing Web test cannot mark the remaining rollout gates complete.
+
+Latest-main full-suite acceptance is still pending. The earlier integrated
+Windows run at `d348e039` ended with 4 failed files / 19 failed tests (627 files /
+9027 tests passed, 12 files / 90 tests skipped). A single-worker rerun reproduced
+the server-entry readiness and disk workspace-migration deadlines; concurrent
+suite load alone is not an established explanation. A complete cold-start profile
+on `96dba5f1` measured about 30s of imports, 27s of database creation and 10s of
+migrations before readiness at 68s. These are individual host measurements, not a
+performance baseline or a proven root cause. A temporary batched-migration trial
+was slower in two sequential comparisons and was fully withdrawn; no startup
+deadline, assertion or durability setting changed. The startup failures remain
+open and must be resolved and rerun before unified final acceptance.
