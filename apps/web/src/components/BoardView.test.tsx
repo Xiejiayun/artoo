@@ -95,7 +95,8 @@ describe("BoardView", () => {
     renderWithProviders(<BoardView />, { client, route: "/board" });
     const backlog = await screen.findByRole("region", { name: "Backlog" });
     expect(within(backlog).getByText("ready")).toBeInTheDocument();
-    expect(within(screen.getByRole("region", { name: "In progress" })).getByText("assigned")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Assigned" })).getByText("assigned")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Running" })).getByText("running")).toBeInTheDocument();
     expect(within(screen.getByRole("region", { name: "Needs attention" })).getByText("awaiting approval")).toBeInTheDocument();
     expect(within(screen.getByRole("region", { name: "Closed" })).getByText("cancelled")).toBeInTheDocument();
     expect(screen.getAllByRole("button").filter((button) => button.classList.contains("board-card"))).toHaveLength(9);

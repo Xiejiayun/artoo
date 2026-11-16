@@ -9,6 +9,7 @@ import "./styles.css";
 import "./ui/product-shell.css";
 import "./ui/channels.css";
 import "./ui/mission-control.css";
+import "./ui/cowork-shell.css";
 
 initializeTheme();
 

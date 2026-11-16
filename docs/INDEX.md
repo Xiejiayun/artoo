@@ -75,6 +75,7 @@
 | 产品版本规划 | [v1 路线](v1-roadmap.md)、[v1 候选审计](v1-release-candidate.md)、[v2 路线](v2-roadmap.md)、[Android 计划](v2-android-plan.md)、[v3 产品](v3-product-plan.md)、[v3 Apple](v3-ios-mac-client-plan.md)、[Apple UX](v3-apple-client-ux-implications.md) |
 | 历史专项设计 | [Presence](v3-113-presence-design.md)、[Goals schema](v3-115-goals-schema-design.md)、[Goal 审计发布记录](v3-140-goal-audit-bundle.md) |
 | UI 演进 | [协作改版](collaboration-ui-refresh.md)、[产品改版](product-ui-refresh.md)、[体验交付](experience-redesign-2026-11-11.md)、[Server/UI 契约地图](server-ui-contract-map.md)、[Production UI gate](production-ui-gate.md) |
+| Cowork 联合实施 | [UI 与调度重构实施计划（2026-11-16）](cowork-ui-scheduler-implementation-2026-11-16.md)、[联合接入契约](cowork-ui-integration-contract.md)、[调度重构跟踪](cowork-scheduler-refactor.md)；区分规划、实现、验收与观察期 |
 | 原始实施计划 | [superpowers/plans/](superpowers/plans/)：按日期保留的历史计划，执行前复核源码、现行指南和授权 |
 
 新增指南时将其加入对应主题；把一次性的运行结果写进有日期/版本边界的记录并从指南链接。

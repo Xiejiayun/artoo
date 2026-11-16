@@ -1,5 +1,6 @@
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import { requestSchedulerRunStop } from "./services/scheduler-run-service.js";
 
 import {
   AgentHistoryEventsQuerySchema,
@@ -19,6 +20,7 @@ import { type ClaimLimiter, DEFAULT_CLAIM_LIMIT, createClaimLimiter } from "./cl
 import { registerCollaborationRoutes } from "./collaboration-routes.js";
 import { type ArtifactStorageOptions, resolveArtifactStore } from "./content-addressed-blob.js";
 import { registerContentModerationRoutes } from "./content-moderation-routes.js";
+import { registerControlViewRoutes } from "./control-view-routes.js";
 import type { ServerContext } from "./context.js";
 import { registerDeviceRevocationRoutes, registerDeviceRoutes } from "./device-routes.js";
 import { registerDiscussionRoutes } from "./discussion-routes.js";
@@ -311,6 +313,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   registerDeviceRevocationRoutes(app, ctx, deviceConnections);
 
   registerTaskRoutes(app, ctx);
+  registerControlViewRoutes(app, ctx);
 
   // Dev-only: simulate a node/adapter executing a queued run end to end.
   if (options.enableDevRoutes === true)
@@ -360,6 +363,8 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   app.post("/api/v1/runs/:id/cancel", async (req) => {
     const { id } = req.params as { id: string };
     const requestCtx = rc(req);
+    const schedulerStop = await requestSchedulerRunStop(requestCtx, id);
+    if (schedulerStop) return { run: await runService.getRun(requestCtx, id), ...schedulerStop };
     return {
       run: await runService.cancelRun(requestCtx, id, async () => {
         const run = await runService.getRun(requestCtx, id);

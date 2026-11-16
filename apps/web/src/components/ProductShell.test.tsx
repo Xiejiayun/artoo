@@ -56,4 +56,13 @@ describe("Product shell", () => {
     await userEvent.click(screen.getByRole("button", { name: "Switch to dark theme" }));
     expect(document.documentElement).toHaveAttribute("data-theme", "dark");
   });
+
+  it("keeps multiple theme controls synchronized", async () => {
+    initializeTheme();
+    renderWithProviders(<><ThemeControl /><ThemeControl /></>, { client: client() });
+    await userEvent.click(screen.getAllByRole("button", { name: "Switch to light theme" })[0]!);
+    expect(screen.getAllByRole("button", { name: "Switch to dark theme" })).toHaveLength(2);
+    await userEvent.click(screen.getAllByRole("button", { name: "Switch to dark theme" })[1]!);
+    expect(screen.getAllByRole("button", { name: "Switch to light theme" })).toHaveLength(2);
+  });
 });

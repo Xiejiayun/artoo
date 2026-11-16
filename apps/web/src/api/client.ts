@@ -1,8 +1,11 @@
 import { isRemovedMessage, removedMessage } from "./messageModeration.js";
 import {
   MessageReconciliationV1Schema,
+  ProjectControlViewV1Schema,
   TaskDelegationTreeV1Schema,
   type MessageReconciliationV1,
+  type ProjectControlViewOptions,
+  type ProjectControlViewV1,
   type TaskDelegationTreeV1,
 } from "@artoo/domain";
 import type { ContentReport, ContentRules, ModerationMember } from "./contentModeration.js";
@@ -556,6 +559,17 @@ export class ApiClient {
       "GET",
       `/projects/${encodeURIComponent(projectId)}/scheduler-observations`,
     );
+  }
+
+  async getProjectControlView(projectId: string, options: ProjectControlViewOptions = {}): Promise<ProjectControlViewV1> {
+    const params = new URLSearchParams();
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    if (options.after !== undefined) params.set("after", options.after);
+    if (options.capacity !== undefined) params.set("capacity", String(options.capacity));
+    const query = params.toString();
+    return ProjectControlViewV1Schema.parse(await this.request<unknown>(
+      "GET", `/projects/${encodeURIComponent(projectId)}/control-view${query ? `?${query}` : ""}`,
+    ));
   }
 
   listTasks(projectId: string, options: { q?: string; limit?: number } = {}): Promise<TasksResponse> {

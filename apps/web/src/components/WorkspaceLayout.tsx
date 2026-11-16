@@ -1,6 +1,6 @@
 import { useProject } from "../app/useProject.js";
 import { useSubscription } from "../app/RealtimeContext.js";
-import { useSelection } from "../app/SelectionContext.js";
+import { useTaskContext } from "../app/useTaskContext.js";
 import { Button, EmptyState, ErrorState, Skeleton } from "../ui/index.js";
 import { Icon, ListTodo } from "../ui/Icon.js";
 import { LeftRail } from "./LeftRail.js";
@@ -31,7 +31,7 @@ function RailSkeleton(): React.ReactNode {
  */
 export function WorkspaceLayout(): React.ReactNode {
   const { bootstrap, project, projectId } = useProject();
-  const { selectedTaskId, setSelectedTaskId } = useSelection();
+  const { taskId: selectedTaskId, selectTask: setSelectedTaskId, contextLoading, contextError, retryContext } = useTaskContext();
 
   const userId = bootstrap.data?.user.id;
   useSubscription([
@@ -78,6 +78,9 @@ export function WorkspaceLayout(): React.ReactNode {
     );
   }
 
+  if (contextLoading) return <div className="workspace-state" role="status">Opening linked task…</div>;
+  if (contextError) return <div className="workspace-state"><ErrorState title="Task unavailable" description={contextError.message} action={<><Button onClick={retryContext}>Retry linked task</Button><Button onClick={() => setSelectedTaskId(null)}>Close linked task</Button></>} /></div>;
+
   return (
     <div className="workspace">
       <aside className="pane pane-left">
@@ -107,7 +110,7 @@ export function WorkspaceLayout(): React.ReactNode {
             <Icon icon={ListTodo} size={14} /> Task details, runs, and approvals appear here.
           </p>
         ) : (
-          <TaskDetailPanel taskId={selectedTaskId} />
+          <TaskDetailPanel taskId={selectedTaskId} onSelectTask={setSelectedTaskId} />
         )}
       </aside>
     </div>
