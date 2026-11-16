@@ -22,6 +22,7 @@ import type {
 import { ApiClient } from "../api/client.js";
 import type { BootstrapResponse } from "../api/types.js";
 import { ApiProvider } from "../app/ApiContext.js";
+import { queryKeys } from "../app/queryKeys.js";
 import { SelectionProvider } from "../app/SelectionContext.js";
 import { ToastProvider } from "../ui/index.js";
 
@@ -37,6 +38,8 @@ export function createTestQueryClient(): QueryClient {
   });
 }
 
+const fixtureQueryClients = new WeakMap<ApiClient, QueryClient>();
+
 /**
  * An ApiClient with networking disabled and selected methods overridden for the
  * component under test. Component tests assert behavior against the client
@@ -47,12 +50,40 @@ export function fakeApi(overrides: Partial<ApiClient>): ApiClient {
     baseUrl: "http://test.local/api/v1",
     fetch: () => Promise.reject(new Error("network disabled in component test")),
   });
-  const api = Object.assign(base, { messageVisibility: async () => [], getGoalAutomation: async () => ({ automation: null }), getGoalRelease: async () => ({ release: null }), listTaskAgentReviews: async () => ({ reviews: [] }) }, overrides);
+  const api = Object.assign(
+    base,
+    {
+      messageVisibility: async () => [],
+      getGoalAutomation: async () => ({ automation: null }),
+      getGoalRelease: async () => ({ release: null }),
+      listTaskAgentReviews: async () => ({ reviews: [] }),
+    },
+    overrides,
+  );
   // Test fixtures retain the API's explicit legacy projection; production never infers membership after a failed read.
-  if (!overrides.getProjectSquad) api.getProjectSquad = async (projectId) => {
-    const snapshot = await api.bootstrap();
-    return { squad: { version: 1, project_id: projectId, revision: 0, source: "legacy_instances", agent_ids: [...new Set(snapshot.agent_instances.filter((instance) => instance.project_id === projectId).map((instance) => instance.agent_id))] } };
-  };
+  if (!overrides.getProjectSquad) {
+    api.getProjectSquad = async (projectId) => {
+      // Reuse the fixture that the component already loaded. A Squad read must
+      // not manufacture an extra bootstrap refresh or consume a queued reply.
+      const snapshot = fixtureQueryClients.get(api)?.getQueryData<BootstrapResponse>(queryKeys.bootstrap);
+      if (!snapshot) throw new Error("Load a bootstrap fixture before reading its legacy Squad.");
+      return {
+        squad: {
+          version: 1,
+          project_id: projectId,
+          revision: 0,
+          source: "legacy_instances",
+          agent_ids: [
+            ...new Set(
+              snapshot.agent_instances
+                .filter((instance) => instance.project_id === projectId)
+                .map((instance) => instance.agent_id),
+            ),
+          ],
+        },
+      };
+    };
+  }
   return api;
 }
 
@@ -141,9 +172,7 @@ export function bootstrapFixture(partial: Partial<BootstrapResponse> = {}): Boot
 }
 
 /** Build a complete Task snapshot row for fixtures. */
-export function taskFixture(
-  partial: Partial<Task> & Pick<Task, "id" | "title" | "status">,
-): Task {
+export function taskFixture(partial: Partial<Task> & Pick<Task, "id" | "title" | "status">): Task {
   return {
     organization_id: "org_default",
     project_id: "proj_artoo",
@@ -195,9 +224,7 @@ export function messageFixture(partial: Partial<Message> & Pick<Message, "id" | 
   };
 }
 
-export function approvalFixture(
-  partial: Partial<Approval> & Pick<Approval, "id" | "status">,
-): Approval {
+export function approvalFixture(partial: Partial<Approval> & Pick<Approval, "id" | "status">): Approval {
   return {
     organization_id: "org_default",
     task_id: "task_1",
@@ -211,9 +238,7 @@ export function approvalFixture(
   };
 }
 
-export function artifactFixture(
-  partial: Partial<Artifact> & Pick<Artifact, "id" | "type" | "uri">,
-): Artifact {
+export function artifactFixture(partial: Partial<Artifact> & Pick<Artifact, "id" | "type" | "uri">): Artifact {
   return {
     organization_id: "org_default",
     task_id: "task_1",
@@ -223,9 +248,7 @@ export function artifactFixture(
   };
 }
 
-export function memoryFixture(
-  partial: Partial<Memory> & Pick<Memory, "id" | "status" | "scope">,
-): Memory {
+export function memoryFixture(partial: Partial<Memory> & Pick<Memory, "id" | "status" | "scope">): Memory {
   return {
     organization_id: "org_default",
     project_id: "proj_artoo",
@@ -292,11 +315,14 @@ export function renderWithProviders(
   options: { client: ApiClient; queryClient?: QueryClient; route?: string },
 ): RenderResult {
   const queryClient = options.queryClient ?? createTestQueryClient();
+  fixtureQueryClients.set(options.client, queryClient);
   return render(
     <MemoryRouter initialEntries={[options.route ?? "/"]}>
       <QueryClientProvider client={queryClient}>
         <ApiProvider client={options.client}>
-          <ToastProvider><SelectionProvider>{ui}</SelectionProvider></ToastProvider>
+          <ToastProvider>
+            <SelectionProvider>{ui}</SelectionProvider>
+          </ToastProvider>
         </ApiProvider>
       </QueryClientProvider>
     </MemoryRouter>,

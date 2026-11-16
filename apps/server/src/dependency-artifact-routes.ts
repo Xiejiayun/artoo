@@ -220,7 +220,9 @@ export function registerDependencyArtifactRoutes(
           filename: typeof metadata?.filename === "string" ? metadata.filename : "dependency.bin",
         };
       },
-      { isolationLevel: "repeatable read", accessMode: "read only" },
+      // Authorization takes a shared membership lock. PostgreSQL rejects
+      // SELECT FOR SHARE in a read-only transaction even though no rows change.
+      { isolationLevel: "repeatable read" },
     );
     await requireRunAiSharingAuthorization(ctx, authorized.run);
     return authorized;

@@ -23,13 +23,55 @@ function boardClient() {
 
 describe("BoardView", () => {
   it("scopes work by goal and current plan, retaining independent reviews and optional history", async () => {
-    const goal = GoalSchema.parse({ id: "goal_1", organization_id: "org_default", project_id: "proj_artoo", room_id: null, owner_user_id: "user_1", title: "Journal", objective: "Journal", priority: "p2", status: "running", budgets: {}, stop_conditions: {}, current_plan_id: "plan_new", running_since: null, elapsed_cost_usd: null, retry_count: 0, created_at: "2026-11-12", updated_at: "2026-11-12" });
-    const client = fakeApi({ bootstrap: async () => bootstrapFixture(), listGoals: async () => ({ goals: [goal] }), listTasks: async () => ({ tasks: [
-      taskFixture({ id: "new", status: "backlog", title: "Current implementation", goal_id: goal.id, source_plan_id: "plan_new" }),
-      taskFixture({ id: "old", status: "backlog", title: "Previous attempt", goal_id: goal.id, source_plan_id: "plan_old" }),
-      taskFixture({ id: "review", status: "review", title: "Independent review", goal_id: goal.id, source_plan_id: null }),
-      taskFixture({ id: "other", status: "backlog", title: "Other outcome", goal_id: "other" }),
-    ] }) });
+    const goal = GoalSchema.parse({
+      id: "goal_1",
+      organization_id: "org_default",
+      project_id: "proj_artoo",
+      room_id: null,
+      owner_user_id: "user_1",
+      title: "Journal",
+      objective: "Journal",
+      priority: "p2",
+      status: "running",
+      budgets: {},
+      stop_conditions: {},
+      current_plan_id: "plan_new",
+      running_since: null,
+      elapsed_cost_usd: null,
+      retry_count: 0,
+      created_at: "2026-11-12",
+      updated_at: "2026-11-12",
+    });
+    const client = fakeApi({
+      bootstrap: async () => bootstrapFixture(),
+      listGoals: async () => ({ goals: [goal] }),
+      listTasks: async () => ({
+        tasks: [
+          taskFixture({
+            id: "new",
+            status: "backlog",
+            title: "Current implementation",
+            goal_id: goal.id,
+            source_plan_id: "plan_new",
+          }),
+          taskFixture({
+            id: "old",
+            status: "backlog",
+            title: "Previous attempt",
+            goal_id: goal.id,
+            source_plan_id: "plan_old",
+          }),
+          taskFixture({
+            id: "review",
+            status: "review",
+            title: "Independent review",
+            goal_id: goal.id,
+            source_plan_id: null,
+          }),
+          taskFixture({ id: "other", status: "backlog", title: "Other outcome", goal_id: "other" }),
+        ],
+      }),
+    });
     renderWithProviders(<BoardView />, { client, route: "/board?goal=goal_1" });
     expect(await screen.findByText("Current implementation")).toBeInTheDocument();
     expect(screen.getByText("Independent review")).toBeInTheDocument();
@@ -42,7 +84,16 @@ describe("BoardView", () => {
   });
 
   it("does not silently show project-wide work for an unavailable goal", async () => {
-    renderWithProviders(<BoardView />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), listGoals: async () => ({ goals: [] }), listTasks: async () => ({ tasks: [taskFixture({ id: "unrelated", status: "backlog", title: "Unrelated work" })] }) }), route: "/board?goal=foreign" });
+    renderWithProviders(<BoardView />, {
+      client: fakeApi({
+        bootstrap: async () => bootstrapFixture(),
+        listGoals: async () => ({ goals: [] }),
+        listTasks: async () => ({
+          tasks: [taskFixture({ id: "unrelated", status: "backlog", title: "Unrelated work" })],
+        }),
+      }),
+      route: "/board?goal=foreign",
+    });
     await screen.findByRole("alert");
     expect(screen.queryByText("Unrelated work")).not.toBeInTheDocument();
   });
@@ -90,14 +141,31 @@ describe("BoardView", () => {
   });
 
   it("groups all lifecycle statuses into stages without hiding their exact meaning", async () => {
-    const statuses = ["backlog", "ready", "assigned", "running", "awaiting_approval", "blocked", "review", "done", "cancelled"] as const;
-    const client = fakeApi({ bootstrap: async () => bootstrapFixture(), listTasks: async () => ({ tasks: statuses.map((status) => taskFixture({ id: status, title: `Task ${status}`, status })) }) });
+    const statuses = [
+      "backlog",
+      "ready",
+      "assigned",
+      "running",
+      "awaiting_approval",
+      "blocked",
+      "review",
+      "done",
+      "cancelled",
+    ] as const;
+    const client = fakeApi({
+      bootstrap: async () => bootstrapFixture(),
+      listTasks: async () => ({
+        tasks: statuses.map((status) => taskFixture({ id: `task_${status}`, title: `Task ${status}`, status })),
+      }),
+    });
     renderWithProviders(<BoardView />, { client, route: "/board" });
     const backlog = await screen.findByRole("region", { name: "Backlog" });
     expect(within(backlog).getByText("ready")).toBeInTheDocument();
     expect(within(screen.getByRole("region", { name: "Assigned" })).getByText("assigned")).toBeInTheDocument();
     expect(within(screen.getByRole("region", { name: "Running" })).getByText("running")).toBeInTheDocument();
-    expect(within(screen.getByRole("region", { name: "Needs attention" })).getByText("awaiting approval")).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("region", { name: "Needs attention" })).getByText("awaiting approval"),
+    ).toBeInTheDocument();
     expect(within(screen.getByRole("region", { name: "Closed" })).getByText("cancelled")).toBeInTheDocument();
     expect(screen.getAllByRole("button").filter((button) => button.classList.contains("board-card"))).toHaveLength(9);
   });
