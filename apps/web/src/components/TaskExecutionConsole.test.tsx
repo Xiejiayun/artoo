@@ -61,7 +61,7 @@ it("reconciles live output with durable event ids and follows the older-event cu
   await waitFor(() => expect(screen.getByLabelText("Recorded run output")).toHaveTextContent("Durable second line"));
   expect(screen.getByLabelText("Recorded run output").textContent?.match(/Durable second line/g)).toHaveLength(1);
   expect(screen.getByLabelText("Recorded run output")).toHaveTextContent("Live third line");
-  await userEvent.click(screen.getByRole("button", { name: "Load older run events" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Load older run events" }));
   await waitFor(() => expect(screen.getByLabelText("Recorded run output")).toHaveTextContent("First line"));
   expect(agentHistoryRun).toHaveBeenLastCalledWith("agent_mock_coder", run.id, { before: 2 });
 });

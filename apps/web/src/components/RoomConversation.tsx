@@ -785,6 +785,12 @@ function MessageComposer({
                 }}
               >
                 <option value="">Choose automatically</option>
+                {draft.agentInstanceId &&
+                  !bootstrap.agent_instances.some((instance) => instance.id === draft.agentInstanceId) && (
+                    <option value={draft.agentInstanceId} disabled>
+                      Previously selected Agent is currently unavailable
+                    </option>
+                  )}
                 {bootstrap.agent_instances.map((instance) => (
                   <option key={instance.id} value={instance.id}>
                     {bootstrap.agents.find((agent) => agent.id === instance.agent_id)?.display_name ?? instance.runtime}{" "}
