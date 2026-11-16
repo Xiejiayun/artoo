@@ -5,6 +5,7 @@ import type { SchedulerStartSession } from "./scheduler-start-channel.js";
 import type { SchedulerLeaseSession } from "./scheduler-lease-channel.js";
 import type { SchedulerRunSession } from "./scheduler-run-channel.js";
 import { DeliveryCancelled, monotonicMs } from "./managed-delivery.js";
+import type { RunStartPayload } from "@artoo/domain";
 
 export interface SchedulerOwnerChannels {
   readonly start: SchedulerStartSession;
@@ -41,11 +42,12 @@ function leaseExchange<T>(session: SchedulerLeaseSession, operation: () => Promi
  * In particular, renewing the long lease never changes assertStartCurrent. */
 export async function prepareSchedulerPhysicalOwner(input: {
   journal: Journal; channels: SchedulerOwnerChannels; taskId: string; requestId: string; runId: string; signal: AbortSignal;
+  prepareInputs?: (payload: RunStartPayload, signal: AbortSignal) => Promise<void>;
 }): Promise<SchedulerOwnedAdmission> {
   const { journal, channels, taskId, requestId, runId, signal } = input;
   if (channels.start.session !== channels.lease.session || channels.start.session !== channels.run.session)
     throw new Error("Scheduler authorities must belong to one original authenticated generation");
-  const admitted = await admitSchedulerStartFromSession({ journal, channel: channels.start, taskId, requestId, runId, signal });
+  const admitted = await admitSchedulerStartFromSession({ journal, channel: channels.start, taskId, requestId, runId, signal, prepareInputs: input.prepareInputs });
   if (admitted.kind !== "fresh") throw new Error(`Scheduler start is retained (${admitted.stage}:${admitted.status}); no new physical authority`);
   admitted.assertStartCurrent();
   const acquired = await Promise.allSettled([leaseExchange(channels.lease, () => channels.lease.acquire(admitted.grant)), channels.run.acquire(admitted.grant)]);
