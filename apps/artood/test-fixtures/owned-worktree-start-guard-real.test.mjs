@@ -6,6 +6,7 @@ import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, unlinkSync,
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
+import { allocateWorkspaceRoot } from "@artoo/protocol";
 import {
   prepareOwnedWorktree,
   reserveOwnedWorktree,
@@ -13,6 +14,7 @@ import {
   assertOwnedMaterializedWorktree,
 } from "../dist/owned/worktree-reservation.js";
 import { runOwnedGit } from "../dist/owned/owned-git.js";
+import { provisionRunNamespace } from "../dist/owned/workspace-namespace.js";
 
 const native = { skip: !["darwin", "linux"].includes(process.platform), timeout: 60_000 };
 const delay = () => new Promise((resolve) => setTimeout(resolve, 5));
@@ -61,7 +63,7 @@ async function fixture(t, body) {
     assert.ok(!/\s/.test(process.execPath), "Fixture requires a shebang-compatible Node executable");
     writeFileSync(
       wrapper,
-      `#!${process.execPath}\nimport {existsSync,writeFileSync} from 'node:fs';\nimport {spawnSync} from 'node:child_process';\nif(existsSync(${JSON.stringify(gate)})){writeFileSync(${JSON.stringify(marker)},'ready');while(existsSync(${JSON.stringify(gate)})) await new Promise(r=>setTimeout(r,5));}\nconst r=spawnSync('/usr/bin/git',process.argv.slice(2),{stdio:'inherit'});if(r.error)throw r.error;process.exitCode=r.status??1;\n`,
+      `#!${process.execPath}\nimport {existsSync,readFileSync,writeFileSync} from 'node:fs';\nimport {spawnSync} from 'node:child_process';\nif(existsSync(${JSON.stringify(gate)})){const filter=readFileSync(${JSON.stringify(gate)},'utf8');if(filter==='pause'||filter===process.cwd()){writeFileSync(${JSON.stringify(marker)},'ready');while(existsSync(${JSON.stringify(gate)})) await new Promise(r=>setTimeout(r,5));}}\nconst r=spawnSync('/usr/bin/git',process.argv.slice(2),{stdio:'inherit'});if(r.error)throw r.error;process.exitCode=r.status??1;\n`,
       { flag: "wx", mode: 0o700 },
     );
     git(["init", "--quiet", "--initial-branch=main", "repo"]);
@@ -83,6 +85,22 @@ async function fixture(t, body) {
       target = join(root, "target"),
       branch = "fixture/guard";
     const options = { gitExecutable: wrapper, signal: t.signal };
+    const namespaceInput = {
+      basePath: root,
+      agentInstanceId: "fixture-agent",
+      runId: "fixture-run",
+      root: allocateWorkspaceRoot({
+        workspaceRoot: null,
+        branchBacked: true,
+        targetComputerOs: process.platform,
+        agentInstanceId: "fixture-agent",
+        runId: "fixture-run",
+        worktreeBase: { version: 1, strategy: "per-run", basePath: root },
+      }),
+      sourceRepo: repo,
+      sourceCommit: git(["-C", repo, "rev-parse", "HEAD"]).trim(),
+      allowedRoots: [root],
+    };
     const prepare = () =>
       observe(
         prepareOwnedWorktree(
@@ -97,8 +115,8 @@ async function fixture(t, body) {
           guard,
         ),
       );
-    const expireWhile = async (operation) => {
-      writeFileSync(gate, "pause", { flag: "wx" });
+    const expireWhile = async (operation, directory = "pause") => {
+      writeFileSync(gate, directory, { flag: "wx" });
       let completed = false;
       const outcome = observe(operation()).then(
         (value) => {
@@ -129,6 +147,8 @@ async function fixture(t, body) {
       repo,
       target,
       branch,
+      options,
+      namespaceInput,
       git,
       guard,
       prepare,
@@ -162,6 +182,49 @@ async function fixture(t, body) {
   }
   if (failures.length === 1) throw failures[0];
   if (failures.length > 1) throw new AggregateError(failures, "Worktree fixture and cleanup failed");
+}
+
+for (const stage of ["initial-preflight", "base", "shared-container", "instance-container"]) {
+  test(
+    `expiry during real namespace ${stage} reads prevents further mkdir and retains existing containers`,
+    native,
+    async (t) =>
+      fixture(t, async (f) => {
+        const shared = join(f.root, "artoo-runs"),
+          instance = dirname(f.namespaceInput.root);
+        const pausedDirectory = {
+          "initial-preflight": f.repo,
+          base: f.root,
+          "shared-container": shared,
+          "instance-container": instance,
+        }[stage];
+        await f.expireWhile(() => provisionRunNamespace(f.namespaceInput, f.options, f.guard), pausedDirectory);
+        assert.equal(existsSync(shared), ["shared-container", "instance-container"].includes(stage));
+        assert.equal(existsSync(instance), stage === "instance-container");
+        assert.equal(existsSync(f.namespaceInput.root), false);
+        assert.equal(f.git(["-C", f.repo, "branch", "--list", f.branch]).trim(), "");
+      }),
+  );
+}
+
+for (const guarded of [true, false]) {
+  test(
+    `successful real namespace provisioning ${guarded ? "with" : "without"} a startup guard leaves the Run target absent`,
+    native,
+    async (t) =>
+      fixture(t, async (f) => {
+        const result = await f.observe(
+          provisionRunNamespace(f.namespaceInput, f.options, guarded ? f.guard : undefined),
+        );
+        assert.equal(result.root, f.namespaceInput.root);
+        assert.equal(result.parent, dirname(result.root));
+        assert.deepEqual(result.createdDirectories, [join(f.root, "artoo-runs"), result.parent]);
+        assert.equal(existsSync(result.root), false);
+        f.expire();
+        assert.ok(existsSync(result.parent));
+        assert.equal("assertStartCurrent" in result, false);
+      }),
+  );
 }
 
 test("expiry during real reservation preflight prevents mkdir and cannot reuse the handle", native, async (t) =>

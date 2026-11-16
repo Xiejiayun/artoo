@@ -904,6 +904,12 @@ or production rollout acceptance.
 
 ### Private materialization startup guards (Step 4 foundation)
 
+Namespace provisioning captures the same optional private synchronous guard before
+any awaited preflight. It rechecks after each asynchronous namespace check and
+immediately before each parent-container mkdir. Expiry retains any containers
+already created and never adopts or creates the final Run target. The returned
+namespace metadata carries no guard or launch authority.
+
 Owned worktree preparation can capture an optional private synchronous startup
 guard. It stays in the module's WeakMaps, outside transport/context/model data.
 Read-only preparation checks it after asynchronous preflight. Reservation checks
@@ -925,7 +931,8 @@ guard retain their behavior. The journal's scheduler grant still has no launch
 consumer; a later consumer must pass its genuine private window to these checks
 and the existing final author-spawn guard together.
 
-The POSIX fixture pauses actual read-only Git subprocesses, expires the original
+The POSIX fixture pauses actual read-only Git subprocesses during initial
+namespace preflight, each parent-container check, reservation and materialization, expires the original
 guard while they are pending, and verifies no directory/branch was created at
 the following write boundary. It also checks one-shot failure, actual no-spawn
 receipts, successful materialization and post-startup observations. It uses real

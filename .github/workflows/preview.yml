@@ -40,7 +40,7 @@ jobs:
           set -o pipefail
           mkdir -p "$ARTOO_NATIVE_EVIDENCE_DIRECTORY"
           node --test --test-concurrency=1 apps/artood/test-fixtures/owned-result-vertical-real.test.mjs 2>&1 | tee "$RUNNER_TEMP/owned-result-journal.log"
-      - name: Real Git startup deadline at reservation and materialization boundaries
+      - name: Real Git startup deadline at namespace, reservation and materialization boundaries
         shell: bash
         run: |
           set -o pipefail
