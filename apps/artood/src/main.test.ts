@@ -205,6 +205,18 @@ describe("loadConfigFromEnv", () => {
     expect(loadConfigFromEnv({ ...baseEnv, ARTOO_WORKTREE_BASE_REPO: "   " }).worktreeBaseRepo).toBeUndefined();
     expect(loadConfigFromEnv({ ...baseEnv, ARTOO_WORKTREE_BASE_REPO: "C:/repo" }).worktreeBaseRepo).toBe("C:/repo");
   });
+  it("keeps scheduler claims disabled unless the local prepared execution opt-in is complete", () => {
+    expect(loadConfigFromEnv(baseEnv).scheduler).toBeUndefined();
+    expect(loadConfigFromEnv({ ...baseEnv, ARTOO_SCHEDULER_ENABLED: "0" }).scheduler).toBeUndefined();
+    expect(() => loadConfigFromEnv({ ...baseEnv, ARTOO_SCHEDULER_ENABLED: "true" })).toThrow("must be 0 or 1");
+    expect(() => loadConfigFromEnv({ ...baseEnv, ARTOO_SCHEDULER_ENABLED: "1" })).toThrow("prepared journal");
+    expect(() => createNodeFromConfig(configWith({ scheduler: true }))).toThrow("prepared fresh-allocation");
+    const managed = { ...baseEnv, ARTOO_NODE_URL: "ws://127.0.0.1:4000/api/v1/node", ARTOO_MANAGED_EXECUTION: "1",
+      ARTOO_JOURNAL_VERSION: "1", ARTOO_JOURNAL_SERVER_ORIGIN: "http://127.0.0.1:4000", ARTOO_JOURNAL_NODE_ID: "computer_1",
+      ARTOO_JOURNAL_DIRECTORY: "/tmp/scheduler-journal", ARTOO_JOURNAL_NAMESPACE: "namespace", ARTOO_JOURNAL_CONTROLLER_SCOPE: "controller" };
+    expect(loadConfigFromEnv({ ...managed, ARTOO_SCHEDULER_ENABLED: "1" }).scheduler).toBe(true);
+    expect(() => loadConfigFromEnv({ ...managed, ARTOO_MANAGED_EXECUTION: "0", ARTOO_SCHEDULER_ENABLED: "1" })).toThrow("ARTOO_MANAGED_EXECUTION=1");
+  });
 
   it("parses ARTOO_HEARTBEAT_INTERVAL_MS only when a positive finite number", () => {
     expect(loadConfigFromEnv({ ...baseEnv }).heartbeatIntervalMs).toBeUndefined();

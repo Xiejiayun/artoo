@@ -4,7 +4,7 @@ import { admitSchedulerStartFromSession, type SchedulerSessionAdmission } from "
 import type { SchedulerStartSession } from "./scheduler-start-channel.js";
 import type { SchedulerLeaseSession } from "./scheduler-lease-channel.js";
 import type { SchedulerRunSession } from "./scheduler-run-channel.js";
-import { monotonicMs } from "./managed-delivery.js";
+import { DeliveryCancelled, monotonicMs } from "./managed-delivery.js";
 
 export interface SchedulerOwnerChannels {
   readonly start: SchedulerStartSession;
@@ -14,6 +14,7 @@ export interface SchedulerOwnerChannels {
 export interface SchedulerPhysicalOwner {
   readonly requestId: string;
   readonly assertStartCurrent: () => void;
+  beforeStart(): Promise<void>;
   monitor(onStop: () => void, onFailure: (error: Error) => void): void;
   /** Actual physical closure ends renewal; event authority remains for receipts. */
   closed(): void;
@@ -60,15 +61,28 @@ export async function prepareSchedulerPhysicalOwner(input: {
     if (!isDeepStrictEqual(renewal.binding, authority.binding)) throw new Error("Scheduler lease and event authorities differ");
   } catch (error) { renewal.forget(); authority.forget(); throw error; }
   let stopped = false, started = false, timer: ReturnType<typeof setTimeout> | undefined;
+  let detachSession = () => {};
+  let stopOwnedStart: (() => void) | undefined;
   let nextRenewal = monotonicMs() + 5000;
-  const closed = () => { stopped = true; clearTimeout(timer); renewal.forget(); };
+  const closed = () => { stopped = true; clearTimeout(timer); detachSession(); renewal.forget(); };
   const owner = Object.freeze<SchedulerPhysicalOwner>({ requestId, assertStartCurrent: admitted.assertStartCurrent,
+    async beforeStart() {
+      admitted.assertStartCurrent(); signal.throwIfAborted();
+      const current = await authority.status();
+      admitted.assertStartCurrent(); signal.throwIfAborted();
+      if (current.stop_requested || authority.stopRequested) {
+        stopOwnedStart?.();
+        throw new DeliveryCancelled("Scheduler Stop was observed before physical startup");
+      }
+    },
     monitor(onStop, onFailure) {
       if (started || stopped) throw new Error("Scheduler physical monitor already started or closed");
       started = true;
+      stopOwnedStart = () => { if (!stopped) { stopped = true; clearTimeout(timer); detachSession(); onStop(); } };
+      if (authority.stopRequested) { stopOwnedStart(); return; }
       const fail = (cause: unknown) => {
         if (stopped) return;
-        stopped = true; clearTimeout(timer);
+        stopped = true; clearTimeout(timer); detachSession();
         onFailure(cause instanceof Error ? cause : new Error("Scheduler original authority lost"));
       };
       const tick = async () => {
@@ -77,7 +91,7 @@ export async function prepareSchedulerPhysicalOwner(input: {
           signal.throwIfAborted(); channels.start.signal.throwIfAborted(); renewal.signal.throwIfAborted(); authority.signal.throwIfAborted();
           const status = await authority.status();
           if (stopped) return;
-          if (status.stop_requested) { stopped = true; onStop(); return; }
+          if (status.stop_requested) { stopOwnedStart?.(); return; }
           if (monotonicMs() >= nextRenewal) {
             const renewed = await leaseExchange(channels.lease, () => renewal.renew());
             if (stopped) return;
@@ -89,7 +103,10 @@ export async function prepareSchedulerPhysicalOwner(input: {
       };
       // Generation loss cancels the existing physical owner immediately; it
       // cannot wait for the ordinary reconnect grace or mint a new credential.
-      channels.start.signal.addEventListener("abort", () => fail(channels.start.signal.reason), { once: true });
+      const sessionLost = () => fail(channels.start.signal.reason);
+      channels.start.signal.addEventListener("abort", sessionLost, { once: true });
+      detachSession = () => channels.start.signal.removeEventListener("abort", sessionLost);
+      if (channels.start.signal.aborted) { sessionLost(); return; }
       timer = setTimeout(() => { void tick(); }, 1000);
     },
     closed,
