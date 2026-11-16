@@ -32,7 +32,7 @@ jobs:
         run: |
           set -o pipefail
           node --test --test-concurrency=1 apps/artood/test-fixtures/scheduler-preparation-real.test.mjs 2>&1 | tee "$RUNNER_TEMP/scheduler-journal.log"
-      - name: Preserve owned-result author, verifier and ACK behavior on v4 and v5
+      - name: Preserve owned-result author, verifier and ACK behavior on v4, v5 and v6
         shell: bash
         env:
           ARTOO_NATIVE_EVIDENCE_DIRECTORY: ${{ runner.temp }}/owned-result-journal

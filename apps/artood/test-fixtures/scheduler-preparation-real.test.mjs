@@ -22,6 +22,7 @@ import {
   provisionLocalJournal,
   upgradeLocalJournalForOwnedResults,
   upgradeLocalJournalForSchedulerPreparation,
+  upgradeLocalJournalForSchedulerStartGrants,
 } from "../dist/managed/journal.js";
 
 const native = { skip: process.platform !== "darwin", timeout: 60_000 };
@@ -529,11 +530,93 @@ test("v3 migration rejects a retained unknown Run without changing any durable b
   }),
 );
 
+for (const from of [3, 4, 5])
+  test(`explicit v${from} to v6 migration preserves closed history and grants no producer`, native, async (t) =>
+    fixture(t, async (f) => {
+      let journal = await f.open();
+      const fence = await journal.requestStop({ expectedNamespace: journal.namespace, runId: "run_closed_history" });
+      await journal.close();
+      if (from >= 4) await upgradeLocalJournalForOwnedResults(f.options);
+      if (from >= 5) await upgradeLocalJournalForSchedulerPreparation(f.options);
+      const database = join(f.options.directory, "journal.sqlite"),
+        backup = join(f.root, `v${from}-backup.sqlite`),
+        inode = statSync(database).ino;
+      copyFileSync(database, backup);
+      assert.equal(hash(readFileSync(backup)), hash(readFileSync(database)));
+      assert.equal((await upgradeLocalJournalForSchedulerStartGrants(f.options)).schemaVersion, 6);
+      assert.equal(statSync(database).ino, inode);
+      assert.equal((await upgradeLocalJournalForOwnedResults(f.options)).schemaVersion, 6);
+      assert.equal((await upgradeLocalJournalForSchedulerPreparation(f.options)).schemaVersion, 6);
+      assert.equal((await upgradeLocalJournalForSchedulerStartGrants(f.options)).schemaVersion, 6);
+      journal = await f.open();
+      assert.equal(journal.ownedResultFinalizationVersion, 1);
+      assert.equal(journal.schedulerPreparationVersion, 1);
+      assert.equal(journal.schedulerStartGrantStorageVersion, 1);
+      assert.deepEqual(await journal.lookupRun({ expectedNamespace: journal.namespace, runId: fence.runId }), fence);
+      assert.deepEqual(f.inspect("SELECT * FROM scheduler_start_grants"), []);
+      await journal.close();
+      // Only closed historical rows exist. Restore the verified pre-upgrade
+      // bytes in place, reopen them, then explicitly upgrade again.
+      writeFileSync(database, readFileSync(backup));
+      assert.equal(statSync(database).ino, inode);
+      assert.equal(f.inspect("PRAGMA user_version")[0].user_version, from);
+      journal = await f.open();
+      assert.equal(journal.schedulerStartGrantStorageVersion, undefined);
+      assert.deepEqual(await journal.lookupRun({ expectedNamespace: journal.namespace, runId: fence.runId }), fence);
+      await journal.close();
+      await upgradeLocalJournalForSchedulerStartGrants(f.options);
+      journal = await f.open();
+      const value = proposal(f.root),
+        prepared = await journal.prepareSchedulerStart(f.request(value));
+      assert.equal(prepared.kind, "prepared");
+      assert.equal((await journal.admitStart(f.ordinary(value))).kind, "conflict");
+      assert.deepEqual(
+        f.inspect("SELECT owner_nonce,owner_incarnation,phase FROM runs WHERE run_id=?", value.run_start.run_id),
+        [{ owner_nonce: null, owner_incarnation: null, phase: "admitted" }],
+      );
+      assert.equal(existsSync(value.run_start.workspace_allocation.base_path), false);
+      await journal.close();
+      journal = await f.open();
+      assert.equal((await journal.prepareSchedulerStart(f.request(value))).kind, "unknown");
+      assert.deepEqual(f.inspect("SELECT * FROM scheduler_start_grants"), []);
+    }),
+  );
+
+test("v5 preparation prevents v6 offline migration without changing durable bytes", native, async (t) =>
+  fixture(t, async (f) => {
+    await upgradeLocalJournalForSchedulerPreparation(f.options);
+    const journal = await f.open();
+    await journal.prepareSchedulerStart(f.request(proposal(f.root)));
+    await journal.close();
+    const database = join(f.options.directory, "journal.sqlite"),
+      before = hash(readFileSync(database));
+    await assert.rejects(upgradeLocalJournalForSchedulerStartGrants(f.options), (error) =>
+      hasMessage(error, /retained live\/unknown/),
+    );
+    assert.equal(hash(readFileSync(database)), before);
+    assert.equal(f.inspect("PRAGMA user_version")[0].user_version, 5);
+    assert.deepEqual(f.inspect("SELECT name FROM sqlite_master WHERE name='scheduler_start_grants'"), []);
+  }),
+);
+
+test("incomplete v6 storage fails closed without resetting history", native, async (t) =>
+  fixture(t, async (f) => {
+    await upgradeLocalJournalForSchedulerStartGrants(f.options);
+    const database = join(f.options.directory, "journal.sqlite");
+    f.edit("DROP TRIGGER scheduler_start_grants_immutable_update");
+    const before = hash(readFileSync(database));
+    await assert.rejects(openLocalJournal(f.options), (error) =>
+      hasMessage(error, /grant journal extension is incomplete/),
+    );
+    assert.equal(hash(readFileSync(database)), before);
+  }),
+);
+
 test("incomplete extensions and future journal versions reject open without resetting history", native, async (t) =>
   fixture(t, async (f) => {
     await upgradeLocalJournalForSchedulerPreparation(f.options);
     const database = join(f.options.directory, "journal.sqlite");
-    f.edit("PRAGMA user_version=6");
+    f.edit("PRAGMA user_version=7");
     let before = hash(readFileSync(database));
     await assert.rejects(openLocalJournal(f.options), (error) => hasMessage(error, /metadata continuity/));
     assert.equal(hash(readFileSync(database)), before);

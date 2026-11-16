@@ -3,7 +3,7 @@ import { createOwnedResultServerFixture } from "../../server/test-fixtures/owned
 import { createManagedNodeRunner } from "../dist/managed/managed-node-runner.js";
 import { createAdapterRegistry } from "../dist/adapter-registry.js";
 import { prepareOwnedResultProfiles } from "../dist/owned-worktree-verification.js";
-// Requires the built domain/protocol/finalizer and journal v4/v5 implementation.
+// Requires the built domain/protocol/finalizer and journal v4/v5/v6 implementation.
 // node --test apps/artood/test-fixtures/owned-result-vertical-real.test.mjs
 // Actual NodeClient command dispatch, author/verifier, SQLite, server persistence
 // and real WebSocket ACKs. Controlled code author, not model/provider acceptance.
@@ -34,6 +34,7 @@ import {
   provisionLocalJournal,
   upgradeLocalJournalForOwnedResults,
   upgradeLocalJournalForSchedulerPreparation,
+  upgradeLocalJournalForSchedulerStartGrants,
   openLocalJournal,
 } from "../dist/managed/journal.js";
 import {
@@ -75,7 +76,7 @@ async function bounded(promise, message, milliseconds = 15_000) {
   }
 }
 
-for (const journalVersion of [4, 5])
+for (const journalVersion of [4, 5, 6])
   test(
     `real owned-result command crosses NodeClient, author, finalizer, server commit and replayed ACK (journal v${journalVersion})`,
     native,
@@ -195,7 +196,7 @@ for (const journalVersion of [4, 5])
             writeFileSync(
               join(
                 process.env.ARTOO_NATIVE_EVIDENCE_DIRECTORY,
-                journalVersion === 4 ? "owned-result-vertical.json" : "owned-result-vertical-v5.json",
+                journalVersion === 4 ? "owned-result-vertical.json" : `owned-result-vertical-v${journalVersion}.json`,
               ),
               JSON.stringify(capture, null, 2) + "\n",
               { flag: "wx", mode: 0o600 },
@@ -349,12 +350,19 @@ async function withFixture(t, body, journalVersion) {
     assert.equal(upgraded.schemaVersion, 4);
     assert.equal(upgraded.namespace, provisioned.namespace);
     assert.equal(inspect("PRAGMA user_version")[0].user_version, 4);
-    if (journalVersion === 5) {
+    if (journalVersion >= 5) {
       const v4backup = join(root, "journal-v4-backup.sqlite");
       copyFileSync(databasePath, v4backup);
       assert.equal(hex(readFileSync(v4backup)), hex(readFileSync(databasePath)));
       assert.equal((await observe(upgradeLocalJournalForSchedulerPreparation(journalOptions))).schemaVersion, 5);
       assert.equal(inspect("PRAGMA user_version")[0].user_version, 5);
+    }
+    if (journalVersion === 6) {
+      const v5backup = join(root, "journal-v5-backup.sqlite");
+      copyFileSync(databasePath, v5backup);
+      assert.equal(hex(readFileSync(v5backup)), hex(readFileSync(databasePath)));
+      assert.equal((await observe(upgradeLocalJournalForSchedulerStartGrants(journalOptions))).schemaVersion, 6);
+      assert.equal(inspect("PRAGMA user_version")[0].user_version, 6);
     }
     const open = async () => {
       const value = await observe(openLocalJournal(journalOptions));

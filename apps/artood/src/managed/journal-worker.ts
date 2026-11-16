@@ -11,6 +11,7 @@ import {
 import { snapshotOwnedResultRunAdmission } from "../owned-result-admission.js";
 import { OWNED_RESULT_FINALIZATION_MIGRATION_004 } from "./migrations/004-owned-result-finalization.js";
 import { SCHEDULER_PREPARATION_MIGRATION_005 } from "./migrations/005-scheduler-preparation.js";
+import { SCHEDULER_START_GRANTS_MIGRATION_006 } from "./migrations/006-scheduler-start-grants.js";
 import { snapshotSchedulerProposal } from "./scheduler-preparation.js";
 import {
   assertBoundary,
@@ -39,7 +40,7 @@ import type {
 // The facade authenticates the real producer object before this private channel.
 type Command = { id: string; controlKey: string; op: string; input: Record<string, unknown> };
 interface Boot extends JournalLocation {
-  action: "provision" | "open" | "upgrade_owned_results" | "upgrade_scheduler_preparation";
+  action: "provision" | "open" | "upgrade_owned_results" | "upgrade_scheduler_preparation" | "upgrade_scheduler_grants";
   expectedNamespace?: string;
   controlKey: string;
 }
@@ -115,7 +116,7 @@ const applicationId = 0x4152544f;
 const codec = "run-start-schema-json-v1";
 let database: DatabaseSync | undefined, boundary: Boundary | undefined, marker: Marker;
 let unavailable = false;
-let schemaVersion: 3 | 4 | 5 | undefined;
+let schemaVersion: 3 | 4 | 5 | 6 | undefined;
 let deliveryClock: DeliveryClock | null = null;
 const maxSequence = 2 ** 31 - 1,
   maxBacklog = 10000,
@@ -174,7 +175,7 @@ function assertMetadata(): void {
     meta.codec !== codec ||
     meta.version !== 3 ||
     pragma("application_id") !== applicationId ||
-    ![3, 4, 5].includes(Number(actualVersion)) ||
+    ![3, 4, 5, 6].includes(Number(actualVersion)) ||
     (schemaVersion !== undefined && actualVersion !== schemaVersion)
   ) {
     throw new Error(
@@ -193,7 +194,7 @@ function assertMetadata(): void {
     )
       throw new Error("Owned result journal extension is incomplete");
   }
-  if (actualVersion === 5) {
+  if (Number(actualVersion) >= 5) {
     const columns = rows<{ name: string }>("PRAGMA table_info(scheduler_preparations)").map((column) => column.name);
     const triggers = rows<{ name: string }>(
       "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='scheduler_preparations'",
@@ -214,7 +215,35 @@ function assertMetadata(): void {
     )
       throw new Error("Scheduler preparation journal extension is incomplete");
   }
-  schemaVersion ??= actualVersion as 3 | 4 | 5;
+  if (actualVersion === 6) {
+    const columns = rows<{ name: string }>("PRAGMA table_info(scheduler_start_grants)").map((column) => column.name);
+    const triggers = rows<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='scheduler_start_grants'",
+    ).map((value) => value.name);
+    const identity = rows<{ name: string }>("PRAGMA index_info(scheduler_preparations_grant_identity)").map(
+      (column) => column.name,
+    );
+    if (
+      ![
+        "namespace",
+        "run_id",
+        "request_id",
+        "node_attempt_id",
+        "ready_id",
+        "grant_id",
+        "proposal_digest",
+        "grant_json",
+        "grant_digest",
+        "owner_incarnation",
+      ].every((name) => columns.includes(name)) ||
+      !["scheduler_start_grants_immutable_update", "scheduler_start_grants_immutable_delete"].every((name) =>
+        triggers.includes(name),
+      ) ||
+      !isDeepStrictEqual(identity, ["namespace", "run_id", "request_id", "node_attempt_id"])
+    )
+      throw new Error("Scheduler start grant journal extension is incomplete");
+  }
+  schemaVersion ??= actualVersion as 3 | 4 | 5 | 6;
 }
 function transaction<T>(operation: () => T): T {
   assertBoundary(boundary!);
@@ -243,7 +272,7 @@ function run(runId: string): RunRow | undefined {
   return row<RunRow>("SELECT * FROM runs WHERE namespace=? AND run_id=?", marker.namespace, runId);
 }
 function schedulerPreparation(runId: string): SchedulerPreparationRow | undefined {
-  return schemaVersion === 5
+  return schemaVersion !== undefined && schemaVersion >= 5
     ? row<SchedulerPreparationRow>(
         "SELECT * FROM scheduler_preparations WHERE namespace=? AND run_id=?",
         marker.namespace,
@@ -357,7 +386,7 @@ function readOwnedResultAdmission(value: RunRow): ReturnType<typeof snapshotOwne
   if (json === null) return undefined;
   const admitted = snapshotOwnedResultRunAdmission(JSON.parse(json));
   if (
-    (schemaVersion !== 4 && schemaVersion !== 5) ||
+    (schemaVersion !== 4 && schemaVersion !== 5 && schemaVersion !== 6) ||
     admitted.canonical !== json ||
     admitted.digest !== savedDigest ||
     admitted.launch.key !== value.launch_key ||
@@ -1024,7 +1053,8 @@ function execute(op: string, input: Record<string, unknown>): unknown {
   }
   if (op === "scheduler_prepare")
     return transaction(() => {
-      if (schemaVersion !== 5) throw new Error("Scheduler preparation requires an explicit offline journal upgrade");
+      if (schemaVersion !== 5 && schemaVersion !== 6)
+        throw new Error("Scheduler preparation requires an explicit offline journal upgrade");
       const snapshot = snapshotSchedulerProposal(JSON.parse(string(input["proposal"])));
       const runId = snapshot.launch.payload.run_id;
       if (snapshot.proposal.prepared_start.computer_id !== marker.nodeId)
@@ -1375,7 +1405,11 @@ try {
     const pragmas = configure(false);
     if (pragma("quick_check(1)") !== "ok") throw new Error("Journal quick_check failed");
     assertBoundary(boundary);
-    if (boot.action === "upgrade_owned_results" || boot.action === "upgrade_scheduler_preparation") {
+    if (
+      boot.action === "upgrade_owned_results" ||
+      boot.action === "upgrade_scheduler_preparation" ||
+      boot.action === "upgrade_scheduler_grants"
+    ) {
       // Offline migration uses the same inode and transaction. A retained live
       // or unknown row prevents migration; it never becomes a recoverable writer.
       let committed = false;
@@ -1386,11 +1420,13 @@ try {
         if (row<{ count: number }>("SELECT count(*) AS count FROM runs WHERE phase!='closed'")!.count !== 0)
           throw new Error("Offline journal migration requires no retained live/unknown run rows");
         if (schemaVersion === 3) database.exec(OWNED_RESULT_FINALIZATION_MIGRATION_004);
-        if (boot.action === "upgrade_scheduler_preparation" && schemaVersion !== 5)
+        if (boot.action !== "upgrade_owned_results" && Number(pragma("user_version")) < 5)
           database.exec(SCHEDULER_PREPARATION_MIGRATION_005);
+        if (boot.action === "upgrade_scheduler_grants" && Number(pragma("user_version")) < 6)
+          database.exec(SCHEDULER_START_GRANTS_MIGRATION_006);
         database.exec("COMMIT");
         committed = true;
-        schemaVersion = Number(pragma("user_version")) as 4 | 5;
+        schemaVersion = Number(pragma("user_version")) as 4 | 5 | 6;
         assertMetadata();
         assertBoundary(boundary);
         syncDatabase(boundary.databasePath);
