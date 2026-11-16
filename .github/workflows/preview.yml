@@ -40,6 +40,11 @@ jobs:
           set -o pipefail
           mkdir -p "$ARTOO_NATIVE_EVIDENCE_DIRECTORY"
           node --test --test-concurrency=1 apps/artood/test-fixtures/owned-result-vertical-real.test.mjs 2>&1 | tee "$RUNNER_TEMP/owned-result-journal.log"
+      - name: Real Git startup deadline at reservation and materialization boundaries
+        shell: bash
+        run: |
+          set -o pipefail
+          node --test --test-concurrency=1 apps/artood/test-fixtures/owned-worktree-start-guard-real.test.mjs 2>&1 | tee "$RUNNER_TEMP/owned-worktree-start-guard.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -48,6 +53,7 @@ jobs:
             ${{ runner.temp }}/scheduler-journal.log
             ${{ runner.temp }}/owned-result-journal.log
             ${{ runner.temp }}/owned-result-journal/*.json
+            ${{ runner.temp }}/owned-worktree-start-guard.log
           if-no-files-found: warn
           retention-days: 14
   shared:

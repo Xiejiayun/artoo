@@ -23,15 +23,25 @@ export function assertNotAborted(options: GitReadOptions): void {
 }
 
 /** The execution helper retains typed timeout/abort/uncertain-cleanup errors. */
-export async function gitOperation(cwd: string, args: readonly string[], options: GitReadOptions, kind: "read" | "materialize" = "read") {
-  return runOwnedGit({ cwd, args, kind, signal: options.signal }, {
-    gitExecutable: options.gitExecutable ?? "/usr/bin/git",
-    readTimeoutMs: options.readTimeoutMs ?? 10_000,
-    materializeTimeoutMs: options.materializeTimeoutMs ?? 120_000,
-    maxOutputBytes: options.maxOutputBytes ?? 1024 * 1024,
-    terminationTimeoutMs: options.terminationTimeoutMs ?? 5_000,
-    environment: options.environment,
-    indexFile: options.indexFile,
-    guardParent: options.guardParent,
-  });
+export async function gitOperation(
+  cwd: string,
+  args: readonly string[],
+  options: GitReadOptions,
+  kind: "read" | "materialize" = "read",
+  assertStartCurrent?: () => void,
+) {
+  return runOwnedGit(
+    { cwd, args, kind, signal: options.signal },
+    {
+      gitExecutable: options.gitExecutable ?? "/usr/bin/git",
+      readTimeoutMs: options.readTimeoutMs ?? 10_000,
+      materializeTimeoutMs: options.materializeTimeoutMs ?? 120_000,
+      maxOutputBytes: options.maxOutputBytes ?? 1024 * 1024,
+      terminationTimeoutMs: options.terminationTimeoutMs ?? 5_000,
+      environment: options.environment,
+      indexFile: options.indexFile,
+      guardParent: options.guardParent,
+      ...(assertStartCurrent === undefined ? {} : { assertStartCurrent }),
+    },
+  );
 }
