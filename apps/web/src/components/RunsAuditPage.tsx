@@ -1,6 +1,6 @@
 import { useProject } from "../app/useProject.js";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Download, History } from "lucide-react";
 
 import { useApi } from "../app/ApiContext.js";
@@ -10,22 +10,26 @@ import { Button, EmptyState, ErrorState, Input, Select, StatusBadge, useToast } 
 import { AuditBundleView } from "./AuditBundleView.js";
 import { ActionError } from "./ActionError.js";
 import { taskUpdatedLabel } from "./taskPresentation.js";
+import { useTaskContext } from "../app/useTaskContext.js";
+import { useProjectControlView } from "../app/useProjectControlView.js";
+import { ControlTaskFacts } from "./ControlTaskFacts.js";
+import { TaskExecutionConsole } from "./TaskExecutionConsole.js";
 import "../ui/work-insights.css";
 
 /**
  * Runs & Audit (#16/#17 bridge): pick a task and inspect its server-built
- * read-only {@link TaskAuditBundle}. Strictly read-only — no actions. Refreshes
+ * {@link TaskAuditBundle}, real execution console and task conversation. Refreshes
  * via the `project:` subscription (task activity invalidates its audit bundle).
  */
 export function RunsAuditPage(): React.ReactNode {
   const api = useApi();
   const toast = useToast();
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const { taskId: selectedTaskId, selectTask: setSelectedTaskId, contextError, contextLoading, retryContext } = useTaskContext();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
 
   const { bootstrap, projectId } = useProject();
-  useEffect(() => setSelectedTaskId(null), [projectId]);
+  const control = useProjectControlView(projectId);
   const download = useMutation({
     mutationFn: async () => {
       const result = await api.getTaskAuditBundleExport(selectedTaskId!, "ed25519-v1");
@@ -69,7 +73,10 @@ export function RunsAuditPage(): React.ReactNode {
     );
   }
 
-  const taskList = tasks.data?.tasks ?? [];
+  const loaded = new Map(tasks.data?.tasks.map((task) => [task.id, task]) ?? []);
+  for (const entry of control.isError ? [] : control.entries) loaded.set(entry.task.id, entry.task);
+  const observations = new Map(control.entries.map((entry) => [entry.task.id, entry]));
+  const taskList = [...loaded.values()];
   const matching = taskList.filter(
     (task) =>
       task.title.toLowerCase().includes(search.trim().toLowerCase()) &&
@@ -95,7 +102,10 @@ export function RunsAuditPage(): React.ReactNode {
           </Button>
         )}
       </header>
-      <ActionError error={tasks.error ?? download.error} />
+      <ActionError error={tasks.error ?? download.error ?? contextError} />
+      {contextError && <Button onClick={retryContext}>Retry linked task</Button>}
+      {contextLoading && <p role="status">Opening linked task…</p>}
+      {control.isError && <p role="status">Execution observations unavailable. <Button size="sm" onClick={() => void control.refetch()}>Retry observations</Button></p>}
       <div className="runs-audit-body">
         <nav className="audit-task-picker" aria-label="Tasks">
           <div className="insights-picker-tools">
@@ -112,7 +122,7 @@ export function RunsAuditPage(): React.ReactNode {
             </Select>
           </div>
           <p className="insights-help">
-            {matching.length} {matching.length === 1 ? "task" : "tasks"}
+            {matching.length} loaded {matching.length === 1 ? "task" : "tasks"}{control.view ? ` · ${control.view.summary.total_tasks} in project` : ""}
           </p>
           {tasks.isLoading && <p role="status">Loading tasks…</p>}
           {tasks.isError && (
@@ -140,6 +150,7 @@ export function RunsAuditPage(): React.ReactNode {
                   onClick={() => setSelectedTaskId(task.id)}
                 >
                   <span className="title">{task.title}</span>
+                  {!control.isError && observations.has(task.id) && <ControlTaskFacts entry={observations.get(task.id)!} bootstrap={bootstrap.data} />}
                   <span className="insights-row-meta">
                     <StatusBadge status={task.status} />
                     <time dateTime={task.updated_at}>{taskUpdatedLabel(task.updated_at)}</time>
@@ -148,9 +159,10 @@ export function RunsAuditPage(): React.ReactNode {
               </li>
             ))}
           </ul>
+          {control.hasNextPage && <Button loading={control.isFetchingNextPage} onClick={() => void control.fetchNextPage()}>Load more tasks</Button>}
         </nav>
 
-        <section className="audit-bundle" aria-label="Audit bundle">
+        <section className="audit-bundle" aria-label="Task execution">
           {selectedTaskId === null ? (
             <EmptyState
               icon={History}
@@ -170,7 +182,7 @@ export function RunsAuditPage(): React.ReactNode {
             />
           ) : null}
           {bundle.data !== undefined ? (
-            <AuditBundleView bundle={bundle.data.bundle} bootstrap={bootstrap.data} />
+            <><TaskExecutionConsole key={bundle.data.bundle.task.id} bundle={bundle.data.bundle} bootstrap={bootstrap.data} /><section aria-label="Audit bundle"><details className="cowork-audit-detail" open><summary>Full task audit & evidence</summary><AuditBundleView bundle={bundle.data.bundle} bootstrap={bootstrap.data} /></details></section></>
           ) : null}
         </section>
       </div>

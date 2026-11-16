@@ -1,26 +1,29 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useApi } from "./ApiContext.js";
 import { queryKeys } from "./queryKeys.js";
 import { useProject } from "./useProject.js";
 import { useSelection } from "./SelectionContext.js";
+import type { TasksResponse } from "../api/types.js";
 
 /** Resolve a shareable task through the authorized API before changing context. */
 export function useTaskContext() {
   const api = useApi();
+  const cache = useQueryClient();
   const { bootstrap, projectId, setSelectedProjectId } = useProject();
   const { selectedTaskId, setSelectedTaskId } = useSelection();
   const [params, setParams] = useSearchParams();
   const requested = params.get("task");
   const expectedProject = params.get("project");
+  const listedTask = cache.getQueryData<TasksResponse>(queryKeys.tasks(expectedProject ?? projectId ?? "pending"))?.tasks.find((item) => item.id === requested);
   const snapshot = useQuery({
     queryKey: queryKeys.task(requested ?? "no-linked-task"),
     queryFn: () => api.getTask(requested!),
-    enabled: !!requested && !!bootstrap.data,
+    enabled: !!requested && !!bootstrap.data && !listedTask,
     retry: false,
   });
-  const task = snapshot.data?.task;
+  const task = snapshot.data?.task ?? listedTask;
   const known = !!task && task.id === requested && task.organization_id === bootstrap.data?.organization.id &&
     (!expectedProject || task.project_id === expectedProject) &&
     !!bootstrap.data?.projects.some((project) => project.id === task.project_id);
