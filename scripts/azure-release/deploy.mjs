@@ -35,6 +35,7 @@ import {
   verifyPolicyConfiguration,
 } from "./policy.mjs";
 import { validateScaleConfiguration, verifyScaleConfiguration } from "./scale.mjs";
+import { IDLE_WORK_QUERY } from "./idle.mjs";
 
 const require = createRequire(import.meta.url);
 const { Client } = require("pg");
@@ -150,10 +151,7 @@ async function connect() {
 const journal = async (client) =>
   (await client.query("SELECT position, checksum FROM artoo_meta.migrations ORDER BY position")).rows;
 async function idle(client) {
-  const result = await client.query(`SELECT
-    (SELECT count(*) FROM public.runs WHERE status IN ('queued','starting','running','awaiting_input','paused')) +
-    (SELECT count(*) FROM public.assistant_turns WHERE status IN ('queued','waiting','running')) +
-    (SELECT count(*) FROM public.goal_automations WHERE status IN ('planning','executing','waiting')) AS active`);
+  const result = await client.query(IDLE_WORK_QUERY);
   check(
     Number(result.rows[0].active) === 0,
     "Work is still active. Drain or stop runs, assistants and autonomous goals before deployment.",

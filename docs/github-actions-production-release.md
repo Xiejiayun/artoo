@@ -80,7 +80,21 @@ the workflow reads them in memory and into a runner-private directory only.
    the complete test partitions; optional Apple job outcomes are retained but
    are not substituted for the Web release gates.
 2. Drain active runs, assistant turns and autonomous goals. The workflow refuses
-   to interrupt them. Announce/accept a brief maintenance window. Preparation
+   to interrupt them. An autonomous goal explicitly paused by its owner before
+   planning began may remain paused during maintenance with its automation still
+   `waiting`. This narrow exception requires the same Goal ID and organization,
+   null plan/discussion pointers, and no plan or discussion history for that
+   Goal ID. Previously planned paused goals remain blocked because ordinary
+   Run/turn states cannot establish closure of their dedicated operations.
+   Active Runs (including paused Runs), queued/waiting/running assistant turns,
+   any held file lease, and disconnected failed Runs without exact recorded
+   process-exit confirmation still block maintenance. Only a same-organization,
+   same-Run `run.failed` or `run.reconciled` event with JSON boolean
+   `process_exit_confirmed: true` confirms a disconnected process has stopped.
+   Planning/executing automations, waiting goals in any other state (including
+   draft or awaiting approval), and missing, mismatched or unknown automation
+   state still block preparation. The workflow does not pause, cancel or rewrite
+   goals. Announce/accept a brief maintenance window. Preparation
    requires an explicit minimum of 0 or 1 and a maximum of 1 replica, and
    deployment and recovery preserve those original values. The existing
    production setting is min=0/max=1; public health requests wake a scaled-to-zero
