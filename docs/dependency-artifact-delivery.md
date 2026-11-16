@@ -39,14 +39,19 @@ The node constructs this route from its configured server origin and frozen ids,
 rejects redirects, bounds response and aggregate sizes, and independently checks
 provenance and digest before exposing a read-only input snapshot to the CLI.
 Binary content must retain its binary identity rather than be decoded as text.
-The managed scheduler path now performs this transfer before journal ready and
-hands a private, payload-bound, once-consumed input snapshot to the existing
-physical Run owner. Cancellation closes untaken snapshots; taken snapshots stay
+The managed scheduler path performs this transfer before journal ready. Ordinary
+paired Run startup also performs the transfer inside its existing startup owner,
+using only the current server-announced dependency input session. Both paths hand
+a private, payload-bound, once-consumed input snapshot to the existing process
+adapter. Windows inputs additionally require physical local NTFS ancestry and
+current-user/trusted-system ACLs; a read-only attribute alone is insufficient.
+Cancellation or original-socket loss closes untaken snapshots; taken snapshots stay
 with the owner until actual resource closure. Changed inventory or identity is
-retained as an error rather than recursively deleted. This path remains behind
-the existing local scheduler opt-in and native platform qualification guards.
-It requires frozen source-Run artifacts; it does not extend ordinary manual
-execution or invent a source Run for legacy manually attached artifacts.
+retained as an error rather than recursively deleted. The scheduler path remains
+behind its local opt-in and native qualification guards; ordinary input reads
+do not enable that scheduler or confer its launch permission. Downloads require
+frozen source-Run artifacts. Legacy no-Run manual inputs retain their original
+descriptive context; no source Run or missing bytes are invented for them.
 
 Regression sources cover controlled two-computer/two-Agent inventory, real
 device-token authentication, source upload and acceptance, exact delivery,
