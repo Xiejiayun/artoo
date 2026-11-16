@@ -103,6 +103,7 @@ export type {
 interface AdmissionState {
   identity: Readonly<OwnedAdmissionIdentity>;
   claimed: boolean;
+  assertLaunchCurrent?: () => void;
 }
 interface ReceiptScope {
   admission: WeakRef<OwnedRunAdmission>;
@@ -122,6 +123,7 @@ interface OwnedControl {
   inspect(): Promise<"running" | "confirmed_closed" | "uncertain">;
 }
 interface OwnedInvocation extends ReceiptScope {
+  assertLaunchCurrent?: () => void;
   owner: object;
   genuine: boolean;
   spawnAttempted: boolean;
@@ -445,7 +447,10 @@ export function assertWindowsVerifiedExecutionExportBinding(
     throw new Error("Source export differs from the actually closed author admission");
 }
 
-export function createOwnedRunAdmission(identity: OwnedAdmissionIdentity): OwnedRunAdmission {
+export function createOwnedRunAdmission(
+  identity: OwnedAdmissionIdentity,
+  assertLaunchCurrent?: () => void,
+): OwnedRunAdmission {
   const value = Object.freeze({
     launchKey: identity.launchKey,
     runId: identity.runId,
@@ -458,7 +463,15 @@ export function createOwnedRunAdmission(identity: OwnedAdmissionIdentity): Owned
   if (Object.values(value).some((item) => typeof item !== "string" || !item || item.includes("\0")))
     throw new Error("A complete local owned admission identity is required");
   const admission = Object.freeze({}) as OwnedRunAdmission;
-  ownedAdmissions.set(admission, { identity: value, claimed: false });
+  if (assertLaunchCurrent !== undefined && typeof assertLaunchCurrent !== "function")
+    throw new Error("An owned launch guard must be a synchronous function");
+  const guard =
+    assertLaunchCurrent &&
+    (() => {
+      if (assertLaunchCurrent() !== undefined)
+        throw new Error("Owned launch guard must complete synchronously without a value");
+    });
+  ownedAdmissions.set(admission, { identity: value, claimed: false, ...(guard ? { assertLaunchCurrent: guard } : {}) });
   return admission;
 }
 
@@ -1133,6 +1146,9 @@ export function createProcessAdapter(
         }
       }
       startupSignal?.throwIfAborted();
+      // Private admission closure, never a ContextPack field. Keep this after
+      // all awaited Git/context/tool setup and directly before POSIX spawn.
+      invocation?.assertLaunchCurrent?.();
       if (invocation) invocation.spawnAttempted = true;
       if (externalDiscussion) externalDiscussion.cleanupAllowed = false;
       if (windowsExecution) {
@@ -1935,6 +1951,7 @@ export function createProcessAdapter(
       if (!admitted || admitted.claimed) throw new Error("A fresh authenticated owned admission is required");
       admitted.claimed = true;
       const invocation: OwnedInvocation = {
+        ...(admitted.assertLaunchCurrent ? { assertLaunchCurrent: admitted.assertLaunchCurrent } : {}),
         admission: new WeakRef(admission),
         worktree: new WeakRef(worktree),
         owner: ownedOwner,
@@ -1973,6 +1990,7 @@ export function createProcessAdapter(
           throw new Error("Owned admission does not match this exact frozen launch identity");
         }
         signal.throwIfAborted();
+        invocation.assertLaunchCurrent?.();
         await ownedPreparation(invocation, signal, () => assertOwnedMaterializedWorktree(worktree));
         signal.throwIfAborted();
         return await startProcess(snapshot, worktree, signal, invocation);

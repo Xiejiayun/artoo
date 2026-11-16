@@ -1,4 +1,4 @@
-import type { RunStartPayload, SchedulerStartProposalV1 } from "@artoo/domain";
+import type { RunStartPayload, SchedulerStartProposalV1, SchedulerStartReadyV1 } from "@artoo/domain";
 import type { AgentInstanceHandle, NodeRunEvent, RuntimeAdapter } from "@artoo/protocol";
 import type { OwnedRunAdmission } from "../process-adapter.js";
 import type { MaterializedWorktree } from "../owned/worktree-reservation.js";
@@ -46,10 +46,34 @@ export interface SchedulerPreparationRecord {
   readonly proposalDigest: string;
   readonly executionAuthorized: false;
 }
-export type SchedulerPreparationResult = {
-  readonly kind: "prepared" | "pending" | "unknown" | "conflict" | "fenced";
-  readonly run: JournalRun;
-};
+declare const preparationBrand: unique symbol;
+declare const exchangeBrand: unique symbol;
+declare const windowBrand: unique symbol;
+/** Local capabilities. Neither serialization nor a replay can reconstruct them.
+ * None is a FreshLaunchPermit or can start/materialize work. */
+export interface SchedulerPreparationPermit {
+  readonly [preparationBrand]: true;
+}
+export interface SchedulerReadyExchange {
+  readonly [exchangeBrand]: true;
+}
+export interface SchedulerStartWindow {
+  readonly [windowBrand]: true;
+}
+export interface SchedulerReadyRequest {
+  readonly ready: SchedulerStartReadyV1;
+  readonly exchange: SchedulerReadyExchange;
+}
+export type SchedulerPreparationResult =
+  | {
+      readonly kind: "prepared";
+      readonly preparation: SchedulerPreparationPermit;
+      readonly run: JournalRun;
+    }
+  | {
+      readonly kind: "pending" | "unknown" | "conflict" | "fenced";
+      readonly run: JournalRun;
+    };
 export type DurablePhase = "admitted" | "preparing" | "launch_intent" | "started" | "closed";
 export interface DurableReceipt {
   readonly id: string;
@@ -180,6 +204,11 @@ export interface Journal {
   admitStart(request: StartRequest): Promise<AdmissionResult>;
   admitOwnedResultStart?(request: OwnedResultStartRequest): Promise<AdmissionResult>;
   prepareSchedulerStart?(request: SchedulerPreparationRequest): Promise<SchedulerPreparationResult>;
+  /** Begin before the first ready RPC; reuse this same exchange on response loss. */
+  beginSchedulerReady?(preparation: SchedulerPreparationPermit, signal: AbortSignal): SchedulerReadyRequest;
+  /** Caller must supply the actual authenticated reply. Still no launch permit. */
+  acceptSchedulerStartGrant?(exchange: SchedulerReadyExchange, response: unknown): SchedulerStartWindow;
+  assertSchedulerStartWindow?(window: SchedulerStartWindow): void;
   lookupRun(request: RunQuery): Promise<JournalRun | null>;
   advance(permit: FreshLaunchPermit, phase: "preparing" | "launch_intent"): Promise<JournalRun>;
   requestStop(request: RunQuery & { readonly expectedKey?: string }): Promise<JournalRun>;

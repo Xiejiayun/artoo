@@ -830,6 +830,45 @@ independent concurrent grant calls, busy execution-evidence locks and expiry
 during an observed computer-row lock wait. Executed results are recorded in the
 implementation PR.
 
+### Private node ready windows and final producer check (Step 4 foundation)
+
+A freshly observed v5 journal preparation additionally returns an opaque
+same-process preparation capability. Pending/unknown/conflict/fenced replies,
+lookup, serialization and reopening never reconstruct it. Beginning ready
+consumes that capability once and creates a distinct opaque exchange. Retries
+must reuse its original ready identity and monotonic start tick.
+
+The journal's local window manager validates a strict bounded grant response
+against all ready/proposal/original-user/device/session bindings. It subtracts
+the entire round trip conservatively by measuring from before the first ready
+request. Accept consumes the exchange even on an invalid reply. A copied or
+foreign-manager object grants nothing. Deadline expiry, backwards/nonfinite
+ticks, original-channel abort or journal-worker failure permanently invalidate
+the window. Wall-clock-looking response timestamps cannot reset that deadline.
+
+These are preparation/window capabilities, never a `FreshLaunchPermit`.
+Accepting a grant still leaves the Run's durable producer owner fields NULL,
+phase admitted and worktree absent. There is no node grant persistence,
+materialization, transport consumer or ordinary-dispatch bypass in this slice.
+The next durable admission slice must consume a genuine window and persist its
+exact grant before issuing a one-shot launch permit.
+
+The owned process adapter can now capture an optional private synchronous start
+guard in its existing admission WeakMap. It checks initially and again after
+all awaited Git/context/tool preparation, adjacent to the POSIX spawn. The guard
+never enters the ContextPack or model schema; asynchronous/value-returning
+guards reject. Rejection retains existing genuine not-spawned/uncertain receipt
+classification and cannot reuse the consumed admission. Ordinary callers omit
+the guard and retain their existing behavior. This is a startup deadline, not a
+lease that expires an already running process.
+
+Deterministic tests cover exact deadline, latency, replay, copies, binding/mode
+changes, lost continuity and channel/worker failure. Controlled adapter ordering
+tests check rejection after awaited tool preparation with no spawn call. The
+protected macOS SQLite fixture checks fresh-only capability, restart/abort and
+the still-unowned durable record. Native subprocess acceptance remains a
+separate later admission/transport test; no Provider is involved here.
+
 ## Explicit delegation (independent Step 7)
 
 Existing `parent_task_id` also records conversation continuations and research

@@ -23,6 +23,7 @@ import {
 import type { MaterializedWorktree } from "../owned/worktree-reservation.js";
 import { nonempty } from "./journal-boundary.js";
 import { snapshotSchedulerProposal } from "./scheduler-preparation.js";
+import { createSchedulerStartWindows } from "./scheduler-start-window.js";
 import type {
   AdmissionResult,
   LiveDeliveryClaim,
@@ -359,6 +360,7 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
     throw error;
   }
   const permits = new WeakMap<FreshLaunchPermit, PermitState>();
+  const schedulerWindows = createSchedulerStartWindows(() => worker.assertAvailable());
   const checkNamespace = (expected: string) => {
     if (expected !== namespace) throw new Error("Expected ownership namespace differs");
   };
@@ -545,13 +547,25 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
       const snapshot = snapshotSchedulerProposal(request.proposal);
       if (snapshot.launch.payload.run_id !== runId || snapshot.proposal.prepared_start.computer_id !== location.nodeId)
         throw new Error("Scheduler proposal targets a different run or node");
-      const result = await worker.call<SchedulerPreparationResult>("scheduler_prepare", {
-        proposal: snapshot.canonical,
-      });
+      const result = await worker.call<{ kind: SchedulerPreparationResult["kind"]; run: JournalRun }>(
+        "scheduler_prepare",
+        {
+          proposal: snapshot.canonical,
+        },
+      );
       worker.assertAvailable();
       freeze(result);
-      return result;
+      if (result.kind !== "prepared") return result as Exclude<SchedulerPreparationResult, { kind: "prepared" }>;
+      if (!result.run.schedulerPreparation) throw new Error("Missing freshly committed scheduler preparation");
+      return Object.freeze({
+        ...result,
+        kind: "prepared" as const,
+        preparation: schedulerWindows.prepare(snapshot.proposal, result.run.schedulerPreparation),
+      });
     },
+    beginSchedulerReady: schedulerWindows.begin,
+    acceptSchedulerStartGrant: schedulerWindows.accept,
+    assertSchedulerStartWindow: schedulerWindows.assertCurrent,
     admitStart(request) {
       return admitStart(request);
     },
