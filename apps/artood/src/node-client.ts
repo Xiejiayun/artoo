@@ -6,6 +6,7 @@ import { ManagedDelivery, boundedOperation, abortableOperation, DeliveryCancelle
   type ManagedJournalOptions, type ManagedSession } from "./managed/managed-delivery.js";
 import type { FreshLaunchPermit, JournalRun, TerminalSettlement } from "./managed/journal-types.js";
 import { prepareSchedulerPhysicalOwner, type SchedulerOwnedAdmission, type SchedulerOwnerChannels } from "./managed/scheduler-owner.js";
+import { SchedulerStartWindowExpired } from "./managed/scheduler-start-window.js";
 import { PRODUCT_SOURCE_TRANSFER_FEATURE_V1, PRODUCT_SOURCE_TRANSFER_FEATURE_V2, PRODUCT_SOURCE_TRANSFER_MEASUREMENT_V2_FEATURE_V1,
   PRODUCT_SOURCE_OPERATIONS_FEATURE_V1, IMPORTED_PRODUCT_REVIEW_FEATURE_V1, IMPORTED_DESIGN_CONTINUATION_FEATURE_V1,
   IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1,
@@ -638,7 +639,9 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     let reservation: OwnedReservation | undefined;
     let admission: OwnedRunAdmission | undefined;
     let adapterInvoked = false;
+    let bridgeInvoked = false;
     let physicalWorkEntered = false;
+    let preparationComplete = false;
     let rejectionCode: NodeErrorCode = "process_start_failed";
     try {
       // Local authority is detached before any asynchronous work. Neither the
@@ -715,6 +718,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       });
       }
       if (!materialized) throw new Error("Owned workspace materialization did not return its genuine handle");
+      preparationComplete = true;
       await record.scheduler?.beforeStart();
       record.recovery.phase = "adapter_startup";
       adapterInvoked = true;
@@ -725,6 +729,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         controller.signal.throwIfAborted();
         record.scheduler?.assertStartCurrent();
         await journal.advance(record.managed.permit, "launch_intent");
+        bridgeInvoked = true;
         const started = await journal.startOwnedProcess(record.managed.permit, adapter, materialized, controller.signal);
         handle = started.handle; admission = started.admission;
         // Retain genuine authority before recordStarted can fail or observe a
@@ -753,7 +758,19 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       if (record.managed) {
         const managed = record.managed;
         managed.failure ??= errorMessage(error).slice(0, 500);
-        if (record.execution) {
+        const unused = record.scheduler && !bridgeInvoked && (!physicalWorkEntered || preparationComplete)
+          && (record.userStopRequested || error instanceof SchedulerStartWindowExpired || controller.signal.aborted);
+        if (unused && options.managedJournal!.journal.schedulerUnusedPermitVersion === 1
+          && options.managedJournal!.journal.settleUnusedSchedulerPermit) {
+          try {
+            // All preparation awaits have joined and the exact bridge has never
+            // been invoked. Fencing is synchronous inside the original journal;
+            // neither an adapter's not_spawned claim nor a fake exit is used.
+            const closed = await options.managedJournal!.journal.settleUnusedSchedulerPermit(managed.permit);
+            managed.delivery.useUnusedSchedulerPermit(closed);
+            managed.run = closed; managed.settled = true; record.confirmedClosed = true; record.scheduler!.closed();
+          } catch { /* Retain original resources if unused authority or storage is unknown. */ }
+        } else if (record.execution) {
           try { await managed.delivery.abort(new Error(managed.failure)); } catch { /* Storage unknown cannot skip the actual physical stop. */ }
           try { await stopPhysical(record); } catch { /* Preserve genuine uncertainty and execution state. */ }
           if (record.confirmedClosed && record.closureReceipt) {

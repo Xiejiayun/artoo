@@ -158,6 +158,9 @@ export interface StoredEvent {
  * or permission to start/adopt a producer. Future live delivery is separate. */
 export interface ClosedRunDeliveryScope extends RunQuery {
   readonly launchKey: string;
+  /** Legacy field name binds a receipt ID; this explicit scope selects the new
+   * never-started proof. Its absence still requires process_exit_confirmed. */
+  readonly settlementScope?: "scheduler-unused-permit.v1";
   readonly physicalReceiptId: string;
 }
 export type DeliveryFailureReason = "rejected" | "transport_failure" | "receipt_timeout";
@@ -213,6 +216,7 @@ export interface Journal {
   readonly schedulerStartGrantStorageVersion?: 1;
   /** Private one-shot v6 admission; no network claim/renewal consumer. */
   readonly schedulerStartGrantAdmissionVersion?: 1;
+  readonly schedulerUnusedPermitVersion?: 1;
   /** First unexpected failure; resolves before cleanup, never rejects. Clean close leaves it pending. */
   readonly failed: Promise<Error>;
   admitStart(request: StartRequest): Promise<AdmissionResult>;
@@ -259,6 +263,10 @@ export interface Journal {
     worktree: MaterializedWorktree,
     startupError: unknown,
   ): Promise<JournalRun>;
+  /** Original genuine v6 permit only, irrevocably consumed before awaiting.
+   * Caller must first join all physical preparation helpers. This proves an
+   * unused producer bridge, never an exited process or a deleted workspace. */
+  settleUnusedSchedulerPermit?(permit: FreshLaunchPermit): Promise<JournalRun>;
   /** Persists event identity; an event never grants physical settlement authority. */
   appendEvent(permit: FreshLaunchPermit, eventId: string, event: NodeRunEvent): Promise<StoredEvent>;
   claimNextLiveDelivery(permit: FreshLaunchPermit): Promise<LiveDeliveryClaim>;
