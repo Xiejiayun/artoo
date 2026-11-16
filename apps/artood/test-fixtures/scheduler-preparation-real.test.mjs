@@ -1,5 +1,5 @@
 // Actual production boundary + worker + SQLite, plus one controlled real Git /
-// author closure case. No Provider, live scheduler consumer or rollout acceptance.
+// author closure cases, including real paired transport. No Provider or rollout acceptance.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -20,6 +20,8 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { allocateWorkspaceRoot } from "@artoo/protocol";
 import { createProcessAdapter } from "../dist/process-adapter.js";
+import { admitSchedulerStartFromSession } from "../dist/managed/scheduler-session-admission.js";
+import { createSchedulerStartServerFixture } from "../../server/test-fixtures/scheduler-start-server-fixture.mjs";
 import { provisionRunNamespace } from "../dist/owned/workspace-namespace.js";
 import {
   prepareOwnedWorktree,
@@ -118,12 +120,12 @@ function reverseKeys(value) {
     );
   return value;
 }
-async function fixture(t, body) {
+async function fixture(t, body, nodeId = "computer_one") {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-scheduler-preparation-")));
   const options = {
     directory: join(root, "journal"),
     controllerScope: "scheduler-preparation-fixture",
-    nodeId: "computer_one",
+    nodeId,
   };
   const journals = [];
   let closureUncertain = false,
@@ -233,168 +235,314 @@ async function readyGrant(journal, value, request, remaining = 5000) {
   return { window: journal.acceptSchedulerStartGrant(ready.exchange, response), response, controller };
 }
 
-test(
-  "an admitted grant runs a controlled real author once and permits physical settlement after expiry",
-  native,
-  async (t) =>
-    fixture(t, async (f) => {
-      const repo = join(f.root, "repository"),
-        value = proposal(f.root),
-        marker = join(f.root, "author.json");
-      mkdirSync(repo);
-      mkdirSync(value.run_start.workspace_allocation.base_path);
-      const environment = {
-        ...process.env,
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_CONFIG_GLOBAL: "/dev/null",
-        GIT_TERMINAL_PROMPT: "0",
-      };
-      for (const key of Object.keys(environment))
-        if (
-          key.startsWith("GIT_") &&
-          !["GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_TERMINAL_PROMPT"].includes(key)
-        )
-          delete environment[key];
-      let physicalUncertain = false,
-        writer,
-        draining,
-        authorClosed = false;
-      const git = (args) => {
-        physicalUncertain = true;
-        const result = execFileSync(
-          "/usr/bin/git",
-          ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args],
-          { cwd: repo, env: environment, encoding: "utf8", timeout: 10000 },
-        );
-        physicalUncertain = false;
-        return result;
-      };
-      const assertClosed = (receipt) => {
-        assert.equal(receipt.kind, "confirmed_closed");
-        for (const field of ["childSpawned", "childExitObserved", "childStdioClosed", "groupAbsent"])
-          assert.equal(receipt.facts?.[field], true, field);
-      };
-      const script = join(f.root, "author.mjs");
-      writeFileSync(
-        script,
-        `import {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(marker)},JSON.stringify({pid:process.pid,cwd:process.cwd()}),{flag:'wx'}); setInterval(()=>{},1000);`,
-        { flag: "wx" },
-      );
-      const adapter = createProcessAdapter({
-        runtimeId: "codex",
-        command: [process.execPath, script],
-        allowedRoots: [f.root],
-      });
-      try {
-        git(["init", "--quiet", "--initial-branch=main"]);
-        git([
-          "-c",
-          "user.name=Artoo fixture",
-          "-c",
-          "user.email=fixture@artoo.local",
-          "commit",
-          "--quiet",
-          "--no-gpg-sign",
-          "--allow-empty",
-          "-m",
-          "baseline",
-        ]);
-        const sourceCommit = git(["rev-parse", "HEAD"]).trim();
-        await upgradeLocalJournalForSchedulerStartGrants(f.options);
-        const journal = await f.open(),
-          request = f.request(value);
-        const { window } = await readyGrant(journal, value, request);
-        const result = await journal.admitSchedulerStart(window);
-        assert.equal(result.kind, "fresh");
-        const guard = () => journal.assertSchedulerStartWindow(window),
-          start = result.payload;
-        await journal.advance(result.permit, "preparing");
-        const input = {
-          root: start.workspace.root,
-          branch: start.workspace.branch,
-          sourceRepo: repo,
-          sourceCommit,
-          allowedRoots: [f.root],
-        };
-        const options = { gitExecutable: "/usr/bin/git", signal: t.signal };
-        physicalUncertain = true;
-        await provisionRunNamespace(
-          {
-            ...input,
-            basePath: start.workspace_allocation.base_path,
-            agentInstanceId: start.agent_instance_id,
-            runId: start.run_id,
-          },
-          options,
-          guard,
-        );
-        const worktree = await materializeOwnedWorktree(
-          await reserveOwnedWorktree(await prepareOwnedWorktree(input, options, guard)),
-        );
-        physicalUncertain = false;
-        await journal.advance(result.permit, "launch_intent");
-        physicalUncertain = true;
-        writer = await journal.startOwnedProcess(result.permit, adapter, worktree, new AbortController().signal);
-        draining = (async () => {
-          for await (const event of adapter.streamEvents(writer.handle)) {
-            assert.ok(event.type);
-          }
-        })();
-        void draining.catch(() => {});
-        await journal.recordStarted(result.permit, adapter, writer.handle);
-        const until = performance.now() + 10000;
-        while (!existsSync(marker)) {
-          t.signal.throwIfAborted();
-          assert.ok(performance.now() < until, "Actual author marker was not written");
-          await new Promise((resolve) => setTimeout(resolve, 5));
-        }
-        // The window limits startup only. Let the original five-second grant
-        // expire while the actual child runs, then use its genuine closure receipt.
-        await new Promise((resolve) => setTimeout(resolve, 5100));
-        assert.throws(guard, /deadline/);
-        const closure = await adapter.stopOwnedRun(writer.handle, writer.admission, "user_cancelled");
-        assertClosed(closure);
-        authorClosed = true;
-        await draining;
-        physicalUncertain = false;
-        const actual = JSON.parse(readFileSync(marker, "utf8"));
-        assert.equal(actual.cwd, worktree.root);
-        assert.throws(
-          () => process.kill(actual.pid, 0),
-          (error) => error.code === "ESRCH",
-        );
-        const settled = await journal.settleOwnedProcess(result.permit, writer.handle, closure, {
-          terminal: { type: "run.lifecycle", payload: { phase: "cancelled" } },
-          retentionOutcome: "cancelled",
-        });
-        assert.equal(settled.phase, "closed");
-        assert.equal(settled.receipt.kind, "process_exit_confirmed");
-        assert.equal(settled.schedulerStartGrant.grantId, result.run.schedulerStartGrant.grantId);
-        await assert.rejects(
-          journal.startOwnedProcess(result.permit, adapter, worktree, new AbortController().signal),
-          /unused committed/,
-        );
-        t.diagnostic(
-          JSON.stringify({
-            scope: "controlled real Git/author/SQLite; no Provider or network scheduler",
-            grant_id: settled.schedulerStartGrant.grantId,
-            physical_exit_confirmed: true,
-          }),
-        );
-      } finally {
-        try {
-          if (writer && !authorClosed) {
-            assertClosed(await adapter.stopOwnedRun(writer.handle, writer.admission, "user_cancelled"));
+for (const network of [false, true])
+  test(
+    network
+      ? "real paired exchange and SQLite admission run one author and retain server reservations after physical closure"
+      : "an admitted grant runs a controlled real author once and permits physical settlement after expiry",
+    native,
+    async (t) =>
+      fixture(
+        t,
+        async (f) => {
+          const repo = join(f.root, "repository"),
+            value = proposal(f.root),
+            marker = join(f.root, "author.json"),
+            allocationBase = value.run_start.workspace_allocation.base_path;
+          mkdirSync(repo);
+          mkdirSync(value.run_start.workspace_allocation.base_path);
+          const environment = {
+            ...process.env,
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_CONFIG_GLOBAL: "/dev/null",
+            GIT_TERMINAL_PROMPT: "0",
+          };
+          for (const key of Object.keys(environment))
+            if (
+              key.startsWith("GIT_") &&
+              !["GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_TERMINAL_PROMPT"].includes(key)
+            )
+              delete environment[key];
+          let physicalUncertain = false,
+            serverUncertain = false,
+            primaryFailure,
+            writer,
+            draining,
+            authorClosed = false,
+            bridge;
+          const git = (args) => {
+            physicalUncertain = true;
+            const result = execFileSync(
+              "/usr/bin/git",
+              ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args],
+              { cwd: repo, env: environment, encoding: "utf8", timeout: 10000 },
+            );
+            physicalUncertain = false;
+            return result;
+          };
+          const assertClosed = (receipt) => {
+            assert.equal(receipt.kind, "confirmed_closed");
+            for (const field of ["childSpawned", "childExitObserved", "childStdioClosed", "groupAbsent"])
+              assert.equal(receipt.facts?.[field], true, field);
+          };
+          const script = join(f.root, "author.mjs");
+          writeFileSync(
+            script,
+            `import {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(marker)},JSON.stringify({pid:process.pid,cwd:process.cwd()}),{flag:'wx'}); setInterval(()=>{},1000);`,
+            { flag: "wx" },
+          );
+          const adapter = createProcessAdapter({
+            runtimeId: "codex",
+            command: [process.execPath, script],
+            allowedRoots: [f.root],
+          });
+          try {
+            git(["init", "--quiet", "--initial-branch=main"]);
+            git([
+              "-c",
+              "user.name=Artoo fixture",
+              "-c",
+              "user.email=fixture@artoo.local",
+              "commit",
+              "--quiet",
+              "--no-gpg-sign",
+              "--allow-empty",
+              "-m",
+              "baseline",
+            ]);
+            const sourceCommit = git(["rev-parse", "HEAD"]).trim();
+            await upgradeLocalJournalForSchedulerStartGrants(f.options);
+            const journal = await f.open();
+            let result, guard;
+            if (network) {
+              const artifactDir = join(f.root, "artifacts");
+              mkdirSync(artifactDir);
+              serverUncertain = true;
+              bridge = await createSchedulerStartServerFixture({
+                namespace: journal.namespace,
+                sourceRepo: repo,
+                allocationBase,
+                artifactDir,
+              });
+              result = await admitSchedulerStartFromSession({
+                journal,
+                channel: bridge.link.openSchedulerStartSession(),
+                ...bridge.input,
+              });
+              assert.equal(result.kind, "fresh");
+              guard = result.assertStartCurrent;
+              assert.equal(result.payload.run_id, bridge.input.runId);
+              assert.equal(result.payload.task_id, bridge.input.taskId);
+              const replay = await admitSchedulerStartFromSession({
+                journal,
+                channel: bridge.link.openSchedulerStartSession(),
+                ...bridge.input,
+              });
+              assert.equal(replay.kind, "retained");
+              assert.equal(replay.stage, "preparation");
+              assert.equal(replay.status, "pending");
+              await bridge.assertRetained(result.run.schedulerStartGrant.grantId);
+            } else {
+              const { window } = await readyGrant(journal, value, f.request(value));
+              result = await journal.admitSchedulerStart(window);
+              guard = () => journal.assertSchedulerStartWindow(window);
+            }
+            assert.equal(result.kind, "fresh");
+            const start = result.payload;
+            await journal.advance(result.permit, "preparing");
+            const input = {
+              root: start.workspace.root,
+              branch: start.workspace.branch,
+              sourceRepo: repo,
+              sourceCommit,
+              allowedRoots: [f.root],
+            };
+            const options = { gitExecutable: "/usr/bin/git", signal: t.signal };
+            physicalUncertain = true;
+            await provisionRunNamespace(
+              {
+                ...input,
+                basePath: start.workspace_allocation.base_path,
+                agentInstanceId: start.agent_instance_id,
+                runId: start.run_id,
+              },
+              options,
+              guard,
+            );
+            const worktree = await materializeOwnedWorktree(
+              await reserveOwnedWorktree(await prepareOwnedWorktree(input, options, guard)),
+            );
+            physicalUncertain = false;
+            await journal.advance(result.permit, "launch_intent");
+            physicalUncertain = true;
+            writer = await journal.startOwnedProcess(result.permit, adapter, worktree, new AbortController().signal);
+            draining = (async () => {
+              for await (const event of adapter.streamEvents(writer.handle)) {
+                assert.ok(event.type);
+              }
+            })();
+            void draining.catch(() => {});
+            await journal.recordStarted(result.permit, adapter, writer.handle);
+            const until = performance.now() + 10000;
+            while (!existsSync(marker)) {
+              t.signal.throwIfAborted();
+              assert.ok(performance.now() < until, "Actual author marker was not written");
+              await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+            // The window limits startup only. Let the original five-second grant
+            // expire while the actual child runs, then use its genuine closure receipt.
+            await new Promise((resolve) => setTimeout(resolve, 5100));
+            assert.throws(guard, /deadline/);
+            // Ending the original transport cannot remove Stop/settlement authority
+            // from the exact process that really started under that generation.
+            if (bridge) await bridge.link.close();
+            const closure = await adapter.stopOwnedRun(writer.handle, writer.admission, "user_cancelled");
+            assertClosed(closure);
             authorClosed = true;
             await draining;
             physicalUncertain = false;
+            const actual = JSON.parse(readFileSync(marker, "utf8"));
+            assert.equal(actual.cwd, worktree.root);
+            assert.throws(
+              () => process.kill(actual.pid, 0),
+              (error) => error.code === "ESRCH",
+            );
+            const settled = await journal.settleOwnedProcess(result.permit, writer.handle, closure, {
+              terminal: { type: "run.lifecycle", payload: { phase: "cancelled" } },
+              retentionOutcome: "cancelled",
+            });
+            assert.equal(settled.phase, "closed");
+            assert.equal(settled.receipt.kind, "process_exit_confirmed");
+            assert.equal(settled.schedulerStartGrant.grantId, result.run.schedulerStartGrant.grantId);
+            if (bridge) await bridge.assertRetained(settled.schedulerStartGrant.grantId);
+            await assert.rejects(
+              journal.startOwnedProcess(result.permit, adapter, worktree, new AbortController().signal),
+              /unused committed/,
+            );
+            t.diagnostic(
+              JSON.stringify({
+                scope: network
+                  ? "real paired WebSocket/PGlite grant, SQLite/Git/controlled author; no Provider or server writeback"
+                  : "controlled real Git/author/SQLite; no Provider or network scheduler",
+                grant_id: settled.schedulerStartGrant.grantId,
+                physical_exit_confirmed: true,
+              }),
+            );
+          } catch (error) {
+            primaryFailure = { error };
           }
-        } finally {
-          if (physicalUncertain) f.retain();
-        }
-      }
-    }),
-);
+          const cleanupErrors = [];
+          try {
+            if (writer && !authorClosed) {
+              assertClosed(await adapter.stopOwnedRun(writer.handle, writer.admission, "user_cancelled"));
+              authorClosed = true;
+              await draining;
+              physicalUncertain = false;
+            }
+          } catch (error) {
+            cleanupErrors.push(error);
+          }
+          try {
+            await bridge?.close();
+            // A failed setup may not have returned its closure owner.
+            if (bridge) serverUncertain = false;
+          } catch (error) {
+            cleanupErrors.push(error);
+          }
+          if (physicalUncertain || serverUncertain) f.retain();
+          if (cleanupErrors.length)
+            throw new AggregateError(
+              [...(primaryFailure ? [primaryFailure.error] : []), ...cleanupErrors],
+              "Physical scheduler fixture or cleanup failed",
+              primaryFailure ? { cause: primaryFailure.error } : undefined,
+            );
+          if (primaryFailure) throw primaryFailure.error;
+        },
+        network ? "computer_local_mock" : "computer_one",
+      ),
+  );
+
+for (const stage of ["prepareSchedulerStart", "admitSchedulerStart"])
+  test(
+    `paired composition withholds committed ${stage} after cancellation without releasing either reservation`,
+    native,
+    async (t) =>
+      fixture(
+        t,
+        async (f) => {
+          await upgradeLocalJournalForSchedulerStartGrants(f.options);
+          const journal = await f.open(),
+            artifactDir = join(f.root, "artifacts");
+          mkdirSync(artifactDir);
+          let bridge, failure;
+          try {
+            bridge = await createSchedulerStartServerFixture({
+              namespace: journal.namespace,
+              sourceRepo: join(f.root, "unmaterialized-repository"),
+              allocationBase: join(f.root, "attempts"),
+              artifactDir,
+            });
+          } catch (error) {
+            f.retain();
+            throw error;
+          }
+          const controller = new AbortController();
+          const interrupted = {
+            ...journal,
+            [stage]: async (...args) => {
+              const committed = await journal[stage](...args);
+              controller.abort(new Error(`Controlled cancellation after ${stage} committed`));
+              return committed;
+            },
+          };
+          try {
+            await assert.rejects(
+              admitSchedulerStartFromSession({
+                journal: interrupted,
+                channel: bridge.link.openSchedulerStartSession(),
+                ...bridge.input,
+                signal: controller.signal,
+              }),
+              /Controlled cancellation/,
+            );
+            assert.equal(existsSync(join(f.root, "attempts")), false);
+            const grantId = (
+              await journal.lookupRun({ expectedNamespace: journal.namespace, runId: bridge.input.runId })
+            ).schedulerStartGrant?.grantId;
+            assert.equal(Boolean(grantId), stage === "admitSchedulerStart");
+            await bridge.assertRetained(grantId);
+            const [row] = f.inspect("SELECT phase,owner_nonce IS NOT NULL AS claimed FROM runs");
+            assert.equal(row.phase, "admitted");
+            assert.equal(row.claimed, stage === "admitSchedulerStart" ? 1 : 0);
+            await journal.close();
+            const reopened = await f.open();
+            const replay = await admitSchedulerStartFromSession({
+              journal: reopened,
+              channel: bridge.link.openSchedulerStartSession(),
+              ...bridge.input,
+            });
+            assert.equal(replay.kind, "retained");
+            assert.equal(replay.stage, "preparation");
+            assert.equal(replay.status, "unknown");
+            await bridge.assertRetained(grantId);
+          } catch (error) {
+            failure = { error };
+          }
+          try {
+            await bridge.close();
+          } catch (cleanup) {
+            f.retain();
+            throw new AggregateError(
+              [...(failure ? [failure.error] : []), cleanup],
+              "Cancelled composition fixture closure uncertain",
+              failure ? { cause: failure.error } : undefined,
+            );
+          }
+          if (failure) throw failure.error;
+        },
+        "computer_local_mock",
+      ),
+  );
 
 test(
   "v6 atomically admits one original grant and preserves historical admission without replay authority",
