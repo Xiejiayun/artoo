@@ -21,6 +21,9 @@ New APIs:
   membership derives from existing project-bound instances with revision zero.
   Explicit logical membership admits eligible instances bound to that project or
   organization-wide instances; it cannot borrow an instance bound elsewhere.
+  Manual assignment, room conversation, Goal planning discussions and the private
+  scheduler consumer use the same trusted membership rule. Selecting a member
+  does not bypass runtime, capacity, consent or execution authorization checks.
 - `GET/PUT /api/v1/computers/:id/admission`: edits use
   `{version:1,expected_revision,state:"accepting"|"draining"}`. Responses wrap
   the versioned record in `admission`. Missing records retain accepting behavior.

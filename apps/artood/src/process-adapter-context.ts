@@ -51,7 +51,7 @@ function importedValidationInstructions(config: AgentInstanceConfig): string[] {
     ];
   return [];
 }
-export function renderContextPack(config: AgentInstanceConfig): string {
+export function renderContextPack(config: AgentInstanceConfig, dependencyInputText?: string): string {
   const pack = config.runStart.context_pack;
   const lines: string[] = [`# Context Pack ${pack.id}`, `task: ${config.taskId}`, `run: ${config.runId}`];
   if (pack.uri) {
@@ -96,15 +96,17 @@ export function renderContextPack(config: AgentInstanceConfig): string {
     );
   }
   lines.push(...importedValidationInstructions(config));
+  if (dependencyInputText) lines.push(dependencyInputText);
   return `${lines.join("\n")}\n`;
 }
 
 /** MCP pages carry every payload field once; legacy context files keep their original rendering. */
-export function renderWorkspaceToolContext(config: AgentInstanceConfig): string {
+export function renderWorkspaceToolContext(config: AgentInstanceConfig, dependencyInputText?: string): string {
   const pack = config.runStart.context_pack;
   const lines = [`# Context Pack ${pack.id}`, `task: ${config.taskId}`, `run: ${config.runId}`];
   if (pack.uri) lines.push(`uri: ${pack.uri}`);
   if (pack.payload) lines.push("", "## Raw Payload", JSON.stringify(pack.payload));
   lines.push(...importedValidationInstructions(config));
+  if (dependencyInputText) lines.push(dependencyInputText);
   return `${lines.join("\n")}\n`;
 }

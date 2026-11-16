@@ -1,4 +1,5 @@
 import { renderContextPack, renderWorkspaceToolContext } from "./process-adapter-context.js";
+import { takeDependencyArtifactInputs, type DependencyArtifactInputs } from "./dependency-artifact-inputs.js";
 import { readWindowsGuardianOperation, startWindowsScopedProcess } from "./owned/windows-guardian-scope.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -129,6 +130,7 @@ interface OwnedInvocation extends ReceiptScope {
   spawnAttempted: boolean;
   helperUncertain: boolean;
   resultResourcesClosed: boolean;
+  dependencyInputs?: DependencyArtifactInputs;
   control?: OwnedControl;
   closedFacts?: OwnedPhysicalFacts;
   queue?: AsyncEventQueue<RunEvent>;
@@ -1003,6 +1005,8 @@ export function createProcessAdapter(
     // Enforce the workspace allowlist before context writes or process launch.
     assertWorkspaceScope(config.workspaceRoot, options.allowedRoots);
     assertRealWorkspaceScope(config.workspaceRoot, options.allowedRoots);
+    const dependencyInputs = invocation ? takeDependencyArtifactInputs(config.runStart) : undefined;
+    if (invocation) invocation.dependencyInputs = dependencyInputs;
 
     const discussion = config.runStart.context_pack.payload?.policy.execution_mode === "discussion";
     const productTools =
@@ -1035,7 +1039,7 @@ export function createProcessAdapter(
     startupSignal?.throwIfAborted();
     const ownedContext = worktree
       ? await ownedPreparation(invocation, startupSignal, () =>
-          writeOwnedContextFile(worktree, contextPackFilename, renderContextPack(config)),
+          writeOwnedContextFile(worktree, contextPackFilename, renderContextPack(config, dependencyInputs?.contextText)),
         )
       : undefined;
     startupSignal?.throwIfAborted();
@@ -1043,7 +1047,7 @@ export function createProcessAdapter(
     if (!ownedContext)
       writeFileSync(
         contextPackPath,
-        renderContextPack(config),
+        renderContextPack(config, dependencyInputs?.contextText),
         externalDiscussion ? { mode: 0o400, flag: "wx" } : undefined,
       );
 
@@ -1079,7 +1083,7 @@ export function createProcessAdapter(
         workspaceTools = await createWorkspaceToolSession({
           workspaceRoot,
           context: config.runStart.context_pack.payload!,
-          contextText: renderWorkspaceToolContext(config),
+          contextText: renderWorkspaceToolContext(config, dependencyInputs?.contextText),
           verify: verify!,
           researchMcpPath: research?.mcpPath,
           readEvidence,
@@ -1090,7 +1094,7 @@ export function createProcessAdapter(
         workspaceTools = await createWorkspaceToolSession({
           workspaceRoot,
           context: config.runStart.context_pack.payload!,
-          contextText: renderWorkspaceToolContext(config),
+          contextText: renderWorkspaceToolContext(config, dependencyInputs?.contextText),
           readEvidence,
           readCapabilities,
           readReleaseCapabilities,
@@ -1149,6 +1153,7 @@ export function createProcessAdapter(
       // Private admission closure, never a ContextPack field. Keep this after
       // all awaited Git/context/tool setup and directly before POSIX spawn.
       invocation?.assertLaunchCurrent?.();
+      dependencyInputs?.assertCurrent();
       if (invocation) invocation.spawnAttempted = true;
       if (externalDiscussion) externalDiscussion.cleanupAllowed = false;
       if (windowsExecution) {
@@ -1609,6 +1614,11 @@ export function createProcessAdapter(
         finishWith({ type: "run.lifecycle", payload: { phase: "failed", reason: "Research session cleanup failed" } });
         return;
       }
+      try { dependencyInputs?.close(); if (invocation) invocation.dependencyInputs = undefined; }
+      catch (cause) {
+        workspaceCleanupError = new VerificationCleanupError("Dependency input snapshot cleanup failed; input evidence retained", { cause });
+        queue.fail(workspaceCleanupError); resolveClosed(); return;
+      }
       if (invocation) invocation.resultResourcesClosed = true;
       if (windowsExecution) windowsExecution.resourcesClosed = true;
       if (externalDiscussion) {
@@ -1995,6 +2005,11 @@ export function createProcessAdapter(
         signal.throwIfAborted();
         return await startProcess(snapshot, worktree, signal, invocation);
       } catch (cause) {
+        let failureCause = cause;
+        if (invocation.dependencyInputs && !invocation.spawnAttempted && !invocation.helperUncertain) {
+          try { invocation.dependencyInputs.close(); invocation.dependencyInputs = undefined; }
+          catch (cleanup) { failureCause = new AggregateError([cause, cleanup], "Owned startup and dependency input cleanup failed; evidence retained"); }
+        }
         let kind: OwnedStartupReceipt["kind"] = "uncertain";
         if (invocation.genuine && !invocation.spawnAttempted && !invocation.helperUncertain) kind = "not_spawned";
         if (invocation.spawnAttempted && invocation.control) {
@@ -2005,7 +2020,7 @@ export function createProcessAdapter(
           }
         }
         if (invocation.closedFacts) kind = invocation.closedFacts.childSpawned ? "confirmed_closed" : "not_spawned";
-        const error = new Error("Owned runtime startup failed; workspace and context retained", { cause });
+        const error = new Error("Owned runtime startup failed; workspace and context retained", { cause: failureCause });
         if (invocation.genuine) {
           const facts = invocation.closedFacts ?? invocation.control?.facts();
           const receipt: OwnedStartupReceipt = Object.freeze({

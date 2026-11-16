@@ -7,6 +7,7 @@ import { isOwnedRunAdapter } from "../process-adapter.js";
 import { createRegistryHeartbeat } from "../heartbeat.js";
 import { readOwnedResultProfileDescriptors } from "../owned-worktree-verification.js";
 import { createSchedulerClaimLoop } from "./scheduler-claim-loop.js";
+import { createDependencyArtifactInputLoader } from "../dependency-artifact-inputs.js";
 
 export interface ManagedNodeRunnerOptions extends Omit<NodeClientOptions, "transport" | "managedJournal" | "nodeId" | "scheduler"> {
   url: string; hello: NodeHello; journal: Journal; WebSocketImpl?: typeof WebSocket;
@@ -54,6 +55,7 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
   // Receipt negotiation is independent of fresh-allocation capability. A
   // prepared opt-out keeps its qualified session and historical recovery.
   const descriptors = options.ownedResultProfiles ? readOwnedResultProfileDescriptors(options.ownedResultProfiles, options.hello.node_id) : undefined;
+  const dependencyInputs = options.scheduler ? createDependencyArtifactInputLoader(options.url, options.hello.node_id) : undefined;
   if (descriptors && (options.journal.ownedResultFinalizationVersion !== 1 || !options.journal.admitOwnedResultStart
     || !options.journal.settleOwnedResultProcess || options.mixed?.allowNewAllocations === false)) {
     throw new Error("Owned result advertisement requires the explicit journal extension and fresh allocation support");
@@ -105,7 +107,7 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
   });
   const client = createNodeClient({ ...options, nodeId: hello.node_id, transport: link.transport,
     scheduler: options.scheduler ? { open: () => ({ start: link.openSchedulerStartSession(),
-      lease: link.openSchedulerLeaseSession(), run: link.openSchedulerRunSession() }) } : undefined,
+      lease: link.openSchedulerLeaseSession(), run: link.openSchedulerRunSession() }), prepareInputs: dependencyInputs } : undefined,
     managedJournal: { journal: options.journal, channel: link.channel,
       ...(options.mixed ? { mixed: { allowNewAllocations: options.mixed.allowNewAllocations,
         bindRun: (runId: string, mode: RunDeliveryMode) => link.bindRun(runId, mode) } } : {}) } });
@@ -173,6 +175,7 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
         }, 8000);
         try {
           await join(() => client.stop(true));
+          await join(async () => { dependencyInputs?.close(); });
           // Closing releases remaining receipt waiters even when physical Stop
           // reported uncertainty. Join them before the caller closes SQLite.
           await join(() => link.close());
