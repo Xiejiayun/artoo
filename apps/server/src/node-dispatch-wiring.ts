@@ -33,6 +33,7 @@ export function wireNodeDispatch(
   artifactStore: ServerContext["artifactStore"],
 ): void {
   ctx.supportsSchedulerClaim = (computerId) => nodeRegistry.get(computerId)?.schedulerClaimConsumer?.() === true;
+  ctx.supportsDependencyInputs = computerId => nodeRegistry.get(computerId)?.supportsDependencyInputs?.() === true;
   ctx.getPairedNodeSession = (computerId) => nodeRegistry.get(computerId)?.getPairedNodeSession?.();
   ctx.getApplicationPublicationCapabilities = (computerId, profileId, projectId) =>
     nodeRegistry.get(computerId)?.getApplicationPublicationCapabilities?.(profileId, projectId);

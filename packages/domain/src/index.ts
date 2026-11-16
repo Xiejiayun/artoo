@@ -17,6 +17,7 @@ export * from "./events.js";
 export * from "./collaboration.js";
 export * from "./context-pack.js";
 export * from "./task-review.js";
+export * from "./task-agent-review.js";
 export * from "./goal.js";
 export * from "./autonomy.js";
 export * from "./goal-entry.js";
