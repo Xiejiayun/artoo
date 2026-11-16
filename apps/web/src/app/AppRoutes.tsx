@@ -14,6 +14,7 @@ import { LoadingView } from "../components/LoadingView.js";
 import { GoalsPage } from "../components/GoalsPage.js";
 import { ChannelsPage } from "../components/ChannelsPage.js";
 import { ProductHeader } from "../components/ProductHeader.js";
+import { useProjectLink } from "./useProjectLink.js";
 
 // Low-frequency pages are split out of the entry bundle.
 const lazyPage = <K extends string>(load: () => Promise<Record<K, React.ComponentType>>, name: K) =>
@@ -35,6 +36,7 @@ const OverviewPage = lazyPage(() => import("../components/OverviewPage.js"), "Ov
  * no client-only read models are invented for unfinished product lanes.
  */
 export function AppRoutes(): React.ReactNode {
+  useProjectLink();
   const location = useLocation();
   const connection = useConnectionStatus();
   const [menuOpen, setMenuOpen] = useState(false);

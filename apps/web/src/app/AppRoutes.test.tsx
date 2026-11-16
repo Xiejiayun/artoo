@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, screen, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -39,6 +39,23 @@ function appClient() {
 }
 
 describe("AppRoutes", () => {
+  it("restores the project-only workspace URL in the primary navigation", async () => {
+    const client = appClient();
+    client.bootstrap = async () =>
+      bootstrapFixture({
+        projects: [
+          { id: "earlier", name: "Earlier project", default_workspace: null },
+          { id: "proj_artoo", name: "artoo", default_workspace: null },
+        ],
+      });
+    renderWithProviders(<AppRoutes />, { client, route: "/?project=proj_artoo" });
+    const navigation = within(screen.getByRole("navigation", { name: "Primary" }));
+    await waitFor(() =>
+      expect(navigation.getByRole("button", { name: "artoo" })).toHaveAttribute("aria-pressed", "true"),
+    );
+    expect(navigation.getByRole("button", { name: "Earlier project" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("main", { name: "Task room" })).toBeVisible();
+  });
   it("exposes the human Review workbench without replacing the Release destination", async () => {
     renderWithProviders(<AppRoutes />, { client: appClient(), route: "/review" });
     await act(async () => {
