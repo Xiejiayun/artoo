@@ -265,10 +265,22 @@ test(
         physicalReceiptId: closed.receipt.id,
         settlementScope: "scheduler-unused-permit.v1",
       };
+      // A rejected storage operation permanently fences that worker. Exercise
+      // the malformed scope on a separate handle, preserving the original
+      // handle for the genuine permit and its exact closed-delivery proof.
+      const rejectedJournal = await f.open();
+      const beforeRejectedClaim = f.inspect("SELECT * FROM outbox WHERE run_id=? ORDER BY sequence", closed.runId);
       await assert.rejects(
-        journal.claimNextClosedRunDelivery({ ...scope, settlementScope: undefined }),
+        rejectedJournal.claimNextClosedRunDelivery({ ...scope, settlementScope: undefined }),
         /physical settlement/,
       );
+      assert.match((await rejectedJournal.failed).message, /physical settlement/);
+      assert.throws(() => rejectedJournal.claimNextClosedRunDelivery(scope), /Journal unavailable/);
+      assert.deepEqual(
+        f.inspect("SELECT * FROM outbox WHERE run_id=? ORDER BY sequence", closed.runId),
+        beforeRejectedClaim,
+      );
+      await rejectedJournal.close();
       const claim = await journal.claimNextClosedRunDelivery(scope);
       assert.equal(claim.kind, "claimed");
       assert.equal(claim.event.sequence, 0);
