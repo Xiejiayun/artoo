@@ -3,6 +3,7 @@ import {
   schedulerExecutionLeases, schedulerExecutionRequests, schedulerProjectPolicies,
   schedulerTaskQueueMetadata,
   schedulerRunStopIntents,
+  schedulerRequestStopIntents,
 } from "@artoo/db";
 import {
   ProjectControlViewV1Schema, RUN_STATUSES, TASK_STATUSES,
@@ -15,6 +16,7 @@ import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { mapRun, mapTask } from "../mappers.js";
 import { schedulerCapacityStatus } from "./scheduler-capacity-service.js";
+import { schedulerProjectHasConsumer } from "./scheduler-claim-consumer-service.js";
 import { collectSchedulerOccupants, schedulerOccupancy } from "./scheduler-shadow-snapshot.js";
 
 const querySchema = z.object({
@@ -83,6 +85,10 @@ export async function getProjectControlView(
     const stopIntents = leases.length ? await tx.select({ leaseId: schedulerRunStopIntents.leaseId }).from(schedulerRunStopIntents)
       .where(inArray(schedulerRunStopIntents.leaseId, leases.map((lease) => lease.id))) : [];
     const stoppingLeases = new Set(stopIntents.map((intent) => intent.leaseId));
+    const requestStops = requests.length ? await tx.select({ requestId: schedulerRequestStopIntents.requestId }).from(schedulerRequestStopIntents)
+      .where(inArray(schedulerRequestStopIntents.requestId, requests.map((request) => request.id))) : [];
+    const stoppingRequests = new Set(requestStops.map((intent) => intent.requestId));
+    for (const lease of leases) if (stoppingLeases.has(lease.id)) stoppingRequests.add(lease.requestId);
     const metadata = ids.length ? await tx.select().from(schedulerTaskQueueMetadata)
       .where(and(eq(schedulerTaskQueueMetadata.organizationId, ctx.organizationId), eq(schedulerTaskQueueMetadata.projectId, projectId), inArray(schedulerTaskQueueMetadata.taskId, ids))) : [];
     const decisionIds = latestRuns.map((row) => row.schedulerDecisionId).filter((id): id is string => id !== null);
@@ -116,8 +122,8 @@ export async function getProjectControlView(
           task: review && !row.goalId ? { ...task, goal_id: review.goalId, source_plan_id: review.planId } : task,
           latest_run: run ? mapRun(run) : null,
           execution_lease: lease ? { id: lease.id, run_id: lease.binding.run_id, computer_id: lease.binding.computer_id,
-            epoch: lease.epoch, state: lease.state, stop_requested: stoppingLeases.has(lease.id), claimed_at: new Date(lease.claimedAt).toISOString(), observed_at: new Date(lease.observedAt).toISOString(), expires_at: new Date(lease.expiresAt).toISOString(), closed_at: lease.closedAt ? new Date(lease.closedAt).toISOString() : null } : null,
-          execution_request: request ? { id: request.id, state: request.state, consumed_run_id: request.consumedRunId, created_at: new Date(request.createdAt).toISOString() } : null,
+            epoch: lease.epoch, state: lease.state, stop_requested: stoppingRequests.has(lease.requestId), claimed_at: new Date(lease.claimedAt).toISOString(), observed_at: new Date(lease.observedAt).toISOString(), expires_at: new Date(lease.expiresAt).toISOString(), closed_at: lease.closedAt ? new Date(lease.closedAt).toISOString() : null } : null,
+          execution_request: request ? { id: request.id, state: request.state, consumed_run_id: request.consumedRunId, stop_requested: stoppingRequests.has(request.id), created_at: new Date(request.createdAt).toISOString() } : null,
           queue_metadata: queue ? { revision: queue.revision, metadata: { version: queue.version, not_before_ms: queue.notBeforeMs,
             preferred_computer_id: queue.preferredComputerId, prefer_until_ms: queue.preferUntilMs } } : null,
           last_assignment: run && decision ? { run_id: run.id, reason: decision.reason, mode: decision.mode, created_at: new Date(decision.createdAt).toISOString() } : null,
@@ -131,6 +137,7 @@ export async function getProjectControlView(
       capacity: { shared_quotas_enabled: capacity.shared_quotas_enabled, project_quota_enabled: capacity.project_quota_enabled,
         occupied: occupancy, source: occupancy === null ? "not_requested" : "reservation_snapshot" },
       rollout: Object.fromEntries(SCHEDULER_ROLLOUT_FLAGS.map((flag) => [flag, schedulerRolloutEnabled(ctx.schedulerRollout, flag, { organizationId: ctx.organizationId, projectId })])),
+      execution_consumer: { consumer_available: await schedulerProjectHasConsumer(ctx, tx, projectId), execution_authorized: false },
       cost_budget_enabled: false,
     });
   }, { isolationLevel: "repeatable read", accessMode: "read only" });

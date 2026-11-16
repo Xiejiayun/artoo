@@ -28,6 +28,7 @@ export const ProjectControlTaskV1Schema = z.object({
     id: identity,
     state: z.enum(["pending", "consumed", "cancelled"]),
     consumed_run_id: identity.nullable(),
+    stop_requested: z.boolean().optional(),
     created_at: z.string().datetime(),
   }).strict().nullable(),
   queue_metadata: z.object({
@@ -71,6 +72,7 @@ export const ProjectControlViewV1Schema = z.object({
     source: z.enum(["reservation_snapshot", "not_requested"]),
   }).strict(),
   rollout: z.record(z.string(), z.boolean()),
+  execution_consumer: z.object({ consumer_available: z.boolean(), execution_authorized: z.literal(false) }).strict().optional(),
   cost_budget_enabled: z.literal(false),
 }).strict();
 export type ProjectControlViewV1 = z.infer<typeof ProjectControlViewV1Schema>;
