@@ -1077,6 +1077,21 @@ export function createProcessAdapter(
         !!readEvidence &&
         !!options.reviewCommand;
       const readOnlyGrant = takeWorkspaceReadOnlyTools(config);
+      if (
+        discussion &&
+        config.runStart.context_pack.payload?.agent_review_subject &&
+        (!options.readOnlyCommand || !dependencyInputs)
+      )
+        throw new Error(
+          !options.readOnlyCommand
+            ? "Agent review requires an explicitly configured read-only input tool command"
+            : "Agent review input tools require the original node-verified frozen snapshots",
+        );
+      const inputReviewTools =
+        discussion &&
+        !!config.runStart.context_pack.payload?.agent_review_subject &&
+        !!dependencyInputs &&
+        !!options.readOnlyCommand;
       if (readOnlyGrant && (!discussion || !options.readOnlyCommand))
         throw new Error("Runtime has no configured node-bound read-only command");
       const verify = productTools ? takeWorkspaceToolVerifier(config) : undefined;
@@ -1113,15 +1128,16 @@ export function createProcessAdapter(
           externalDiscussion ? { mode: 0o400, flag: "wx" } : undefined,
         );
 
-      const template = readOnlyGrant
-        ? options.readOnlyCommand!
-        : reviewTools
-          ? options.reviewCommand!
-          : discussion
-            ? options.discussionCommand!
-            : productTools
-              ? options.productCommand!
-              : options.command;
+      const template =
+        readOnlyGrant || inputReviewTools
+          ? options.readOnlyCommand!
+          : reviewTools
+            ? options.reviewCommand!
+            : discussion
+              ? options.discussionCommand!
+              : productTools
+                ? options.productCommand!
+                : options.command;
       if (!template[0]) throw new Error("process adapter command template is empty");
       const resolved = resolveCliCommand(template[0]);
       if (!resolved)
@@ -1151,6 +1167,7 @@ export function createProcessAdapter(
             readEvidence,
             readCapabilities,
             readReleaseCapabilities,
+            dependencyInputs,
           });
         else if (readOnlyGrant)
           workspaceTools = await createWorkspaceToolSession({
@@ -1161,6 +1178,15 @@ export function createProcessAdapter(
             readCapabilities,
             readReleaseCapabilities,
             readOnlyGrant,
+            dependencyInputs,
+          });
+        else if (inputReviewTools)
+          workspaceTools = await createWorkspaceToolSession({
+            workspaceRoot,
+            context: config.runStart.context_pack.payload!,
+            contextText: renderWorkspaceToolContext(config, dependencyInputs.contextText),
+            dependencyInputs,
+            inputOnly: true,
           });
         else if (reviewTools)
           workspaceTools = await createWorkspaceToolSession({
@@ -1171,6 +1197,7 @@ export function createProcessAdapter(
             readCapabilities,
             readReleaseCapabilities,
             evidenceOnly: true,
+            dependencyInputs,
           });
       } catch (error) {
         await research?.close();
