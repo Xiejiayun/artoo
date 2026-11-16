@@ -112,7 +112,7 @@ export async function createSchedulerStartServerFixture({
       id: "scheduler-vertical-device",
       organizationId: "org_default",
       displayName: "Controlled paired fixture",
-      platform: machineOs,
+      platform: machineOs === "darwin" ? "macos" : machineOs === "win32" ? "windows" : machineOs,
       appVersion: "fixture",
       computerId: NODE,
       enrolledByUserId: "user_owner",
