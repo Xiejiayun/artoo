@@ -1131,6 +1131,44 @@ reaper, retry authorization or failover is installed by this slice. Ordinary Run
 controls remain fenced for consumed scheduler Runs. Controlled database tests
 do not establish a running Provider or complete the two-machine outage drill.
 
+### Independent attempt credential kernel (Steps 4 and 8 in progress)
+
+Additive migration `0075_scheduler_attempt_credentials.sql` stores one immutable
+credential identity and domain-separated SHA-256 hash per execution lease. The
+scope is the exact original lease binding, including tenant/project, Run, epoch,
+user, computer/device/session, grant and node attempt. The startup-only
+`attempt_credentials` scope defaults off; its project override is enforced in
+addition to all existing claim, identity, authorization and consent guards.
+
+Acquisition checks the complete persisted start grant and its current lease.
+It returns a fresh 32-byte random secret once. An original-session replay returns
+`retained` without recovering, rotating or redisclosing the secret, even from a
+fresh server context. Lost acquisition delivery therefore retains uncertain
+ownership. Acquisition extends neither lease nor physical-start deadline and
+never creates or launches another Run. Historical grants are not backfilled.
+
+Renewal independently requires both the original current paired identity and
+the scoped secret. It locks Task/Run, lease, then credential, and commits both
+expiries and their audit records together. SQL compares full timestamp precision;
+expired or revoked credentials cannot revive even if trusted internal work has
+separately extended the lease. A lease cannot outlive a shortened paired token.
+Wrong scope, cross-Run secret reuse, epoch/session drift, audit failure and lost
+session or clock continuity reject and roll back all writes.
+
+SQL rejects credential identity/hash rewrites, history deletion, shortened
+expiry and backwards observations. Active writes retain non-waiting locks on
+the matching active lease and Run. Lease closure or a terminal/ended Run revokes
+its credential in the same database transaction. A new epoch requires closure of
+the preceding active lease, so its secret is already revoked. None of these
+transitions proves process exit or releases physical reservations/workspaces.
+
+The raw secret is excluded from ContextPack, adapter I/O, local journal payloads,
+ordinary commands, audit events and logs. Replayable issuance/renewal events
+contain identity and expiry metadata only, without even the secret hash. These
+events do not change Task scheduling input digests. This slice is an internal
+kernel; negotiated secret transport, generation-bound node memory, live renewal,
+fresh-session continuation and scoped Run/Stop integration remain separate work.
+
 ## Explicit delegation (independent Step 7)
 
 Existing `parent_task_id` also records conversation continuations and research

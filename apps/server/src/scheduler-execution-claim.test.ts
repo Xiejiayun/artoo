@@ -14,6 +14,7 @@ import {
   schedulerPreparedStarts,
   schedulerStartGrants,
   schedulerExecutionLeases,
+  schedulerAttemptCredentials,
   tasks,
 } from "@artoo/db";
 import { createInProcessChannel } from "@artoo/testkit";
@@ -46,6 +47,10 @@ import {
   closeSchedulerExecutionLease,
   renewSchedulerExecutionLease,
 } from "./services/scheduler-execution-lease-service.js";
+import {
+  acquireSchedulerAttemptCredential,
+  renewSchedulerAttemptCredential,
+} from "./services/scheduler-attempt-credential-service.js";
 import { randomUUID } from "node:crypto";
 import { createManagedWebSocketTransport } from "@artoo/artood";
 import { generateDeviceToken } from "./services/device-credential.js";
@@ -290,6 +295,7 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
       prepared: await server.db.db.select().from(schedulerPreparedStarts),
       grants: await server.db.db.select().from(schedulerStartGrants),
       executionLeases: await server.db.db.select().from(schedulerExecutionLeases),
+      attemptCredentials: await server.db.db.select().from(schedulerAttemptCredentials),
       leases: await server.db.db.select().from(fileLeases),
       events: await server.db.db.select().from(eventLog),
     };
@@ -965,6 +971,276 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
       expect(await snapshot()).toEqual(before);
     },
   );
+
+  async function attemptCredential() {
+    const { input, ready } = await readyStart();
+    let time = Date.parse(server.ctx.clock.nowIso());
+    server.ctx.clock = { now: () => new Date(time), nowIso: () => new Date(time).toISOString() };
+    server.ctx.schedulerRollout = loadSchedulerRollout({
+      ARTOO_SCHEDULER_ROLLOUT: JSON.stringify({
+        version: 1,
+        workspaces: {
+          org_default: { flags: Object.fromEntries([...switches, "attempt_credentials"].map((key) => [key, true])) },
+        },
+      }),
+    });
+    const { grant } = await grantSchedulerStart(server.ctx, input, ready);
+    const acquired = await acquireSchedulerAttemptCredential(server.ctx, input, grant);
+    if (acquired.status !== "issued") throw new Error("Expected a new controlled credential");
+    return {
+      input,
+      grant,
+      ...acquired,
+      advance(ms: number) {
+        time += ms;
+      },
+    };
+  }
+
+  it("issues one hash-only credential, retains it on replay and renews both expiries after the start window", async () => {
+    const { input, grant, credential, lease, advance } = await attemptCredential();
+    const before = await snapshot();
+    expect(before.attemptCredentials).toHaveLength(1);
+    expect(before.attemptCredentials[0]).toMatchObject({
+      id: credential.credential_id,
+      leaseId: lease.binding.lease_id,
+      secretHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      revokedAt: null,
+    });
+    expect(JSON.stringify(before)).not.toContain(credential.secret);
+    expect(JSON.stringify(before.events)).not.toContain(before.attemptCredentials[0]!.secretHash);
+    expect(before.events.filter((event) => event.type === "scheduler.attempt_credential.issued")).toHaveLength(1);
+    // A replacement context has no recoverable plaintext cache, even after response loss.
+    expect(await acquireSchedulerAttemptCredential({ ...server.ctx }, input, grant)).toEqual({
+      status: "retained",
+      lease,
+    });
+    expect(await snapshot()).toEqual(before);
+    advance(6000);
+    const renewed = await renewSchedulerAttemptCredential(server.ctx, input, lease.binding, credential);
+    expect(Date.parse(renewed.expires_at)).toBe(Date.parse(lease.expires_at) + 6000);
+    const after = await snapshot();
+    expect(Date.parse(after.attemptCredentials[0]!.expiresAt)).toBe(Date.parse(renewed.expires_at));
+    const {
+      attemptCredentials: _oldCredentials,
+      executionLeases: _oldLeases,
+      events: _oldEvents,
+      ...oldOther
+    } = before;
+    const { attemptCredentials: _newCredentials, executionLeases: _newLeases, events: _newEvents, ...newOther } = after;
+    expect(newOther).toEqual(oldOther);
+    expect(after.events.filter((event) => event.type === "scheduler.attempt_credential.renewed")).toHaveLength(1);
+    expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
+  });
+
+  it("requires independent secret, exact persisted grant, complete lease scope and original paired session", async () => {
+    const { input, grant, credential, lease } = await attemptCredential();
+    const before = await snapshot();
+    for (const patch of [
+      { secret: "A".repeat(43) },
+      { credential_id: randomUUID() },
+      { scope: "scheduler-start.once.v1" },
+      { secret: "short" },
+      { unexpected: true },
+    ]) {
+      await expect(
+        renewSchedulerAttemptCredential(server.ctx, input, lease.binding, { ...credential, ...patch }),
+      ).rejects.toThrow();
+      expect(await snapshot()).toEqual(before);
+    }
+    for (const [key, value] of Object.entries(lease.binding)) {
+      const replacement =
+        key === "version"
+          ? 2
+          : key === "epoch"
+            ? 2
+            : typeof value === "string" && /^[a-f\d]{8}-/.test(value)
+              ? randomUUID()
+              : "different";
+      await expect(
+        renewSchedulerAttemptCredential(server.ctx, input, { ...lease.binding, [key]: replacement }, credential),
+      ).rejects.toThrow();
+      expect(await snapshot()).toEqual(before);
+    }
+    for (const patch of [
+      { project_id: "different" },
+      { computer_id: "other" },
+      { grant_id: randomUUID() },
+      { expires_at: "2099-01-01T00:00:00.000Z" },
+    ]) {
+      await expect(acquireSchedulerAttemptCredential(server.ctx, input, { ...grant, ...patch })).rejects.toThrow();
+      expect(await snapshot()).toEqual(before);
+    }
+    await expect(
+      renewSchedulerAttemptCredential({ ...server.ctx, organizationId: "another" }, input, lease.binding, credential),
+    ).rejects.toThrow();
+    server.ctx.getPairedNodeSession = () => ({ ...session, sessionId: "replacement" });
+    await expect(
+      renewSchedulerAttemptCredential(server.ctx, { ...input, sessionId: "replacement" }, lease.binding, credential),
+    ).rejects.toThrow();
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("does not transfer a valid credential to another real consumed Run", async () => {
+    const first = await attemptCredential();
+    const input = await stage();
+    await claim(input);
+    const proposal = await prepareSchedulerStartProposal(server.ctx, input);
+    const { grant } = await grantSchedulerStart(server.ctx, input, {
+      version: 1,
+      request_id: input.requestId,
+      run_id: proposal.proposal.prepared_start.run_id,
+      proposal_digest: proposal.proposal_digest,
+      journal_namespace: randomUUID(),
+      node_attempt_id: randomUUID(),
+      ready_id: randomUUID(),
+    });
+    const second = await acquireSchedulerAttemptCredential(server.ctx, input, grant);
+    if (second.status !== "issued") throw new Error("Missing second controlled credential");
+    const before = await snapshot();
+    await expect(
+      renewSchedulerAttemptCredential(server.ctx, input, second.lease.binding, first.credential),
+    ).rejects.toThrow("not valid");
+    expect(await snapshot()).toEqual(before);
+    await expect(
+      renewSchedulerAttemptCredential(server.ctx, input, second.lease.binding, second.credential),
+    ).resolves.toMatchObject({ binding: second.lease.binding });
+  });
+
+  it("keeps independent credential expiry closed even when internal logical ownership is extended", async () => {
+    const { input, grant, credential, lease, advance } = await attemptCredential();
+    advance(1000);
+    await renewSchedulerExecutionLease(server.ctx, input, lease.binding);
+    advance(29_000);
+    const before = await snapshot();
+    await expect(acquireSchedulerAttemptCredential(server.ctx, input, grant)).rejects.toThrow("expired");
+    await expect(renewSchedulerAttemptCredential(server.ctx, input, lease.binding, credential)).rejects.toThrow(
+      "expired",
+    );
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it.each(["completed", "failed", "cancelled", "ended_at", "lease"] as const)(
+    "revokes attempt credentials on %s and preserves physical reservations",
+    async (reason) => {
+      const { input, grant, credential, lease } = await attemptCredential();
+      const before = await snapshot();
+      if (reason === "lease") await closeSchedulerExecutionLease(server.ctx, lease.binding, "revoked");
+      else
+        await server.db.db
+          .update(runs)
+          .set(reason === "ended_at" ? { endedAt: server.ctx.clock.nowIso() } : { status: reason })
+          .where(eq(runs.id, lease.binding.run_id));
+      const after = await snapshot();
+      expect(after.attemptCredentials[0]!.revokedAt).not.toBeNull();
+      expect(after.attemptCredentials[0]!.revokedAt).toBe(after.attemptCredentials[0]!.observedAt);
+      expect(after.leases).toEqual(before.leases);
+      await expect(acquireSchedulerAttemptCredential(server.ctx, input, grant)).rejects.toThrow();
+      await expect(renewSchedulerAttemptCredential(server.ctx, input, lease.binding, credential)).rejects.toThrow();
+      expect(await snapshot()).toEqual(after);
+    },
+  );
+
+  it.each(["issue", "renew"] as const)("rolls %s and all metadata back when its audit fails", async (operation) => {
+    const { input, grant, credential, lease, advance } = await attemptCredential();
+    if (operation === "issue") {
+      // The next real request gets a fresh grant; no credential history is removed.
+      const next = await stage();
+      await claim(next);
+      const proposal = await prepareSchedulerStartProposal(server.ctx, next);
+      const { grant: nextGrant } = await grantSchedulerStart(server.ctx, next, {
+        version: 1,
+        request_id: next.requestId,
+        run_id: proposal.proposal.prepared_start.run_id,
+        proposal_digest: proposal.proposal_digest,
+        journal_namespace: randomUUID(),
+        node_attempt_id: randomUUID(),
+        ready_id: randomUUID(),
+      });
+      const before = await snapshot();
+      await server.db.db.execute(sql`CREATE FUNCTION reject_attempt_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.type='scheduler.attempt_credential.issued' THEN RAISE EXCEPTION 'injected credential audit failure'; END IF; RETURN NEW; END $$`);
+      await server.db.db.execute(
+        sql`CREATE TRIGGER reject_attempt_audit BEFORE INSERT ON event_log FOR EACH ROW EXECUTE FUNCTION reject_attempt_audit()`,
+      );
+      await expect(acquireSchedulerAttemptCredential(server.ctx, next, nextGrant)).rejects.toThrow();
+      expect(await snapshot()).toEqual(before);
+    } else {
+      advance(1000);
+      const before = await snapshot();
+      await server.db.db.execute(sql`CREATE FUNCTION reject_attempt_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.type='scheduler.attempt_credential.renewed' THEN RAISE EXCEPTION 'injected credential audit failure'; END IF; RETURN NEW; END $$`);
+      await server.db.db.execute(
+        sql`CREATE TRIGGER reject_attempt_audit BEFORE INSERT ON event_log FOR EACH ROW EXECUTE FUNCTION reject_attempt_audit()`,
+      );
+      await expect(renewSchedulerAttemptCredential(server.ctx, input, lease.binding, credential)).rejects.toThrow();
+      expect(await snapshot()).toEqual(before);
+    }
+    expect(grant.grant_id).toBe(lease.binding.grant_id);
+  });
+
+  it.each(["session", "expiry", "clock"] as const)(
+    "rolls both expiries back when %s changes after credential persistence",
+    async (changed) => {
+      const { input, credential, lease, advance } = await attemptCredential();
+      advance(1000);
+      const before = await snapshot(),
+        generate = server.ctx.idGen.generate.bind(server.ctx.idGen);
+      let events = 0;
+      server.ctx.idGen = {
+        generate(prefix) {
+          // First event records lease renewal; second records credential renewal.
+          if (++events === 2) {
+            if (changed === "session")
+              server.ctx.getPairedNodeSession = () => ({ ...session, sessionId: "replacement" });
+            else advance(changed === "clock" ? -1 : 30_000);
+          }
+          return generate(prefix);
+        },
+      };
+      await expect(renewSchedulerAttemptCredential(server.ctx, input, lease.binding, credential)).rejects.toThrow();
+      expect(events).toBe(2);
+      expect(await snapshot()).toEqual(before);
+    },
+  );
+
+  it("requires attempt rollout in the real project and rejects revoked paired credentials independently", async () => {
+    const { input, grant, credential, lease } = await attemptCredential();
+    const before = await snapshot();
+    flags();
+    await expect(acquireSchedulerAttemptCredential(server.ctx, input, grant)).rejects.toThrow("disabled");
+    await expect(renewSchedulerAttemptCredential(server.ctx, input, lease.binding, credential)).rejects.toThrow(
+      "disabled",
+    );
+    expect(await snapshot()).toEqual(before);
+    server.ctx.schedulerRollout = loadSchedulerRollout({
+      ARTOO_SCHEDULER_ROLLOUT: JSON.stringify({
+        version: 1,
+        workspaces: {
+          org_default: {
+            flags: Object.fromEntries([...switches, "attempt_credentials"].map((key) => [key, true])),
+            projects: { proj_artoo: { attempt_credentials: false } },
+          },
+        },
+      }),
+    });
+    await expect(renewSchedulerAttemptCredential(server.ctx, input, lease.binding, credential)).rejects.toThrow(
+      "disabled",
+    );
+    server.ctx.schedulerRollout = loadSchedulerRollout({
+      ARTOO_SCHEDULER_ROLLOUT: JSON.stringify({
+        version: 1,
+        workspaces: {
+          org_default: { flags: Object.fromEntries([...switches, "attempt_credentials"].map((key) => [key, true])) },
+        },
+      }),
+    });
+    await server.db.db.update(deviceTokens).set({ status: "revoked", revokedAt: server.ctx.clock.nowIso() });
+    await expect(renewSchedulerAttemptCredential(server.ctx, input, lease.binding, credential)).rejects.toThrow(
+      "paired credential",
+    );
+    expect(await snapshot()).toEqual(before);
+  });
 
   it("caps new and replayed remaining lifetime at the original current credential expiry", async () => {
     const { input, ready } = await readyStart();
