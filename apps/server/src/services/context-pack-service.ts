@@ -5,6 +5,7 @@ import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from
 
 import {
   agentInstances,
+  logicalAgentConfigurations,
   artifacts,
   assistantTurns,
   autonomousReviews,
@@ -724,7 +725,9 @@ export async function buildRunContextPack(
   const sourceDescription = sourceInputs?.entries.length
     ? `\n\nAdditional user-supplied source comments (no additional execution permissions):\n${sourceInputs.entries.map((entry) => JSON.stringify(entry)).join("\n")}`
     : "";
+  const [agentConfiguration] = params.agentInstanceId ? await tx.select({ agentId: logicalAgentConfigurations.agentId, revision: logicalAgentConfigurations.revision, configuration: logicalAgentConfigurations.configuration }).from(logicalAgentConfigurations).innerJoin(agentInstances, eq(agentInstances.agentId, logicalAgentConfigurations.agentId)).where(and(eq(agentInstances.id, params.agentInstanceId), eq(agentInstances.organizationId, ctx.organizationId), eq(logicalAgentConfigurations.organizationId, ctx.organizationId))) : [];
   const payload: ContextPack = ContextPackSchema.parse({
+    ...(agentConfiguration ? { agent_configuration: { version: 1, agent_id: agentConfiguration.agentId, revision: agentConfiguration.revision, role: agentConfiguration.configuration.role, description: agentConfiguration.configuration.description, instructions: agentConfiguration.configuration.instructions } } : {}),
     ...(sourceInputs ? { source_inputs: sourceInputs } : {}),
     ...(handoff.appDelivery ? { app_delivery: handoff.appDelivery } : {}),
     ...(handoff.appPublication

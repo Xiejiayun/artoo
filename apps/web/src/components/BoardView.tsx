@@ -9,6 +9,7 @@ import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { useSubscription } from "../app/RealtimeContext.js";
 import { useTaskContext } from "../app/useTaskContext.js";
+import { useProjectControlView } from "../app/useProjectControlView.js";
 import { useGoalContext } from "../app/useGoalContext.js";
 import {
   Button,
@@ -24,6 +25,7 @@ import { GitFork, LayoutGrid, ListChecks, Plus, UserRound } from "lucide-react";
 import { CreateTaskModal } from "./CreateTaskModal.js";
 import { TaskDrawer } from "./TaskDrawer.js";
 import { BoardDelegationView } from "./BoardDelegationView.js";
+import { ControlTaskFacts } from "./ControlTaskFacts.js";
 import { PRIORITY_LABELS, taskAssigneeName } from "./taskPresentation.js";
 import "../ui/work-management.css";
 
@@ -96,6 +98,7 @@ export function BoardView(): React.ReactNode {
   } = useGoalContext();
 
   const { bootstrap, projectId } = useProject();
+  const control = useProjectControlView(projectId);
   useSubscription(projectId === undefined ? [] : [`project:${projectId}`]);
 
   const tasks = useQuery({
@@ -128,7 +131,10 @@ export function BoardView(): React.ReactNode {
     );
   }
 
-  const all = tasks.data.tasks.filter(
+  const loadedTasks = new Map(tasks.data.tasks.map((task) => [task.id, task]));
+  for (const entry of control.isError ? [] : control.entries) loadedTasks.set(entry.task.id, entry.task);
+  const observations = new Map(control.entries.map((entry) => [entry.task.id, entry]));
+  const all = [...loadedTasks.values()].filter(
     (task) =>
       !requested ||
       (!!goal &&
@@ -182,6 +188,7 @@ export function BoardView(): React.ReactNode {
           )}
         </div>
       </header>
+      <div className="cowork-board-observation"><span>{control.isError ? "Execution observations unavailable; task list remains available." : control.view ? `${control.view.summary.total_tasks} project tasks · ${control.entries.length} execution observations loaded · observed ${new Date(control.view.observed_at).toLocaleTimeString()}` : "Loading execution observations…"}</span>{control.isError && <Button size="sm" onClick={() => void control.refetch()}>Retry observations</Button>}{control.hasNextPage && <Button size="sm" loading={control.isFetchingNextPage} onClick={() => void control.fetchNextPage()}>Load more tasks</Button>}</div>
       <div className="work-board__toolbar">
         <Select
           label="Goal scope"
@@ -338,6 +345,7 @@ export function BoardView(): React.ReactNode {
                             {task.title}
                           </span>
                           <span className="cowork-task-reference">{task.id}</span>
+                          {!control.isError && observations.has(task.id) && <ControlTaskFacts entry={observations.get(task.id)!} bootstrap={bootstrap.data} />}
                           {task.description ? (
                             <span className="work-board-card__description" title={task.description}>
                               {task.description}

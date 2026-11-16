@@ -2,6 +2,8 @@ import { sql } from "drizzle-orm";
 import { check, pgTable, text, unique } from "drizzle-orm/pg-core";
 import { schedulerExecutionLeases } from "./scheduler-execution-lease-schema.js";
 import { ts } from "./schema/columns.js";
+import { schedulerExecutionRequests } from "./scheduler-execution-request-schema.js";
+import { users } from "./schema/identity.js";
 
 /** Secrets are never included in public Run/read-model projections. */
 export const schedulerRunCredentials = pgTable("scheduler_run_credentials", {
@@ -22,3 +24,10 @@ export const schedulerRunStopIntents = pgTable("scheduler_run_stop_intents", {
   requestedByUserId: text("requested_by_user_id").notNull(),
   requestedAt: ts("requested_at").notNull(),
 }, (t) => [check("scheduler_run_stop_intents_requested_at_check", sql`isfinite(${t.requestedAt})`)]);
+
+/** Covers the consumed-assignment window before a physical start grant exists. */
+export const schedulerRequestStopIntents = pgTable("scheduler_request_stop_intents", {
+  requestId: text("request_id").primaryKey().references(() => schedulerExecutionRequests.id),
+  requestedByUserId: text("requested_by_user_id").notNull().references(() => users.id),
+  requestedAt: ts("requested_at").notNull(),
+}, (t) => [check("scheduler_request_stop_intents_requested_at_check", sql`isfinite(${t.requestedAt})`)]);

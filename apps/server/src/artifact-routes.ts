@@ -9,12 +9,14 @@ import type { FastifyInstance } from "fastify";
 import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
 import { resolveNodeToken } from "./services/device-service.js";
+import { registerDependencyArtifactRoutes } from "./dependency-artifact-routes.js";
 import { readContentAddressedBlob, writeContentAddressedBlob, type ContentAddressedBlobSource } from "./content-addressed-blob.js";
 
 export const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
 
 /** Bounded, content-addressed storage. Client paths are labels, never disk paths. */
 export function registerArtifactRoutes(app: FastifyInstance, ctx: ServerContext, artifactStore: ContentAddressedBlobSource): void {
+  registerDependencyArtifactRoutes(app, ctx, artifactStore);
   app.addContentTypeParser("application/octet-stream", { parseAs: "buffer", bodyLimit: MAX_ARTIFACT_BYTES },
     (_req, body, done) => done(null, body));
 

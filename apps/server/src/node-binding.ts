@@ -131,6 +131,8 @@ import { verificationCapabilityBinding } from "./services/verification-capabilit
 const FALLBACK_WORKSPACE_ROOT = join(tmpdir(), "artoo-workspace");
 
 export interface NodeBinding {
+  /** Current negotiated private poll consumer; never derives from adapter output. */
+  schedulerClaimConsumer?(): boolean;
   /** Close the underlying socket when its computer is explicitly removed. */
   disconnect?(): void;
   /** Current session's folder suggestions, never a substitute for node authorization. */

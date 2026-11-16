@@ -71,5 +71,7 @@ export const schedulerExecutionRequests = pgTable(
     unique("scheduler_execution_request_key_unique").on(t.taskId, t.requestKey),
     uniqueIndex("scheduler_execution_request_pending_task_idx").on(t.taskId).where(sql`${t.state} = 'pending'`),
     index("scheduler_execution_request_scope_idx").on(t.organizationId, t.projectId, t.createdAt.desc()),
+    index("scheduler_execution_request_poll_idx").on(t.organizationId, t.createdAt, t.id).where(sql`${t.state}='pending'`),
+    index("scheduler_execution_request_session_idx").on(t.organizationId, t.consumedDeviceId, t.consumedSessionId, t.consumedAt).where(sql`${t.state}='consumed'`),
   ],
 );

@@ -32,6 +32,7 @@ import { createServerNodeTransport, type RawServerSocket } from "./ws-node-trans
 import { createSchedulerStartServerChannel } from "./scheduler-start-channel.js";
 import { createSchedulerLeaseServerChannel } from "./scheduler-lease-channel.js";
 import { createSchedulerRunServerChannel } from "./scheduler-run-channel.js";
+import { createSchedulerClaimServerChannel } from "./scheduler-claim-channel.js";
 
 /** Authenticated identity of a `/api/v1/node` connection (#28 slice 3a). */
 type NodeAuth = { mode: "dev" } | { mode: "device"; deviceId: string; computerId: string; tokenLookup: string };
@@ -113,6 +114,7 @@ export function registerNodeWsRoute(
     let schedulerStart: ReturnType<typeof createSchedulerStartServerChannel> | undefined;
     let schedulerLease: ReturnType<typeof createSchedulerLeaseServerChannel> | undefined;
     let schedulerRun: ReturnType<typeof createSchedulerRunServerChannel> | undefined;
+    let schedulerClaim: ReturnType<typeof createSchedulerClaimServerChannel> | undefined;
     const earlyQueue: NodeToServerMessage[] = [];
     let checkingComputer = false;
     const computerQueue: NodeToServerMessage[] = [];
@@ -246,6 +248,10 @@ export function registerNodeWsRoute(
         close(1008, "unsupported managed receipt request");
         return;
       }
+      if (message.scheduler_claim && (message.scheduler_claim.version !== 1 || !message.scheduler_run || !message.scheduler_lease || !message.scheduler_start)) {
+        close(1008, "scheduler claim requires supported lifecycle, lease and start negotiation");
+        return;
+      }
       if (message.scheduler_run && (message.scheduler_run.version !== 1 || !message.scheduler_start || !message.scheduler_lease)) {
         close(1008, "scheduler lifecycle requires supported start and lease negotiation");
         return;
@@ -323,6 +329,15 @@ export function registerNodeWsRoute(
               onRejected: (operation) => app.log.debug({ operation }, "Scheduler lifecycle exchange rejected"),
             });
         }
+        if (message.scheduler_claim) {
+          const computerId = nodeId!, sessionId = managed.id;
+          const isCurrent = () => raw.readyState === 1 && !terminated && registered && managed?.active === true && managed.id === sessionId && registry.get(computerId) === binding && binding?.getPairedNodeSession?.()?.sessionId === sessionId;
+          binding!.schedulerClaimConsumer = isCurrent;
+          schedulerClaim = createSchedulerClaimServerChannel(ctx, { computerId, sessionId, isCurrent,
+            send: (reply) => transport.send(reply), close: (reason) => close(1008, reason),
+            onRejected: () => app.log.debug("Scheduler claim poll rejected"),
+          });
+        }
         await transport.send({
           kind: "command",
           id: `session:${managed.id}`,
@@ -338,6 +353,7 @@ export function registerNodeWsRoute(
             ...(message.scheduler_start ? { scheduler_start: message.scheduler_start } : {}),
             ...(message.scheduler_lease ? { scheduler_lease: message.scheduler_lease } : {}),
             ...(message.scheduler_run ? { scheduler_run: message.scheduler_run } : {}),
+            ...(message.scheduler_claim ? { scheduler_claim: message.scheduler_claim } : {}),
             liveness: { probe_interval_ms: 10000, probe_timeout_ms: 10000 },
           },
         });
@@ -388,7 +404,7 @@ export function registerNodeWsRoute(
         }
         nodeId = computerId;
         managedRequested = message.managed_receipts !== undefined;
-        if ((message.scheduler_start || message.scheduler_lease || message.scheduler_run) && !managedRequested) {
+        if ((message.scheduler_start || message.scheduler_lease || message.scheduler_run || message.scheduler_claim) && !managedRequested) {
           close(1008, "scheduler start requires managed receipts");
           return;
         }
@@ -479,6 +495,14 @@ export function registerNodeWsRoute(
       }
       if (managedRequested && (!managed?.active || !registered || registry.get(nodeId!) !== binding)) {
         close(1008, "managed application frame before current session activation");
+        return;
+      }
+      if (message.kind === "scheduler.claim.poll.v1") {
+        if (!schedulerClaim || message.node_id !== nodeId || message.session_id !== managed?.id) {
+          close(1008, "scheduler claim session was not negotiated or no longer matches");
+          return;
+        }
+        void schedulerClaim(message);
         return;
       }
       if (message.kind === "scheduler.run.acquire.v1" || message.kind === "scheduler.run.status.v1" || message.kind === "scheduler.run.event.v1") {

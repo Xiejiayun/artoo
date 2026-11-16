@@ -472,6 +472,7 @@ describe("RoomConversation", () => {
     const sendMessage = vi.fn<ApiClient["sendMessage"]>().mockResolvedValue({ message: messageFixture({ id: "sent", kind: "text", room_id: "goal_room", body: "Goal update" }) });
     const listMessages = vi.fn<ApiClient["listMessages"]>().mockResolvedValue({ messages: [messageFixture({ id: "old", kind: "text", room_id: "goal_room", body: "Goal history" })] });
     renderWithProviders(<GoalsPage />, { client: chatApi({ listGoals: async () => ({ goals: [goal] }), listPlans: async () => ({ plans: [] }), listCheckpoints: async () => ({ checkpoints: [] }), listMessages, sendMessage }) });
+    await userEvent.click(await screen.findByRole("button", { name: "Team conversation & handoffs" }));
     expect(await screen.findByText("Goal history")).toBeInTheDocument();
     await userEvent.type(await screen.findByLabelText("Message"), "Goal update");
     await userEvent.click(screen.getByRole("button", { name: "Send message" }));
