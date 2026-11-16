@@ -151,7 +151,11 @@ The unified script also accepts `--suite=shared|shared-checks|ios|desktop|mac` a
 It writes the selected suite's pass/fail record to `artifacts/preview-gate`;
 native runs retain `.xcresult` bundles and UI evidence under `artifacts/ios`. A passed suite
 does not imply that another suite ran. `.github/workflows/preview.yml` runs the
-shared and macOS suites on main pushes and pull requests. Installed Windows
+shared Web/Windows gates and the required macOS-hosted scheduler journal checks
+on main pushes and pull requests. The paused iOS and Mac desktop UI suites run
+only through `workflow_dispatch` with `apple_clients: true` (default: false).
+Their individual checks and evidence remain required when explicitly selected.
+Installed Windows
 smoke is opt-in on a separately configured isolated interactive self-hosted
 runner labeled `artoo-desktop`; no such runner is provisioned by these files.
 

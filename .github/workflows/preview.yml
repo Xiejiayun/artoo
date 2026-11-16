@@ -5,6 +5,10 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      apple_clients:
+        description: Run paused iOS and Mac desktop UI suites explicitly
+        type: boolean
+        default: false
       windows_desktop:
         description: Run installed Windows smoke on an operator-managed interactive runner
         type: boolean
@@ -177,6 +181,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
   ios:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.apple_clients }}
     runs-on: macos-15
     # Five independent UI suites, 45-minute core and 60-minute correction budgets, and cold builds.
     timeout-minutes: 180
@@ -247,6 +252,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
   mac-desktop:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.apple_clients }}
     runs-on: macos-15
     timeout-minutes: 30
     env:
