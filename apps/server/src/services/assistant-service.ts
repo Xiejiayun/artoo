@@ -39,6 +39,7 @@ import { resolveExecutionPolicyTask } from "./task-execution-policy.js";
 import { inspectRunVerification } from "./verification-service.js";
 import { assertPlanningContext, persistedPlanningSnapshot, recheckPlanningSnapshot } from "./planning-capabilities.js";
 import { isDeepStrictEqual } from "node:util";
+import { projectSquadInstanceMembership } from "./project-squad-membership.js";
 
 type TurnRow = typeof assistantTurns.$inferSelect;
 type Tx = ServerContext["db"]["db"];
@@ -208,9 +209,7 @@ export async function enqueueAssistantTurn(ctx: ServerContext, roomId: string, r
         .where(
           and(
             eq(agentInstances.id, request.agent_instance_id),
-            eq(agentInstances.organizationId, ctx.organizationId),
-            eq(agentInstances.projectId, room.projectId),
-            isNull(agentInstances.deletedAt),
+            projectSquadInstanceMembership(ctx.organizationId, room.projectId),
           ),
         );
       if (!instance) throw AppError.validation("Choose an agent from this project's squad");
