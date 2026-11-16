@@ -1080,6 +1080,16 @@ end-to-end scheduler lifecycle or rollout acceptance. Normal runner startup stil
 does not opt into scheduler negotiation; live claim/poll/renewal, Run lifecycle
 integration, server restart/failover and final unified acceptance remain open.
 
+Consumed scheduler Runs are also fenced from ordinary Run event ingest, retryable
+start failure, cancellation and resume/stop dispatch. The existing frames/ACKs
+carry no scheduler attempt or journal namespace and cannot prove that attempt's
+physical absence. These paths reject before mutation or ordinary command exposure;
+an ordinary cancellation callback is never invoked. Disconnect without closure
+can still record failure while retaining leases; a later ordinary absence assertion
+cannot release them. The future scoped lifecycle must supply the actual attempt
+and closure owner. This intentionally does not activate a public scheduler Stop
+path. Existing manual/ordinary Run controls retain their original behavior.
+
 ## Explicit delegation (independent Step 7)
 
 Existing `parent_task_id` also records conversation continuations and research
