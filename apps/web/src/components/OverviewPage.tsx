@@ -5,6 +5,7 @@ import { useApi } from "../app/ApiContext.js";
 import { useProject } from "../app/useProject.js";
 import { useProjectControlView } from "../app/useProjectControlView.js";
 import { useDaemons } from "../app/useDaemons.js";
+import { useProjectSquad } from "../app/useProjectSquad.js";
 import { Button, EmptyState, ErrorState, StatusBadge } from "../ui/index.js";
 import { ControlTaskFacts } from "./ControlTaskFacts.js";
 import { ActionError } from "./ActionError.js";
@@ -15,6 +16,7 @@ const ACTIVE_RUNS = new Set(["queued", "starting", "running", "awaiting_input", 
 export function OverviewPage(): React.ReactNode {
   const api = useApi();
   const { bootstrap, project, projectId } = useProject();
+  const squad = useProjectSquad(projectId, bootstrap.data);
   const control = useProjectControlView(projectId);
   const presence = useDaemons({ enabled: !!bootstrap.data });
   // Reservation aggregation is requested by the user, never per card or poll.
@@ -32,7 +34,7 @@ export function OverviewPage(): React.ReactNode {
     { label: "Running tasks", value: summary?.tasks_by_status.running },
     { label: "Need attention", value: summary ? summary.tasks_by_status.awaiting_approval + summary.tasks_by_status.blocked + summary.tasks_by_status.review : undefined },
   ];
-  const instances = bootstrap.data?.agent_instances.filter((instance) => instance.project_id === projectId) ?? [];
+  const instances = squad.instances;
   if (bootstrap.isLoading) return <div className="cowork-page" role="status">Loading mission control…</div>;
   if (bootstrap.isError) return <ErrorState title="Mission control unavailable" description={bootstrap.error.message} action={<Button onClick={() => void bootstrap.refetch()}>Retry</Button>} />;
   return <div className="cowork-page cowork-overview">
@@ -46,7 +48,7 @@ export function OverviewPage(): React.ReactNode {
         const machine = machines.find((item) => item.id === instance.computer_id);
         const work = active.filter((entry) => entry.latest_run?.agent_instance_id === instance.id);
         return <article key={instance.id}><span className="os-agent-avatar"><Bot size={16} aria-hidden="true" /></span><div><strong>{agent?.display_name ?? instance.runtime}</strong><small>{machine?.display_name ?? instance.computer_id} · {instance.runtime}</small>{work.map((entry) => <Link key={entry.task.id} to={`/board?task=${encodeURIComponent(entry.task.id)}&project=${encodeURIComponent(projectId)}`}>{entry.task.title}</Link>)}{work.length === 0 && <small>{control.isError ? "Current work unavailable" : "No active work in loaded observations"}</small>}</div></article>;
-      })}</div>{instances.length === 0 && <p className="cowork-panel-empty">Assign execution instances to this project to see your team across machines.</p>}</section>
+      })}{squad.agents.filter((agent) => !instances.some((instance) => instance.agent_id === agent.id)).map((agent) => <article key={agent.id}><span className="os-agent-avatar"><Bot size={16} aria-hidden="true" /></span><div><strong>{agent.display_name}</strong><small>Team member · no scoped execution instance</small><Link to={`/computers?agent=${encodeURIComponent(agent.id)}`}>Configure a machine instance</Link></div></article>)}</div><ActionError error={squad.error} />{squad.squad?.agent_ids.length === 0 && <p className="cowork-panel-empty">Configure logical Agents in this project's Squad to build a team across machines.</p>}</section>
       <div className="cowork-overview-grid"><div>
         <section className="cowork-surface"><header><h2>Active work & retained leases</h2><Link to="/board">Open board <ArrowUpRight size={13} aria-hidden="true" /></Link></header>{control.isLoading ? <p className="cowork-panel-empty" role="status">Loading active work…</p> : active.length === 0 ? <p className="cowork-panel-empty">{control.isError ? "Observations unavailable." : "No active work in loaded observations."}</p> : <ul className="cowork-task-rows">{active.map((entry) => <li key={entry.task.id}><Link to={`/board?task=${encodeURIComponent(entry.task.id)}&project=${encodeURIComponent(projectId)}`}><span><strong>{entry.task.title}</strong><ControlTaskFacts entry={entry} bootstrap={bootstrap.data} /></span><StatusBadge status={entry.task.status} /></Link></li>)}</ul>}</section>
         <section className="cowork-surface"><header><h2>Needs your attention</h2><Link to="/board">View tasks <ArrowUpRight size={13} aria-hidden="true" /></Link></header>{attention.length === 0 ? <p className="cowork-panel-empty">{control.isError ? "Observations unavailable." : "No approvals, questions, blockers or reviews in loaded observations."}</p> : <ul className="cowork-task-rows">{attention.map(({ task }) => <li key={task.id}><Link to={`/board?task=${encodeURIComponent(task.id)}&project=${encodeURIComponent(projectId)}`}><span><strong>{task.title}</strong><small>{task.priority.toUpperCase()}</small></span><StatusBadge status={task.status} /></Link></li>)}</ul>}</section>

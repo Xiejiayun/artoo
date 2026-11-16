@@ -11,6 +11,7 @@ import type { BootstrapResponse, MessagesResponse } from "../api/types.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { useProjectSquad } from "../app/useProjectSquad.js";
 import { usePollMs, useSubscription } from "../app/RealtimeContext.js";
 import { appendMessages, mergeMessages } from "../app/roomMessages.js";
 import { messageIdentity } from "../app/messageIdentity.js";
@@ -86,6 +87,7 @@ export function RoomConversation({
   const key = queryKeys.messages(roomId, threadRootId);
   const threadQuery = threadRootId ? { thread_root_id: threadRootId } : {};
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
+  const squad = useProjectSquad(projectId ?? undefined, bootstrap.data);
   const members = useQuery({ queryKey: queryKeys.members, queryFn: () => api.listMembers(), staleTime: 30000 });
   useSubscription([`room:${roomId}`]);
   const messages = useQuery({
@@ -270,6 +272,7 @@ export function RoomConversation({
         />
       )}
       <ActionError error={messages.error ?? earlier.error} />
+      {allowAssistant && <ActionError error={squad.error} />}
       {messages.error && (
         <Button size="sm" onClick={() => void messages.refetch()}>
           Retry message sync
@@ -303,9 +306,7 @@ export function RoomConversation({
           storageKey={storageKey}
           bootstrap={{
             ...identity,
-            agent_instances: identity.agent_instances.filter(
-              (instance) => !!projectId && instance.project_id === projectId,
-            ),
+            agent_instances: squad.instances,
           }}
           people={people}
           peopleError={members.error}
