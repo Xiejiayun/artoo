@@ -249,7 +249,7 @@ test("channels and threads synchronize between independent browser clients and s
     await expect(main.getByRole("list", { name: "Messages" })).toContainText("A keyboard-friendly follow-up.");
     await page.getByRole("button", { name: "Toggle navigation", exact: true }).click();
     const navigation = page.getByRole("navigation", { name: "Primary", exact: true });
-    await expect(navigation.getByRole("link", { name: "Machines", exact: true })).toBeVisible();
+    await expect(navigation.getByRole("link", { name: /^Machines \d+\/\d+$/ })).toBeVisible();
     await expect.poll(async () => (await navigation.boundingBox())?.x).toBe(0);
     const links = navigation.locator(".app-nav__links li");
     const boxes = await links.evaluateAll((items) =>

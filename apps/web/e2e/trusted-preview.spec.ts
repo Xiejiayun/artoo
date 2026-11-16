@@ -295,6 +295,11 @@ test("review controls remain usable at desktop, tablet and phone widths", async 
     await page.reload();
     await selectProject(page);
     await page.getByRole("button", { name: new RegExp(title) }).click();
+    // A task can have no conversation messages after mock execution. Create a
+    // real review note before checking the rendered message list's placement.
+    await page.getByLabel("Message", { exact: true }).fill("Responsive review note");
+    await page.getByRole("button", { name: "Send message", exact: true }).click();
+    await expect(page.getByRole("list", { name: "Messages" })).toContainText("Responsive review note");
     for (const width of [1280, 1024, 390]) {
       await page.setViewportSize({ width, height: 900 });
       const detail = page.getByRole("complementary", { name: "Task detail" });

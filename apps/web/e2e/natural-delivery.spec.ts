@@ -58,8 +58,18 @@ test("a conversation becomes an editable goal, then keeps its context through wo
   await expect(page.getByLabel("Goal scope")).toHaveValue(goalId);
   await expect(page.getByRole("button", { name: new RegExp(`Implement entries ${marker}`) })).toBeVisible();
   await page.getByRole("button", { name: new RegExp(`Implement entries ${marker}`) }).click();
-  await expect(page).toHaveURL(new RegExp(`/\\?goal=${goalId}$`));
-  await expect(page.getByRole("complementary", { name: "Task detail" })).toContainText(`Implement entries ${marker}`);
+  await expect(page).toHaveURL(
+    (url) =>
+      url.pathname === "/board" &&
+      url.searchParams.get("goal") === goalId &&
+      url.searchParams.get("project") === "proj_artoo" &&
+      !!url.searchParams.get("task"),
+  );
+  await expect(page.getByRole("dialog", { name: "Task workspace" })).toContainText(`Implement entries ${marker}`);
+  await page
+    .getByRole("dialog", { name: "Task workspace" })
+    .getByRole("button", { name: "Close", exact: true })
+    .click();
   await views.getByRole("link", { name: "Board", exact: true }).click();
   await expect(page.getByLabel("Goal scope")).toHaveValue(goalId);
   await views.getByRole("link", { name: "Release", exact: true }).click();

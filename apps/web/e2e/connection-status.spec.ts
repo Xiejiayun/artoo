@@ -16,7 +16,18 @@ test("healthy connection stays in the header while offline and pending commands 
     await indicator.focus();
     await expect(indicator).toBeFocused();
     const bounds = await indicator.boundingBox();
-    expect(bounds!.width).toBeLessThanOrEqual(30);
+    // The supplied Cowork design has a Live pill on desktop, and keeps only
+    // its six-pixel status dot with compact padding on narrow screens.
+    const liveLabel = indicator.getByText("Live", { exact: true });
+    if (width === 1440) {
+      await expect(liveLabel).toBeVisible();
+      expect(bounds!.width).toBeGreaterThan(30);
+      expect(bounds!.width).toBeLessThanOrEqual(56);
+    } else {
+      await expect(liveLabel).toBeHidden();
+      expect(bounds!.width).toBeLessThanOrEqual(30);
+    }
+    expect(bounds!.height).toBe(25);
     expect(bounds!.x).toBeGreaterThanOrEqual(0);
     expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
