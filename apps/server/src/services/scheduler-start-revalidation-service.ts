@@ -1,5 +1,5 @@
 import { agentInstances, computers, contextPacks, fileLeases, runs, schedulerDecisions } from "@artoo/db";
-import { rankSchedulerCandidates } from "@artoo/domain";
+import { rankSchedulerCandidates, type SchedulerPreparedStartSnapshotV1 } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
 import { and, eq } from "drizzle-orm";
 import type { ServerContext } from "../context.js";
@@ -32,6 +32,26 @@ export async function revalidateSchedulerPreparedStartInTransaction(
   tx: DrizzleDb,
   input: SchedulerExecutionClaimInput,
 ) {
+  return withRevalidatedSchedulerPreparedStart(ctx, tx, input, async (prepared) => ({
+    version: 1 as const,
+    request_id: prepared.request_id,
+    run_id: prepared.run_id,
+    agent_instance_id: prepared.agent_instance_id,
+    computer_id: prepared.computer_id,
+    observed_at: ctx.clock.nowIso(),
+    execution_authorized: false as const,
+  }));
+}
+
+/** Internal database-only completion under the same fences. Keep credential
+ * identity private and check it after ALL awaited completion work. The callback
+ * must not send transport frames or start physical work before commit. */
+export async function withRevalidatedSchedulerPreparedStart<T>(
+  ctx: ServerContext,
+  tx: DrizzleDb,
+  input: SchedulerExecutionClaimInput,
+  complete: (prepared: SchedulerPreparedStartSnapshotV1) => Promise<T>,
+): Promise<T> {
   // Reuse configuration/capacity/Task/user/device/token lock order and all
   // startup scopes. Replay never consumes another permission or creates work.
   const claim = await prepareSchedulerExecutionClaim(ctx, tx, input);
@@ -124,14 +144,7 @@ export async function revalidateSchedulerPreparedStartInTransaction(
   });
   if (ranking.selected_agent_instance_id !== prepared.agent_instance_id)
     throw AppError.conflict("Prepared scheduling start no longer meets current scheduling policy");
+  const result = await complete(prepared);
   assertSchedulerClaimCurrent(ctx, claim.session, claim.credential);
-  return {
-    version: 1 as const,
-    request_id: prepared.request_id,
-    run_id: prepared.run_id,
-    agent_instance_id: prepared.agent_instance_id,
-    computer_id: prepared.computer_id,
-    observed_at: ctx.clock.nowIso(),
-    execution_authorized: false as const,
-  };
+  return result;
 }
