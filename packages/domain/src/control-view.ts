@@ -17,6 +17,8 @@ export const ProjectControlTaskV1Schema = z.object({
     computer_id: identity,
     epoch: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     state: z.enum(["active", "expired", "revoked"]),
+    /** Durable intent only. It does not assert that a process has exited. */
+    stop_requested: z.boolean().optional(),
     claimed_at: z.string().datetime(),
     observed_at: z.string().datetime(),
     expires_at: z.string().datetime(),
