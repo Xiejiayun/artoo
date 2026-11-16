@@ -95,6 +95,7 @@ import { schedulerStartRegistrationSchema, schedulerStartResponseCommandSchema }
 import { schedulerLeaseRegistrationSchema, schedulerLeaseResponseCommandSchema } from "./scheduler-lease.js";
 import { schedulerRunRegistrationSchema, schedulerRunResponseCommandSchema } from "./scheduler-run.js";
 import { schedulerClaimRegistrationSchema, schedulerClaimResponseCommandSchema } from "./scheduler-claim.js";
+import { dependencyInputsRegistrationSchema, dependencyInputsSessionCommandSchema } from "./dependency-inputs.js";
 import {
   applicationPublicationStartCommandSchema,
   applicationPublicationStopCommandSchema,
@@ -190,6 +191,7 @@ export const nodeHelloSchema = z
     scheduler_lease: schedulerLeaseRegistrationSchema.optional(),
     scheduler_run: schedulerRunRegistrationSchema.optional(),
     scheduler_claim: schedulerClaimRegistrationSchema.optional(),
+    dependency_inputs: dependencyInputsRegistrationSchema.optional(),
     product_source_routing: ProductSourceRoutingV1Schema.optional(),
     managed_receipts: z
       .object({
@@ -520,6 +522,7 @@ export const productReleaseHealthAckCommandSchema = z.object({
 
 // Name each existing option so declaration emit preserves exact types without expanding the entire graph.
 type CommandSchemaOptions = [
+  typeof dependencyInputsSessionCommandSchema,
   typeof schedulerClaimResponseCommandSchema,
   typeof schedulerRunResponseCommandSchema,
   typeof schedulerLeaseResponseCommandSchema,
@@ -606,6 +609,7 @@ type CommandSchemaOptions = [
 
 /** All Server -> Node commands, discriminated on `type`. */
 export const commandSchema: z.ZodDiscriminatedUnion<CommandSchemaOptions, "type"> = z.discriminatedUnion("type", [
+  dependencyInputsSessionCommandSchema,
   schedulerClaimResponseCommandSchema,
   schedulerRunResponseCommandSchema,
   schedulerLeaseResponseCommandSchema,
