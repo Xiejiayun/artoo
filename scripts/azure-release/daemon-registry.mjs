@@ -19,8 +19,9 @@ export function connectVersion(source) {
 /** Read public distribution only; never install code or accept an alternate registry. */
 export async function verifyDaemonRegistry(version, request = fetch) {
   assert.match(version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
-  const read = async (url) => {
+  const read = async (url, redirect = "error") => {
     const response = await request(url, {
+      redirect,
       signal: AbortSignal.timeout(60000),
       headers: { Accept: "application/json", "User-Agent": "artoo-release-preflight" },
     });
@@ -36,7 +37,9 @@ export async function verifyDaemonRegistry(version, request = fetch) {
   assert.equal(assets.length, 1, "Expected one published daemon metadata receipt.");
   const metadataUrl = `https://github.com/${repository}/releases/download/artood-v${version}/release-metadata.json`;
   assert.equal(assets[0].browser_download_url, metadataUrl);
-  const metadata = await (await read(metadataUrl)).json();
+  // Only this exact published asset may use GitHub's normal CDN redirect.
+  // Registry metadata/tarballs and the release API stay on their fixed URLs.
+  const metadata = await (await read(metadataUrl, "follow")).json();
   assert.equal(metadata.format, "artoo.npm-candidate.v1");
   assert.equal(metadata.name, name);
   assert.equal(metadata.version, version);
