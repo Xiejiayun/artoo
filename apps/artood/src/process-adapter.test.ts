@@ -15,6 +15,7 @@ import { productDevelopmentContext, CONFIGURED_STATIC_PUBLICATION_CLAIM, CONFIGU
 import { bindWorkspaceToolVerifier, bindWorkspaceToolEvidenceReader, bindWorkspaceToolCapabilities, bindWorkspaceToolReleaseCapabilities } from "./workspace-tools.js";
 import { prepareStaticWebCapabilities } from "./web-acceptance.js";
 import { createDependencyArtifactInputLoader } from "./dependency-artifact-inputs.js";
+import { renderContextPack, renderWorkspaceToolContext } from "./process-adapter-context.js";
 
 const fixture = fileURLToPath(new URL("../test-fixtures/mock-agent.mjs", import.meta.url));
 const structuredFixture = fileURLToPath(new URL("../test-fixtures/structured-agent.mjs", import.meta.url));
@@ -71,6 +72,59 @@ function isOutput(e: RunEvent): e is Extract<RunEvent, { type: "run.output" }> {
 const cmd = [process.execPath, fixture, "--workspace", "{{workspace_root}}", "--context", "{{context_pack_path}}"];
 
 describe("createProcessAdapter", () => {
+  it("preserves explicit review identity in both context transports without manufacturing protected review fields", () => {
+    const config = makeConfig(join(tmpdir(), "artoo-review-context")), context = config.runStart.context_pack.payload!;
+    context.agent_review_subject = { version: 1, review_id: "review-request", source_task_id: "source-task", source_run_id: "source-run",
+      reviewer_agent_id: "reviewer-agent", artifacts: [{ id: "source-artifact", type: "file", run_id: "source-run",
+        checksum: `sha256:${createHash("sha256").update("source").digest("hex")}` }] };
+    for (const render of [renderContextPack, renderWorkspaceToolContext]) {
+      const text = render(config), raw = JSON.parse(text.split("\n## Raw Payload\n")[1]!.split("\n## User-requested Agent review\n")[0]!);
+      expect(raw.agent_review_subject).toEqual(context.agent_review_subject);
+      expect(raw).not.toHaveProperty("review_subject"); expect(raw).not.toHaveProperty("verification_capabilities");
+      expect(raw).not.toHaveProperty("release_capabilities");
+      expect(text).toContain("Completing this opinion task does not accept or modify the source task");
+    }
+  });
+
+  it("keeps explicit Agent review opinions on the ordinary physical owner and frozen artifact input path", async () => {
+    const ws = realpathSync.native(makeWorkspace()), config = makeConfig(ws), bytes = Buffer.from("Frozen cross-computer source 🌱");
+    config.runId = config.runStart.run_id = `explicit-review-${Date.now()}`;
+    const checksum = `sha256:${createHash("sha256").update(bytes).digest("hex")}`, context = config.runStart.context_pack.payload!;
+    context.agent_review_subject = { version: 1, review_id: "review-request", source_task_id: "source-task", source_run_id: "source-run",
+      reviewer_agent_id: "reviewer-agent", artifacts: [{ id: "source-artifact", type: "file", run_id: "source-run", checksum }] };
+    context.dependency_context = { version: 1, truncated: false, entries: [{ task_id: "source-task", title: "Awaiting human acceptance",
+      dependency_type: "user_requested_review", status: "review", acceptance_criteria: [], run_id: "source-run", workspace_root: null,
+      artifacts_truncated: false, artifacts: [{ ...context.agent_review_subject.artifacts[0]!, content_path: "https://untrusted.invalid/never-open" }] }] };
+    const expectedSubject = structuredClone(context.agent_review_subject);
+    const loader = createDependencyArtifactInputLoader("wss://paired.example/api/v1/node?token=private-review-token", "reviewer-node");
+    const request = vi.fn(async (_url: URL) => new Response(bytes, { headers: { "content-type": "application/octet-stream",
+      "x-artoo-checksum": checksum, "x-artoo-artifact-id": "source-artifact", "x-artoo-source-run-id": "source-run" } }));
+    vi.stubGlobal("fetch", request);
+    let adapter: ReturnType<typeof createProcessAdapter> | undefined, handle: AgentInstanceHandle | undefined;
+    try {
+      await loader(config.runStart, { nodeId: "reviewer-node", sessionId: "550e8400-e29b-41d4-a716-446655440000" }, new AbortController().signal);
+      adapter = createProcessAdapter({ allowedRoots: [ws], artifacts: [], command: [process.execPath, "-e",
+        "const f=require('node:fs'),c=f.readFileSync(process.argv[1],'utf8'),i=JSON.parse(c.slice(c.lastIndexOf('\\n[')+1)),p=JSON.parse(c.split('\\n## Raw Payload\\n')[1].split('\\n## User-requested Agent review\\n')[0]);console.log(JSON.stringify({subject:p.agent_review_subject,bytes:f.readFileSync(i[0].path).toString('hex')}));console.log(JSON.stringify({outcome:'accepted',scope:'source-task'}))",
+        "{{context_pack_path}}"] });
+      handle = await adapter.start(config);
+      const events = await drain(adapter.streamEvents(handle)), outputs = events.filter(isOutput).map(event => event.payload.text).join("");
+      expect(outputs).toContain(JSON.stringify({ subject: expectedSubject, bytes: bytes.toString("hex") }));
+      expect(outputs).toContain('"outcome":"accepted"');
+      expect(events.every(event => event.type === "run.lifecycle" || event.type === "run.output")).toBe(true);
+      expect(events).toContainEqual({ type: "run.lifecycle", payload: { phase: "completed" } });
+      expect(config.runStart.verification).toBeUndefined(); expect(context.review_subject).toBeUndefined();
+      const rendered = readFileSync(join(ws, "context_pack.md"), "utf8");
+      expect(rendered).toContain("Completing this opinion task does not accept or modify the source task");
+      expect(rendered).not.toContain("private-review-token");
+      const snapshots = JSON.parse(rendered.slice(rendered.lastIndexOf("\n[") + 1)) as Array<{ path: string }>;
+      expect(existsSync(snapshots[0]!.path)).toBe(false);
+      expect(String(request.mock.calls[0]![0])).toBe(`https://paired.example/api/v1/node/runs/${config.runId}/dependency-artifacts/source-artifact/content`);
+    } finally {
+      if (adapter && handle) await adapter.stop(handle, "user_cancelled");
+      loader.close(); vi.unstubAllGlobals(); rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
   it("ordinary physical execution reads exact cross-computer bytes and owns snapshot cleanup until real closure", async () => {
     const ws = realpathSync.native(makeWorkspace()), config = makeConfig(ws), bytes = Buffer.from([0, 255, 13, 10]);
     config.runId = config.runStart.run_id = `input-${Date.now()}`;

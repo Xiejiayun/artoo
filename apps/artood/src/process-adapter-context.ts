@@ -1,5 +1,11 @@
 import type { AgentInstanceConfig } from "@artoo/protocol";
 
+function requestedAgentReviewInstructions(config: AgentInstanceConfig): string[] {
+  if (!config.runStart.context_pack.payload?.agent_review_subject) return [];
+  return ["", "## User-requested Agent review",
+    "Provide review comments on agent_review_subject's frozen source Run and artifact checksums using the node-verified dependency snapshots. Report findings, missing evidence and limitations. Completing this opinion task does not accept or modify the source task, grant access to its workspace, or grant verification, merge or publication authority. Follow this task's policy and node-granted tools."];
+}
+
 function importedValidationInstructions(config: AgentInstanceConfig): string[] {
   const context = config.runStart.context_pack.payload;
   if (context?.imported_clean_validation)
@@ -96,6 +102,7 @@ export function renderContextPack(config: AgentInstanceConfig, dependencyInputTe
     );
   }
   lines.push(...importedValidationInstructions(config));
+  lines.push(...requestedAgentReviewInstructions(config));
   if (dependencyInputText) lines.push(dependencyInputText);
   return `${lines.join("\n")}\n`;
 }
@@ -107,6 +114,7 @@ export function renderWorkspaceToolContext(config: AgentInstanceConfig, dependen
   if (pack.uri) lines.push(`uri: ${pack.uri}`);
   if (pack.payload) lines.push("", "## Raw Payload", JSON.stringify(pack.payload));
   lines.push(...importedValidationInstructions(config));
+  lines.push(...requestedAgentReviewInstructions(config));
   if (dependencyInputText) lines.push(dependencyInputText);
   return `${lines.join("\n")}\n`;
 }

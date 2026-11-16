@@ -4,6 +4,8 @@ import {
   CreateTaskRequestSchema,
   RetryRequestSchema,
   ReviewRequestSchema,
+  CreateTaskAgentReviewRequestV1Schema,
+  ApplyTaskAgentReviewRequestV1Schema,
 } from "@artoo/domain";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
@@ -19,10 +21,26 @@ import { AssignOwnedResultRequestSchema } from "./services/owned-result-service.
 import * as taskService from "./services/task-service.js";
 import { getSchedulerObservations } from "./services/scheduler-observation-service.js";
 import { getTaskDelegationTree } from "./services/task-delegation-service.js";
+import { applyTaskAgentReview, createTaskAgentReview, listTaskAgentReviews } from "./services/task-agent-review-service.js";
 
 /** Register task lifecycle, DAG and audit reads in the existing app scope. */
 export function registerTaskRoutes(app: FastifyInstance, ctx: ServerContext): void {
   const rc = (req: FastifyRequest): ServerContext => requestContext(ctx, req);
+  app.get("/api/v1/tasks/:id/agent-reviews", async req => {
+    const { id } = req.params as { id: string };
+    return { reviews: await listTaskAgentReviews(rc(req), id) };
+  });
+  app.post("/api/v1/tasks/:id/agent-reviews", async (req, reply) => {
+    const { id } = req.params as { id: string }, parsed = CreateTaskAgentReviewRequestV1Schema.safeParse(req.body);
+    if (!parsed.success) throw AppError.validation("Invalid artifact review request", { issues: parsed.error.issues });
+    const review = await createTaskAgentReview(rc(req), id, parsed.data);
+    void reply.status(201); return { review };
+  });
+  app.post("/api/v1/tasks/:id/agent-reviews/:reviewId/request-changes", async req => {
+    const { id, reviewId } = req.params as { id: string; reviewId: string }, parsed = ApplyTaskAgentReviewRequestV1Schema.safeParse(req.body);
+    if (!parsed.success) throw AppError.validation("Invalid artifact feedback request", { issues: parsed.error.issues });
+    return { task: await applyTaskAgentReview(rc(req), id, reviewId, parsed.data) };
+  });
   app.get("/api/v1/projects/:id/scheduler-observations", async (req) => {
     const { id } = req.params as { id: string };
     return getSchedulerObservations(rc(req), id, req.query);

@@ -36,6 +36,8 @@ export type ImportedSourceReceiptFamily =
 export interface ServerContext {
   /** Current paired private claim consumer, resolved through the live registry. */
   supportsSchedulerClaim?(computerId: string): boolean;
+  /** Current paired hello explicitly negotiated the immutable artifact-input loader. */
+  supportsDependencyInputs?(computerId: string): boolean;
   /** Local phased scheduler migration configuration; absent means all off. */
   schedulerRollout?: SchedulerRolloutConfig;
   /** Startup-only signing capability; no private key or request-selected identity. */
