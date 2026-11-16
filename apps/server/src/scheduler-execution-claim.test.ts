@@ -56,6 +56,7 @@ import { createManagedWebSocketTransport } from "@artoo/artood";
 import { generateDeviceToken } from "./services/device-credential.js";
 import * as proposalService from "./services/scheduler-start-proposal-service.js";
 import * as grantService from "./services/scheduler-start-grant-service.js";
+import * as attemptService from "./services/scheduler-attempt-credential-service.js";
 import {
   cancelRun,
   failRunStart,
@@ -95,11 +96,20 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
     for (const directory of artifactDirectories.splice(0)) await rmdir(directory);
     vi.restoreAllMocks();
   });
-  function flags(disabled?: SchedulerRolloutFlag) {
+  function flags(disabled?: SchedulerRolloutFlag, attemptCredentials = false) {
     server.ctx.schedulerRollout = loadSchedulerRollout({
       ARTOO_SCHEDULER_ROLLOUT: JSON.stringify({
         version: 1,
-        workspaces: { org_default: { flags: Object.fromEntries(switches.map((key) => [key, key !== disabled])) } },
+        workspaces: {
+          org_default: {
+            flags: Object.fromEntries(
+              [...switches, ...(attemptCredentials ? ["attempt_credentials"] : [])].map((key) => [
+                key,
+                key !== disabled,
+              ]),
+            ),
+          },
+        },
       }),
     });
   }
@@ -245,10 +255,11 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
     }
     throw new Error("Controlled scheduler socket did not reach its expected state");
   }
-  async function liveChannel() {
+  async function liveChannel(withLease = false) {
     const artifactDir = await mkdtemp(join(tmpdir(), "artoo-scheduler-wire-"));
     artifactDirectories.push(artifactDir);
     await setup({ artifactDir });
+    if (withLease) flags(undefined, true);
     const token = generateDeviceToken();
     await server.db.db
       .update(deviceTokens)
@@ -273,6 +284,7 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
         },
         namespace,
         schedulerStart: true,
+        ...(withLease ? { schedulerLease: true as const } : {}),
       });
       links.push(link);
       link.start();
@@ -1539,10 +1551,13 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
       .where(eq(deviceTokens.id, "claim-token"));
     const address = await server.app.listen({ port: 0, host: "127.0.0.1" });
     for (const candidate of [
-      { token: token.raw, version: 2, managed: true, allocation: true },
-      { token: "dev", version: 1, managed: true, allocation: true },
-      { token: token.raw, version: 1, managed: false, allocation: true },
-      { token: token.raw, version: 1, managed: true, allocation: false },
+      { token: token.raw, version: 2, managed: true, allocation: true, leaseVersion: null },
+      { token: "dev", version: 1, managed: true, allocation: true, leaseVersion: null },
+      { token: token.raw, version: 1, managed: false, allocation: true, leaseVersion: null },
+      { token: token.raw, version: 1, managed: true, allocation: false, leaseVersion: null },
+      { token: token.raw, version: 1, managed: true, allocation: true, leaseVersion: 2 },
+      { token: token.raw, version: null, managed: true, allocation: true, leaseVersion: 1 },
+      { token: token.raw, version: null, managed: false, allocation: true, leaseVersion: 1 },
     ]) {
       const socket = new WebSocket(`${address.replace(/^http/, "ws")}/api/v1/node?token=${candidate.token}`);
       try {
@@ -1569,7 +1584,10 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
               ...(candidate.managed
                 ? { managed_receipts: { version: 1, nonce: randomUUID(), required_contract: "run-event-body-v1" } }
                 : {}),
-              scheduler_start: { version: candidate.version, journal_namespace: randomUUID() },
+              ...(candidate.version === null
+                ? {}
+                : { scheduler_start: { version: candidate.version, journal_namespace: randomUUID() } }),
+              ...(candidate.leaseVersion === null ? {} : { scheduler_lease: { version: candidate.leaseVersion } }),
             }),
           ),
         );
@@ -1628,6 +1646,144 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
     await expect(lane.propose(input)).rejects.toThrow("proposal was rejected");
     await expect(lane.grant({ taskId: input.taskId, ready })).rejects.toThrow("grant was rejected");
     expect(await server.db.db.select().from(schedulerStartGrants)).toHaveLength(1);
+  });
+
+  async function liveLease() {
+    const wire = await liveChannel(true),
+      lane = wire.link.openSchedulerStartSession(),
+      proposal = await lane.propose(wire.input);
+    const { grant } = await lane.grant({
+      taskId: wire.input.taskId,
+      ready: {
+        version: 1,
+        request_id: wire.input.requestId,
+        run_id: proposal.proposal.prepared_start.run_id,
+        journal_namespace: lane.session.namespace,
+        node_attempt_id: randomUUID(),
+        ready_id: randomUUID(),
+        proposal_digest: proposal.proposal_digest,
+      },
+    });
+    return { ...wire, grant, lane: wire.link.openSchedulerLeaseSession() };
+  }
+
+  it("acquires and renews over a real paired private lane without leaking credentials to ordinary subscribers", async () => {
+    const { link, input, grant, lane } = await liveLease(),
+      observed = vi.fn();
+    link.transport.subscribe(observed);
+    let secret = "";
+    const acquire = attemptService.acquireSchedulerAttemptCredential;
+    vi.spyOn(attemptService, "acquireSchedulerAttemptCredential").mockImplementation(async (...args) => {
+      const result = await acquire(...args);
+      if (result.status === "issued") secret = result.credential.secret;
+      return result;
+    });
+    const before = await snapshot(),
+      acquired = await lane.acquire(grant);
+    if (acquired.status !== "acquired") throw new Error("Expected one real private renewal handle");
+    expect(secret).toHaveLength(43);
+    expect(JSON.stringify(acquired)).not.toContain(secret);
+    expect(observed).not.toHaveBeenCalled();
+    const issued = await snapshot();
+    expect(JSON.stringify(issued)).not.toContain(secret);
+    expect(await lane.acquire(grant)).toEqual({ status: "retained", lease: acquired.lease });
+    expect(await snapshot()).toEqual(issued);
+    await expect(
+      link.transport.send({
+        kind: "scheduler.lease.acquire.v1",
+        node_id: COMPUTER,
+        session_id: input.sessionId,
+        exchange_id: randomUUID(),
+        grant,
+      }),
+    ).rejects.toThrow("generation-bound");
+    server.ctx.clock = { now: () => new Date("2026-06-13T00:00:06.000Z"), nowIso: () => "2026-06-13T00:00:06.000Z" };
+    const renewed = await acquired.renewal.renew();
+    expect(renewed.expires_at).toBe("2026-06-13T00:00:36.000000Z");
+    const after = await snapshot();
+    expect(Date.parse(after.attemptCredentials[0]!.expiresAt)).toBe(Date.parse(renewed.expires_at));
+    expect(after.runs).toEqual(before.runs);
+    expect(after.tasks).toEqual(before.tasks);
+    expect(after.leases).toEqual(before.leases);
+    expect(observed).not.toHaveBeenCalled();
+    expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
+    acquired.renewal.forget();
+    await expect(acquired.renewal.renew()).rejects.toThrow("forgotten");
+    expect((await lane.acquire(grant)).status).toBe("retained");
+    expect(await snapshot()).toEqual(after);
+  });
+
+  it("keeps heartbeat moving during awaited renewal and rejects a replaced session without transferring the credential", async () => {
+    const { link, grant, lane, connect } = await liveLease(),
+      acquired = await lane.acquire(grant);
+    if (acquired.status !== "acquired") throw new Error("Expected one real private renewal handle");
+    let release!: () => void,
+      entered!: () => void,
+      finished!: () => void,
+      renewalEntered = false;
+    const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+      started = new Promise<void>((resolve) => {
+        entered = resolve;
+      }),
+      completed = new Promise<void>((resolve) => {
+        finished = resolve;
+      });
+    const renew = attemptService.renewSchedulerAttemptCredential;
+    const delayed = vi.spyOn(attemptService, "renewSchedulerAttemptCredential").mockImplementation(async (...args) => {
+      renewalEntered = true;
+      entered();
+      await gate;
+      try {
+        return await renew(...args);
+      } finally {
+        finished();
+      }
+    });
+    const pending = acquired.renewal.renew(),
+      rejected = expect(pending).rejects.toThrow();
+    try {
+      await started;
+      server.ctx.clock = { now: () => new Date("2026-06-13T00:00:01.000Z"), nowIso: () => "2026-06-13T00:00:01.000Z" };
+      await link.transport.send({
+        kind: "node.heartbeat",
+        node_id: COMPUTER,
+        sequence: 1,
+        resources: { cpu_load: 0, memory_used_pct: 0, disk_free_gb: 1 },
+        running_instances: [],
+        runtimes: [],
+      });
+      await waitFor(async () => {
+        const [row] = await server.db.db.select().from(computers).where(eq(computers.id, COMPUTER));
+        return Date.parse(row!.lastHeartbeatAt!) === Date.parse("2026-06-13T00:00:01.000Z");
+      });
+      const replacement = await connect(),
+        before = await snapshot();
+      release();
+      await completed;
+      // Force the replaced generation through its normal registry gate.
+      await link.transport.send({
+        kind: "node.heartbeat",
+        node_id: COMPUTER,
+        sequence: 2,
+        resources: { cpu_load: 0, memory_used_pct: 0, disk_free_gb: 1 },
+        running_instances: [],
+        runtimes: [],
+      });
+      await rejected;
+      expect(acquired.renewal.signal.aborted).toBe(true);
+      const next = replacement.openSchedulerLeaseSession();
+      await expect(next.acquire(grant)).rejects.toThrow("original session");
+      await expect(next.acquire({ ...grant, session_id: next.session.sessionId })).rejects.toThrow(
+        "acquisition was rejected",
+      );
+      expect(await snapshot()).toEqual(before);
+    } finally {
+      release();
+      if (renewalEntered) await completed;
+      delayed.mockRestore();
+    }
   });
 
   it("keeps heartbeat independent of awaited proposal work and withholds a replaced session's reply", async () => {

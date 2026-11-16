@@ -190,6 +190,23 @@ afterEach(async () => {
 });
 
 describe("ordinary and managed lanes on one qualified socket", () => {
+  it("keeps lease negotiation independent, strips untrusted hello opt-in and denies downgrade", async () => {
+    const disabled = harness({ hello: { ...hello, scheduler_lease: { version: 1 } } });
+    await disabled.link.ready;
+    expect(disabled.socket.frames().find((message) => message.kind === "node.hello")).not.toHaveProperty(
+      "scheduler_lease",
+    );
+    expect(() => disabled.link.openSchedulerLeaseSession()).toThrow("not negotiated");
+    expect(() => harness({ schedulerLease: true })).toThrow("requires scheduler start");
+    const namespace = randomUUID(),
+      enabled = harness({ namespace, schedulerStart: true, schedulerLease: true }, false);
+    const rejected = expect(enabled.link.ready).rejects.toThrow("incompatible");
+    enabled.socket.open();
+    enabled.socket.ready({ scheduler_start: { version: 1, journal_namespace: namespace } });
+    await rejected;
+    expect(enabled.socket.frames().filter((message) => message.kind === "node.session.probe")).toHaveLength(0);
+  });
+
   it("keeps scheduler transport opt-in local and fails closed if the peer omits its negotiation", async () => {
     const disabled = harness({ hello: { ...hello, scheduler_start: { version: 1, journal_namespace: randomUUID() } } });
     await disabled.link.ready;
@@ -203,6 +220,74 @@ describe("ordinary and managed lanes on one qualified socket", () => {
     enabled.socket.ready();
     await failed;
     expect(enabled.socket.frames().filter((message) => message.kind === "node.session.probe")).toHaveLength(0);
+  });
+
+  it("consumes private lease replies before buffering and never replays their pending request after reconnect", async () => {
+    const namespace = randomUUID(),
+      { link, socket } = harness({ namespace, schedulerStart: true, schedulerLease: true }, false);
+    const negotiated = {
+      scheduler_start: { version: 1, journal_namespace: namespace },
+      scheduler_lease: { version: 1 },
+    };
+    socket.open();
+    socket.ready(negotiated);
+    const handled = vi.fn();
+    link.transport.subscribe(handled);
+    expect(() => link.openSchedulerLeaseSession()).toThrow("not usable");
+    const sessionId = socket.frames().findLast((message) => message.kind === "node.session.probe");
+    if (!sessionId || sessionId.kind !== "node.session.probe") throw new Error("Expected the actual handshake probe");
+    socket.server(
+      command("scheduler.lease.response.v1", {
+        version: 1,
+        node_id: hello.node_id,
+        session_id: sessionId.session_id,
+        exchange_id: randomUUID(),
+        status: "rejected",
+        operation: "acquire",
+      }),
+    );
+    expect(link.diagnostics.bufferedCommands).toBe(0);
+    socket.pong();
+    socket.autoPong = true;
+    await link.ready;
+    const lane = link.openSchedulerLeaseSession(),
+      grant = {
+        version: 1 as const,
+        scope: "scheduler-start.once.v1" as const,
+        grant_id: randomUUID(),
+        organization_id: "org",
+        project_id: "project",
+        task_id: "task",
+        request_id: "request",
+        run_id: "run",
+        actor_user_id: "user",
+        agent_instance_id: "instance",
+        computer_id: hello.node_id,
+        device_id: "device",
+        session_id: lane.session.sessionId,
+        journal_namespace: namespace,
+        node_attempt_id: randomUUID(),
+        ready_id: randomUUID(),
+        proposal_digest: `sha256:${"a".repeat(64)}`,
+        issued_at: "2026-11-16T00:00:00.000Z",
+        expires_at: "2026-11-16T00:00:05.000Z",
+      };
+    const pending = lane.acquire(grant),
+      rejected = expect(pending).rejects.toThrow("disconnected");
+    const request = socket.frames().findLast((message) => message.kind === "scheduler.lease.acquire.v1")!;
+    await expect(link.transport.send(request)).rejects.toThrow("generation-bound");
+    socket.drop();
+    await rejected;
+    expect(lane.signal.aborted).toBe(true);
+    const next = await replacement();
+    next.open();
+    next.ready(negotiated);
+    next.pong();
+    next.autoPong = true;
+    expect(link.openSchedulerLeaseSession().session.sessionId).not.toBe(lane.session.sessionId);
+    expect(next.frames().filter((message) => message.kind === "scheduler.lease.acquire.v1")).toHaveLength(0);
+    expect(handled).not.toHaveBeenCalled();
+    await expect(lane.acquire(grant)).rejects.toThrow("disconnected");
   });
 
   it("binds scheduler requests to one ready-plus-pong generation without reconnect replay or command dispatch", async () => {
