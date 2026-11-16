@@ -715,6 +715,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       });
       }
       if (!materialized) throw new Error("Owned workspace materialization did not return its genuine handle");
+      await record.scheduler?.beforeStart();
       record.recovery.phase = "adapter_startup";
       adapterInvoked = true;
       let handle: AgentInstanceHandle;
@@ -1603,7 +1604,18 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
 
   async function requestManagedRunStop(runId: string): Promise<void> {
-    const physical = physicalStarts.get(runId);
+    let physical = physicalStarts.get(runId);
+    const pending = schedulerStarts.get(runId);
+    if (options.managedJournal && pending && !physical?.managed) {
+      pending.controller.abort(new DeliveryCancelled("Scheduler Stop requested during admission"));
+      try { await pending.work; } catch { /* Join the exact original admission before observing closure. */ }
+      physical = physicalStarts.get(runId);
+      if (physical?.managed) return requestManagedRunStop(runId);
+      const journal = options.managedJournal.journal;
+      const stopped = await journal.requestStop({ expectedNamespace: journal.namespace, runId });
+      if (stopped.receipt?.kind === "run_fenced_unbound" || stopped.receipt?.kind === "not_started_fenced") return;
+      throw new Error("Scheduler admission is fenced; physical absence is not durably confirmed and ownership is retained");
+    }
     if (!options.managedJournal || !physical?.managed) throw new Error("Local Stop requires this Node's owned managed run");
     const managed = physical.managed;
     physical.controller?.abort();
@@ -1622,6 +1634,11 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
 
   async function onRunStop(command: RunStopCommand): Promise<void> {
     const runId = command.payload.run_id;
+    if (schedulerStarts.has(runId) && !physicalStarts.get(runId)?.managed) {
+      try { await requestManagedRunStop(runId); await ackAccepted(command.id); }
+      catch (error) { await ackRejected(command.id, "process_start_failed", errorMessage(error)); }
+      return;
+    }
     verificationRuns.get(runId)?.controller.abort();
     planningToolRuns.get(runId)?.controller.abort();
     if (options.managedJournal?.mixed) mixedStopIntents.add(runId);
@@ -1744,6 +1761,12 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     }
     const physical = physicalStarts.get(command.payload.run_id);
     if (physical) {
+      if (physical.schedulerRequestId) {
+        try { options.managedJournal!.channel.assertCurrentSession(physical.startupSession); }
+        catch {
+          await ackRejected(command.id, "process_start_failed", "Scheduler original session authority was lost; physical and journal evidence are retained, and resume cannot recreate credentials"); return;
+        }
+      }
       await physical.ready;
       if (physical.managed?.settled && physical.managed.run) {
         const run = physical.managed.run, journal = options.managedJournal!.journal;
@@ -1771,7 +1794,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         if (physical.managed) await options.managedJournal!.journal.lookupRun({ expectedNamespace: options.managedJournal!.journal.namespace, runId: command.payload.run_id });
         const value = await execution.inspectOwnedRun(execution.handle, execution.admission);
         const receipt = getOwnedRunStatusReceipt(value, execution.admission, execution.handle);
-        if (receipt?.kind === "confirmed_closed") { physical.confirmedClosed = true; physical.closureReceipt = value; }
+        if (receipt?.kind === "confirmed_closed") { physical.confirmedClosed = true; physical.closureReceipt = value; physical.scheduler?.closed(); }
         if ((receipt?.kind === "running" || receipt?.kind === "confirmed_closed") && execution.deliveryPending) {
           // This ACK means this client still owns a resumable execution/delivery.
           // A closed child can have real terminal events awaiting committed receipts.
@@ -1796,6 +1819,9 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
             launchKey: durable.launchKey, physicalReceiptId: durable.receipt.id });
           if (state.state === "delivered") { await ackRejected(command.id, "process_exited", "Durable closed delivery is complete"); return; }
           if (state.state === "blocked") { await ackRejected(command.id, "process_start_failed", "Durable closed delivery is blocked"); return; }
+          if (durable.schedulerPreparation) {
+            await ackRejected(command.id, "process_start_failed", "Scheduler closed receipts retain their original attempt identity; a restarted daemon cannot replay them through the ordinary event lane"); return;
+          }
           options.managedJournal.mixed?.bindRun(durable.runId, "managed");
           let delivery = closedDeliveries.get(durable.runId);
           if (!delivery) {

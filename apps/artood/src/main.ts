@@ -87,6 +87,8 @@ export interface ArtoodConfig {
   /** Exact saved local binding; it remains present when new allocations are disabled. */
   managedJournal?: ManagedJournalBinding;
   allowNewAllocations?: boolean;
+  /** Local operator opt-in for private scheduler claims; requires v6 managed storage. */
+  scheduler?: true;
   /** Local administrator-owned file, never server/task-supplied commands. */
   verificationProfiles?: readonly VerificationProfile[];
   /** Opaque authority returned by protected local Windows installation qualification. */
@@ -217,6 +219,10 @@ function configFromEnv(env: NodeJS.ProcessEnv,
   if (env.ARTOO_INITIALIZE_REPOSITORY !== undefined && !["", "0", "1"].includes(env.ARTOO_INITIALIZE_REPOSITORY)) throw new Error("ARTOO_INITIALIZE_REPOSITORY must be 0 or 1");
   if (env.ARTOO_RESEARCH_ENABLED === "1" && !env.ARTOO_RESEARCH_RECEIPTS_DIR) throw new Error("Research requires ARTOO_RESEARCH_RECEIPTS_DIR outside writable roots");
   const managed = managedSettingsFromEnv(env, { url, nodeId });
+  if (env.ARTOO_SCHEDULER_ENABLED !== undefined && !["", "0", "1"].includes(env.ARTOO_SCHEDULER_ENABLED))
+    throw new Error("ARTOO_SCHEDULER_ENABLED must be 0 or 1");
+  if (env.ARTOO_SCHEDULER_ENABLED === "1" && (!managed.managedJournal || managed.allowNewAllocations !== true))
+    throw new Error("Scheduler claims require a prepared journal and ARTOO_MANAGED_EXECUTION=1");
   const windowsProcessBackend = windowsProcessBackendFromEnv(env, allowedRoots, managed.managedJournal !== undefined);
   const productSourceConfigFile = env.ARTOO_PRODUCT_SOURCE_CONFIG_FILE;
   if (productSourceConfigFile !== undefined && (!productSourceConfigFile || !isAbsolute(productSourceConfigFile)
@@ -252,6 +258,7 @@ function configFromEnv(env: NodeJS.ProcessEnv,
     codex: codexSettingsFromEnv(env),
     ...(reportArtifacts ? { reportArtifacts } : {}),
     ...managed,
+    ...(env.ARTOO_SCHEDULER_ENABLED === "1" ? { scheduler: true as const } : {}),
     worktreeBaseRepo: env.ARTOO_WORKTREE_BASE_REPO?.trim() || undefined,
     heartbeatIntervalMs: parsePositiveMs(env.ARTOO_HEARTBEAT_INTERVAL_MS),
     ...(verificationProfiles ? { verificationProfiles } : {}),
@@ -313,6 +320,8 @@ export function createNodeFromConfig(config: ArtoodConfig, sourceCommandDiagnost
     throw new Error("New-allocation choice must be a boolean");
   }
   if (!config.managedJournal && config.allowNewAllocations === true) throw new Error("Managed execution requires a saved journal binding");
+  if (config.scheduler !== undefined && (config.scheduler !== true || !config.managedJournal || config.allowNewAllocations !== true))
+    throw new Error("Scheduler claims require an explicit local opt-in and prepared fresh-allocation execution");
   const binding = config.managedJournal === undefined ? undefined
     : validateManagedJournalBinding(config.managedJournal, { url: config.url, nodeId: config.nodeId });
   if (binding && config.allowNewAllocations === undefined) throw new Error("Prepared journal requires an explicit new-allocation choice");
@@ -343,6 +352,7 @@ export function createNodeFromConfig(config: ArtoodConfig, sourceCommandDiagnost
     sourceCommandDiagnostic,
   };
   return binding ? createManagedBootstrap({ ...common, binding, allowNewAllocations: config.allowNewAllocations!,
+    ...(config.scheduler ? { scheduler: true } : {}),
     ...(config.ownedResultProfilesFile ? { ownedResultProfilesFile: config.ownedResultProfilesFile } : {}) })
     : createArtoodNode({ ...common, acknowledgeRunEvents: true });
 }

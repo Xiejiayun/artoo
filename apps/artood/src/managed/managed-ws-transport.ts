@@ -27,6 +27,8 @@ import { schedulerLeaseRegistrationSchema } from "@artoo/protocol";
 import { createSchedulerLeaseClientChannel, type SchedulerLeaseSession } from "./scheduler-lease-channel.js";
 import { schedulerRunRegistrationSchema } from "@artoo/protocol";
 import { createSchedulerRunClientChannel, type SchedulerRunSession } from "./scheduler-run-channel.js";
+import { schedulerClaimRegistrationSchema } from "@artoo/protocol";
+import { createSchedulerClaimClientChannel, type SchedulerClaimSession } from "./scheduler-claim-channel.js";
 
 const HANDSHAKE_MS = 10000,
   PROBE_INTERVAL_MS = 10000,
@@ -56,6 +58,7 @@ interface Generation {
   scheduler?: ReturnType<typeof createSchedulerStartClientChannel>;
   schedulerLease?: ReturnType<typeof createSchedulerLeaseClientChannel>;
   schedulerRun?: ReturnType<typeof createSchedulerRunClientChannel>;
+  schedulerClaim?: ReturnType<typeof createSchedulerClaimClientChannel>;
   commands: Array<{ message: ServerToNodeMessage; bytes: number }>;
   commandBytes: number;
 }
@@ -98,6 +101,7 @@ export interface ManagedWebSocketOptions {
   schedulerLease?: true;
   /** Private event/Stop authority, independent of renewal-only credentials. */
   schedulerRun?: true;
+  schedulerClaim?: true;
 }
 export interface ManagedWebSocketTransport {
   readonly transport: NodeSideTransport;
@@ -118,6 +122,7 @@ export interface ManagedWebSocketTransport {
   openSchedulerStartSession(): SchedulerStartSession;
   openSchedulerLeaseSession(): SchedulerLeaseSession;
   openSchedulerRunSession(): SchedulerRunSession;
+  openSchedulerClaimSession(): SchedulerClaimSession;
   start(): void;
   close(): Promise<void>;
 }
@@ -129,13 +134,16 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
   if (url.protocol !== "wss:" && !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))
     throw new Error("Managed remote transport requires TLS");
   if (!options.namespace) throw new Error("Managed transport requires its configured journal namespace");
-  const { scheduler_start: _untrustedScheduler, scheduler_lease: _untrustedLease, scheduler_run: _untrustedRun, ...ordinaryHello } = options.hello;
+  const { scheduler_start: _untrustedScheduler, scheduler_lease: _untrustedLease, scheduler_run: _untrustedRun,
+    scheduler_claim: _untrustedClaim, ...ordinaryHello } = options.hello;
   if (options.schedulerLease && !options.schedulerStart)
     throw new Error("Scheduler lease requires scheduler start opt-in");
   const schedulerLease = options.schedulerLease ? schedulerLeaseRegistrationSchema.parse({ version: 1 }) : undefined;
   if (options.schedulerRun && (!options.schedulerStart || !options.schedulerLease))
     throw new Error("Scheduler run requires independent start and lease opt-ins");
   const schedulerRun = options.schedulerRun ? schedulerRunRegistrationSchema.parse({ version: 1 }) : undefined;
+  if (options.schedulerClaim && !options.schedulerRun) throw new Error("Scheduler claim requires its private run authority opt-in");
+  const schedulerClaim = options.schedulerClaim ? schedulerClaimRegistrationSchema.parse({ version: 1 }) : undefined;
   const scheduler = options.schedulerStart
     ? schedulerStartRegistrationSchema.parse({ version: 1, journal_namespace: options.namespace })
     : undefined;
@@ -146,6 +154,7 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
         ...(scheduler ? { scheduler_start: scheduler } : {}),
         ...(schedulerLease ? { scheduler_lease: schedulerLease } : {}),
         ...(schedulerRun ? { scheduler_run: schedulerRun } : {}),
+        ...(schedulerClaim ? { scheduler_claim: schedulerClaim } : {}),
       }),
     ),
   );
@@ -316,6 +325,7 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
     g.scheduler?.close(error);
     g.schedulerLease?.close(error);
     g.schedulerRun?.close(error);
+    g.schedulerClaim?.close(error);
     clearTimeout(g.handshakeTimer);
     clearTimeout(g.probeTimer);
     clearTimeout(g.probe?.timer);
@@ -448,7 +458,8 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
         p.liveness.probe_timeout_ms !== PROBE_TIMEOUT_MS ||
         JSON.stringify(p.scheduler_start) !== JSON.stringify(scheduler) ||
         JSON.stringify(p.scheduler_lease) !== JSON.stringify(schedulerLease) ||
-        JSON.stringify(p.scheduler_run) !== JSON.stringify(schedulerRun)
+        JSON.stringify(p.scheduler_run) !== JSON.stringify(schedulerRun) ||
+        JSON.stringify(p.scheduler_claim) !== JSON.stringify(schedulerClaim)
       ) {
         lose(g, new DeliveryStopped("Managed receiver session/profile is incompatible"), true);
         return;
@@ -510,6 +521,12 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
             try { raw(g, request); }
             catch { lose(g, new DeliveryStopped("Scheduler run write failed")); throw new DeliveryStopped("Scheduler run write failed"); }
           },
+        });
+      if (schedulerClaim)
+        g.schedulerClaim = createSchedulerClaimClientChannel({ session: g.session,
+          assertCurrent: () => { assertSession(g.session); },
+          send: (request) => { try { raw(g, request); }
+            catch { lose(g, new DeliveryStopped("Scheduler claim write failed")); throw new DeliveryStopped("Scheduler claim write failed"); } },
         });
       probe(g);
       return;
@@ -606,6 +623,10 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
     }
     if (message.type === "scheduler.run.response.v1") {
       if (g.usable) g.schedulerRun?.receive(message);
+      return;
+    }
+    if (message.type === "scheduler.claim.response.v1") {
+      if (g.usable) g.schedulerClaim?.receive(message);
       return;
     }
     if (g.usable) {
@@ -818,6 +839,7 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
         throw new Error("Scheduler lease frames require their generation-bound exchange lane");
       if (message.kind === "scheduler.run.acquire.v1" || message.kind === "scheduler.run.status.v1" || message.kind === "scheduler.run.event.v1")
         throw new Error("Scheduler run frames require their private generation-bound lane");
+      if (message.kind === "scheduler.claim.poll.v1") throw new Error("Scheduler claim frames require their private generation-bound lane");
       assertSession();
       const g = current!;
       try {
@@ -865,6 +887,11 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
       assertSession();
       if (!current?.schedulerRun) throw new Error("Scheduler run was not negotiated for this session");
       return current.schedulerRun.open();
+    },
+    openSchedulerClaimSession() {
+      assertSession();
+      if (!current?.schedulerClaim) throw new Error("Scheduler claim was not negotiated for this session");
+      return current.schedulerClaim.open();
     },
     get connected() {
       return Boolean(current && isCurrent(current) && current.usable);
