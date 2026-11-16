@@ -80,8 +80,14 @@ the workflow reads them in memory and into a runner-private directory only.
    the complete test partitions; optional Apple job outcomes are retained but
    are not substituted for the Web release gates.
 2. Drain active runs, assistant turns and autonomous goals. The workflow refuses
-   to interrupt them. Announce/accept a brief maintenance window; min=max=1 and
-   the database's single-writer lock intentionally preclude rolling overlap.
+   to interrupt them. Announce/accept a brief maintenance window. Preparation
+   requires an explicit minimum of 0 or 1 and a maximum of 1 replica, and
+   deployment and recovery preserve those original values. The existing
+   production setting is min=0/max=1; public health requests wake a scaled-to-zero
+   app during verification. Missing, invalid or multi-replica settings are
+   rejected. Old replicas must still stop and release the database's
+   single-writer lock before the candidate starts; scaling limits do not permit
+   overlapping database writers.
    First dispatch **Verify Web daemon distribution availability** from `main`
    after publishing the Web-pinned daemon version. It reads public GitHub release
    metadata and the exact official npm tarball, comparing byte length, SHA-256
@@ -95,7 +101,9 @@ the workflow reads them in memory and into a runner-private directory only.
 4. The workflow builds a unique ACR image from that SHA, resolves its immutable
    digest, and records the public build identity at `/artoo-release.json`.
    It preserves the app's domains, secrets, volumes, resource limits and
-   registry identity while updating the image.
+   registry identity and original min=0-or-1/max=1 scaling while updating the
+   image. Azure readback checks the scale before traffic and after Single
+   revision mode is restored.
 5. Before any new migration, it moves to Multiple revision mode, stops the old
    revision, waits for all replicas and database ownership to drain, and holds
    the advisory lock while backing up. It exports `public` and `artoo_meta`,
