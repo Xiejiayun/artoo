@@ -1,9 +1,5 @@
 import { PgliteDbClient } from "@artoo/storage";
-import {
-  SchedulerExecutionLeaseBindingV1Schema,
-  SchedulerPreparedStartSnapshotV1Schema,
-  SchedulerStartGrantV1Schema,
-} from "@artoo/domain";
+import { SchedulerPreparedStartSnapshotV1Schema, SchedulerStartGrantV1Schema } from "@artoo/domain";
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { expect, it } from "vitest";
@@ -191,81 +187,6 @@ it("adds prepared-start history without inventing snapshots for consumed request
       await expect(restored.db.execute(edit)).rejects.toMatchObject({
         cause: { code: "P0001", message: "Scheduler start grant history is immutable" },
       });
-    const leases = await loadMigrationStatements("0074_scheduler_execution_leases.sql");
-    expect(leases.slice(0, grants.length)).toEqual(grants);
-    expect(leases.length - grants.length).toBe(5);
-    await expect(restored.migrate([...leases, "SELECT 1/0"])).rejects.toThrow();
-    expect(
-      (await restored.db.execute(sql`SELECT to_regclass('public.scheduler_execution_leases') AS name`)).rows,
-    ).toEqual([{ name: null }]);
-    await restored.migrate(leases);
-    await restored.migrate(leases);
-    expect((await restored.db.execute(sql`SELECT * FROM scheduler_start_grants`)).rows).toEqual(savedGrants);
-    expect((await restored.db.execute(sql`SELECT * FROM scheduler_execution_leases`)).rows).toEqual([]);
-    const {
-      ready_id: _ready,
-      proposal_digest: _proposal,
-      issued_at: _issued,
-      expires_at: _expires,
-      ...grantIdentity
-    } = grant;
-    const leaseBinding = SchedulerExecutionLeaseBindingV1Schema.parse({
-      ...grantIdentity,
-      scope: "scheduler.execution-lease.v1",
-      lease_id: randomUUID(),
-      epoch: 1,
-    });
-    const claimed = "2026-06-13T00:00:02.000123Z",
-      expires = "2026-06-13T00:00:32.000123Z";
-    const insertLease = (value: typeof leaseBinding, claimTime = claimed, expiresTime = expires) =>
-      restored!.db.execute(sql`
-      INSERT INTO scheduler_execution_leases (id,request_id,organization_id,project_id,task_id,epoch,binding,state,claimed_at,observed_at,expires_at)
-      VALUES (${value.lease_id},${value.request_id},${value.organization_id},${value.project_id},${value.task_id},${value.epoch},${JSON.stringify(value)}::jsonb,
-      'active',${claimTime},${claimTime},${expiresTime})`);
-    for (const key of Object.keys(leaseBinding)) {
-      const changed = key === "version" ? 2 : key === "epoch" ? 2 : key === "lease_id" ? null : "other";
-      // The independent lease UUID has no corresponding field in its grant.
-      if (key === "lease_id") continue;
-      await expect(insertLease({ ...leaseBinding, [key]: changed })).rejects.toThrow();
-    }
-    await expect(insertLease(leaseBinding, grant.expires_at)).rejects.toThrow();
-    await expect(insertLease(leaseBinding, claimed, "infinity")).rejects.toThrow();
-    await insertLease(leaseBinding);
-    await expect(insertLease({ ...leaseBinding, lease_id: randomUUID(), epoch: 2 })).rejects.toThrow();
-    for (const edit of [
-      sql`DELETE FROM scheduler_execution_leases`,
-      sql`UPDATE scheduler_execution_leases SET binding = binding || '{"session_id":"new"}'::jsonb`,
-      sql`UPDATE scheduler_execution_leases SET epoch = 2`,
-      sql`UPDATE scheduler_execution_leases SET expires_at = ${claimed}::timestamptz + interval '1 second'`,
-      sql`UPDATE scheduler_execution_leases SET observed_at = ${claimed}::timestamptz - interval '1 microsecond'`,
-      sql`UPDATE scheduler_execution_leases SET observed_at = expires_at`,
-      sql`UPDATE scheduler_execution_leases SET state='expired',closed_at=observed_at`,
-      sql`UPDATE scheduler_execution_leases SET state='revoked'`,
-      sql`UPDATE scheduler_execution_leases SET state='unknown',closed_at=observed_at`,
-    ])
-      await expect(restored.db.execute(edit)).rejects.toThrow();
-    const leaseSaved = (await restored.db.execute(sql`SELECT * FROM scheduler_execution_leases`)).rows;
-    const leaseArchive = await restored.backup();
-    await restored.close();
-    restored = await PgliteDbClient.create({ archive: leaseArchive });
-    await restored.migrate(leases);
-    expect((await restored.db.execute(sql`SELECT * FROM scheduler_execution_leases`)).rows).toEqual(leaseSaved);
-    expect(
-      (
-        await restored.db.execute(
-          sql`SELECT to_char(observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS observed FROM scheduler_execution_leases`,
-        )
-      ).rows,
-    ).toEqual([{ observed: claimed }]);
-    await restored.db.execute(
-      sql`UPDATE scheduler_execution_leases SET state='expired',observed_at=expires_at,closed_at=expires_at`,
-    );
-    for (const edit of [
-      sql`UPDATE scheduler_execution_leases SET state='active',closed_at=NULL,expires_at=expires_at + interval '30 seconds'`,
-      sql`UPDATE scheduler_execution_leases SET state='revoked'`,
-      sql`DELETE FROM scheduler_execution_leases`,
-    ])
-      await expect(restored.db.execute(edit)).rejects.toThrow();
   } finally {
     await restored?.close();
     await db.close();

@@ -32,6 +32,15 @@ const returned = {
   closed_at: utc(a.closedAt),
 };
 
+function rethrowLeaseContention(error: unknown): never {
+  const cause = error instanceof Error && error.cause instanceof Error ? error.cause : error;
+  if ((cause as { code?: string } | null)?.code === "55P03")
+    throw AppError.conflict("Execution lease evidence is changing; retry the complete operation", {
+      reason: "scheduler_execution_lease_busy",
+    });
+  throw error;
+}
+
 async function auditLease(
   ctx: ServerContext,
   tx: DrizzleDb,
@@ -117,7 +126,8 @@ export async function assertSchedulerExecutionLeaseForGrant(
     })
     .from(a)
     .where(and(eq(a.requestId, grant.request_id), eq(a.organizationId, ctx.organizationId)))
-    .for("share", { noWait: true });
+    .for("share", { noWait: true })
+    .catch(rethrowLeaseContention);
   if (lease && !lease.current)
     throw AppError.conflict("Scheduler execution lease is closed, expired or its clock continuity is unknown");
 }
@@ -181,7 +191,8 @@ export async function renewSchedulerExecutionLease(
             inArray(runs.status, ["queued", "starting", "running", "paused", "awaiting_input"]),
           ),
         )
-        .for("share", { noWait: true });
+        .for("share", { noWait: true })
+        .catch(rethrowLeaseContention);
       if (
         !run ||
         run.endedAt !== null ||

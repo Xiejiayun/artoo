@@ -798,6 +798,8 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
     let time = Date.parse(server.ctx.clock.nowIso());
     server.ctx.clock = { now: () => new Date(time), nowIso: () => new Date(time).toISOString() };
     await grantSchedulerStart(server.ctx, input, ready);
+    time += 6000;
+    await expect(grantSchedulerStart(server.ctx, input, ready)).rejects.toThrow("expired");
     // Controlled lifecycle rows only; this suite creates no physical process.
     await server.db.db
       .update(runs)
@@ -806,7 +808,6 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
     await server.db.db.update(tasks).set({ status: "running" }).where(eq(tasks.id, input.taskId));
     const before = await snapshot(),
       binding = before.executionLeases[0]!.binding;
-    time += 6000;
     const renewed = await renewSchedulerExecutionLease(
       { ...server.ctx, actorUserId: "paired-node-is-not-the-user" },
       input,
@@ -819,7 +820,7 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
     const { executionLeases: _new, events: _newEvents, ...newOther } = after;
     expect(newOther).toEqual(oldOther);
     expect(after.events.filter((event) => event.type === "scheduler.execution_lease.renewed")).toHaveLength(1);
-    await expect(grantSchedulerStart(server.ctx, input, ready)).rejects.toThrow("expired");
+    await expect(grantSchedulerStart(server.ctx, input, ready)).rejects.toThrow("original queued assignment");
     expect(await snapshot()).toEqual(after);
     expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
   });
