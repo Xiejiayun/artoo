@@ -2,6 +2,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { dependencyInputsRegistrationSchema } from "@artoo/protocol";
+import { assertTaskAgentReviewCurrent, assertTaskAgentReviewRun, taskAgentReviewForTask } from "./services/task-agent-review-binding.js";
 
 import { and, eq } from "drizzle-orm";
 
@@ -132,6 +133,7 @@ import { verificationCapabilityBinding } from "./services/verification-capabilit
 const FALLBACK_WORKSPACE_ROOT = join(tmpdir(), "artoo-workspace");
 
 export interface NodeBinding {
+  supportsDependencyInputs?(): boolean;
   /** Current negotiated private poll consumer; never derives from adapter output. */
   schedulerClaimConsumer?(): boolean;
   /** Close the underlying socket when its computer is explicitly removed. */
@@ -1536,6 +1538,13 @@ export function attachNodeBinding(
         return;
       }
       await ctx.db.transaction(async (tx) => {
+        const opinion = await taskAgentReviewForTask(ctx, tx, run.taskId);
+        if (Boolean(opinion) !== Boolean(context.payload?.agent_review_subject)) throw AppError.conflict("Artifact opinion dispatch lost its persisted relation");
+        if (opinion) {
+          await assertTaskAgentReviewCurrent(ctx, tx, opinion, { lockSource: true });
+          await assertTaskAgentReviewRun(ctx, tx, opinion, run);
+          if (!binding.supportsDependencyInputs?.()) throw AppError.conflict("The paired node cannot load this artifact opinion's actual inputs");
+        }
         await assertDesignRevisionRunAdmission(ctx, tx, run, { live: true });
         // Keep the computer fence through the real send. prepareStop takes this
         // same lock before freezing the complete native executor operation set.
@@ -1900,6 +1909,9 @@ export function attachNodeBinding(
     getPairedNodeSession() {
       if (closed || !isCurrentBinding() || !pairedSession) return undefined;
       return { ...pairedSession };
+    },
+    supportsDependencyInputs() {
+      return !closed && isCurrentBinding() && !!pairedSession && dependencyInputReads;
     },
     async announceDependencyInputsSession() {
       if (closed || !isCurrentBinding() || !pairedSession || !dependencyInputReads) return;

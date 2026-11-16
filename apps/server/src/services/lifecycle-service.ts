@@ -10,6 +10,7 @@ import { assertResearchDestinationUnreserved } from "./research-destination-pool
 import { resolveResearchRevisionOrigin } from "./research-revision-origin-service.js";
 import { currentImportedDesignBoundary } from "./execution-state.js";
 import { requireAiSharingAuthorization } from "./ai-data-sharing-service.js";
+import { assertTaskAgentReviewAdmission, taskAgentReviewForTask } from "./task-agent-review-binding.js";
 import {
   agentInstances,
   appendEvent,
@@ -399,6 +400,13 @@ async function assignTaskInTransaction(
     throw AppError.invalidState(`task must be 'ready' to assign (is '${row.status}')`, {
       status: row.status,
     });
+  }
+  const requestedOpinion = await taskAgentReviewForTask(ctx, tx, row.id);
+  if (requestedOpinion) {
+    if (assistantTurnId || ownedSelection || verificationRequirement || ctx.automationActor) {
+      throw AppError.permissionDenied("An artifact opinion task cannot acquire another execution or automatic review owner");
+    }
+    await assertTaskAgentReviewAdmission(ctx, tx, requestedOpinion);
   }
   const [importedDesign] = await tx
     .select({ id: goalImportedDesignContinuations.id })
@@ -1179,8 +1187,16 @@ export async function reviewTask(
   baseVersion?: number | null,
 ): Promise<Task> {
   const now = ctx.clock.nowIso();
+  return ctx.db.transaction(tx => reviewTaskInTransaction(ctx, tx, taskId, req, baseVersion, now));
+}
+
+/** Internal kernel for an already authorized user feedback transaction. No
+ * HTTP/model payload can supply the optional server-owned opinion attribution. */
+export async function reviewTaskInTransaction(
+  ctx: ServerContext, tx: DrizzleDb, taskId: string, req: ReviewRequest, baseVersion?: number | null,
+  now = ctx.clock.nowIso(), agentReviewFeedback?: { review_id: string; review_run_id: string; report_message_id: string },
+): Promise<Task> {
   const trigger = req.outcome === "accepted" ? "accept" : "request_changes";
-  return ctx.db.transaction(async (tx) => {
     const row = (
       await tx
         .select()
@@ -1353,6 +1369,7 @@ export async function reviewTask(
             outcome: req.outcome,
             comment: req.comment ?? null,
             artifact_ids: artifactRows.map((artifact) => artifact.id),
+            ...(agentReviewFeedback ? { agent_review_feedback: agentReviewFeedback } : {}),
             ...verifiedReview,
             ...(ownedReview ? { owned_result_review: ownedReview } : {}),
           },
@@ -1396,7 +1413,6 @@ export async function reviewTask(
       throw new Error("reviewTask: task missing after transition");
     }
     return mapTask(updated);
-  });
 }
 
 /**

@@ -8,6 +8,7 @@ import { blobChecksum, readContentAddressedBlob, type ContentAddressedBlobSource
 import { AppError } from "./errors.js";
 import { requireRunAiSharingAuthorization } from "./services/ai-data-sharing-service.js";
 import { resolveNodeToken } from "./services/device-service.js";
+import { assertTaskAgentReviewCurrent, assertTaskAgentReviewRun, taskAgentReviewForTask } from "./services/task-agent-review-binding.js";
 
 const MAX_BYTES = 10 * 1024 * 1024;
 const active = ["queued", "starting", "running", "paused", "awaiting_input"];
@@ -66,7 +67,19 @@ export function registerDependencyArtifactRoutes(app: FastifyInstance, ctx: Serv
       ));
       const [latest] = await tx.select().from(runs).where(and(eq(runs.organizationId, ctx.organizationId), eq(runs.taskId, reference.entry.task_id)))
         .orderBy(desc(runs.createdAt), desc(runs.id)).limit(1);
-      if (!edge || upstream?.status !== "done" || latest?.id !== reference.artifact.run_id || latest.status !== "completed")
+      let explicitReview = false;
+      if (reference.entry.dependency_type === "user_requested_review") {
+        const relation = await taskAgentReviewForTask(ctx, tx, run.taskId);
+        if (!relation || relation.sourceTaskId !== reference.entry.task_id || relation.sourceRunId !== reference.artifact.run_id
+          || relation.projectId !== task.projectId || reference.entry.status !== "review" || reference.entry.workspace_root !== null
+          || reference.entry.artifacts_truncated) throw AppError.conflict("Artifact opinion input lost its exact persisted relation");
+        await assertTaskAgentReviewCurrent(ctx, tx, relation);
+        const frozen = await assertTaskAgentReviewRun(ctx, tx, relation, run);
+        explicitReview = frozen.agent_review_subject!.artifacts.some(item => item.id === reference.artifact.id
+          && item.run_id === reference.artifact.run_id && item.type === reference.artifact.type && item.checksum === reference.artifact.checksum);
+      }
+      if ((reference.entry.dependency_type === "user_requested_review" ? !explicitReview || upstream?.status !== "review" : !edge || upstream?.status !== "done")
+        || latest?.id !== reference.artifact.run_id || latest.status !== "completed")
         throw AppError.conflict("Upstream dependency changed after this Run's context was frozen");
       const [artifact] = await tx.select().from(artifacts).where(and(eq(artifacts.organizationId, ctx.organizationId),
         eq(artifacts.id, artifactId), eq(artifacts.taskId, upstream.id), eq(artifacts.runId, latest.id)));

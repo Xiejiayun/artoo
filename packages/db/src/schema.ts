@@ -35,6 +35,7 @@ export * from "./schema/identity.js";
 // -------------------------------------------------------------------- work ---
 
 export * from "./schema/work.js";
+export * from "./schema/task-agent-review.js";
 
 export * from "./schema/execution.js";
 
