@@ -89,6 +89,7 @@ import type { createProductSourceSemanticClient } from "./product-source-semanti
 import type { ReleaseCapabilityReader } from "./release-capability-authority.js";
 import { readBrowserEvidence, type BrowserEvidenceGrant } from "./browser-evidence.js";
 import { provisionRunNamespace } from "./owned/workspace-namespace.js";
+import { withRepositoryOperation } from "./owned/repository-operation-lane.js";
 import { prepareOwnedWorktree, reserveOwnedWorktree, materializeOwnedWorktree,
   type MaterializedWorktree, type OwnedReservation } from "./owned/worktree-reservation.js";
 import type { ArtifactUploader } from "./artifact-upload.js";
@@ -702,6 +703,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         materialized = await materializeOwnedResultRun(record.ownedResult.prepared!, controller.signal);
         record.ownedResult.worktree = materialized;
       } else {
+      await withRepositoryOperation({ sourceRepo: baseRepo, options: gitOptions, assertStartCurrent: record.scheduler?.assertStartCurrent }, async () => {
       record.recovery.phase = "namespace";
       await provisionRunNamespace(input, gitOptions, record.scheduler?.assertStartCurrent);
       record.recovery.phase = "preparing";
@@ -710,7 +712,9 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       reservation = await reserveOwnedWorktree(prepared);
       record.recovery.phase = "materializing";
       materialized = await materializeOwnedWorktree(reservation);
+      });
       }
+      if (!materialized) throw new Error("Owned workspace materialization did not return its genuine handle");
       record.recovery.phase = "adapter_startup";
       adapterInvoked = true;
       let handle: AgentInstanceHandle;
@@ -833,11 +837,14 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       const controller = new AbortController(), channels = options.scheduler.open(), session = channels.start.session;
       options.managedJournal.channel.assertCurrentSession(session);
       // The scheduler proposal lane is generation-bound and single-flight.
-      // Reserve identity synchronously, then serialize preparation/start only;
-      // the actual Run streams and renews concurrently after physical startup.
-      const work = schedulerAdmissionLane.then(async () => {
+      // Reserve identity synchronously, then serialize the private proposal
+      // exchange only; physical startups, streams and renewal stay concurrent.
+      const prepared = schedulerAdmissionLane.then(async () => {
         controller.signal.throwIfAborted();
-        const admission = await prepareSchedulerPhysicalOwner({ journal: options.managedJournal!.journal, channels, taskId, requestId, runId, signal: controller.signal });
+        return prepareSchedulerPhysicalOwner({ journal: options.managedJournal!.journal, channels, taskId, requestId, runId, signal: controller.signal });
+      });
+      schedulerAdmissionLane = prepared.catch(() => {});
+      const work = prepared.then(async (admission) => {
         try {
           const payload = admission.admitted.payload;
           if (payload.run_id !== runId || payload.task_id !== taskId) throw new Error("Scheduler payload differs from original request");
@@ -863,7 +870,6 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
           throw error;
         }
       });
-      schedulerAdmissionLane = work.catch(() => {});
       schedulerStarts.set(runId, { taskId, requestId, controller, session, work });
       starting.set(runId, work);
       void work.finally(() => { if (starting.get(runId) === work) starting.delete(runId); }).catch(() => {});
