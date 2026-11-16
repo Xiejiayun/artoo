@@ -7,11 +7,13 @@ import { isOwnedRunAdapter } from "../process-adapter.js";
 import { createRegistryHeartbeat } from "../heartbeat.js";
 import { readOwnedResultProfileDescriptors } from "../owned-worktree-verification.js";
 
-export interface ManagedNodeRunnerOptions extends Omit<NodeClientOptions, "transport" | "managedJournal" | "nodeId"> {
+export interface ManagedNodeRunnerOptions extends Omit<NodeClientOptions, "transport" | "managedJournal" | "nodeId" | "scheduler"> {
   url: string; hello: NodeHello; journal: Journal; WebSocketImpl?: typeof WebSocket;
   heartbeat?: () => NodeHeartbeat; heartbeatIntervalMs?: number; reconnectDelayMs?: number;
   /** Explicit local choice; absent retains the managed-only composition. */
   mixed?: { readonly allowNewAllocations: boolean };
+  /** Administrator-local opt-in; remote hello metadata cannot enable starts. */
+  scheduler?: true;
 }
 export interface ManagedNodeRunner {
   start(): Promise<void>;
@@ -19,6 +21,8 @@ export interface ManagedNodeRunner {
   stop(): Promise<void>;
   /** Explicit local user action, scoped to this Node's owned managed run. */
   requestStop(runId: string): Promise<void>;
+  /** Consumes one already-authorized scheduler request, never a generic retry. */
+  startSchedulerRequest(input: { taskId: string; requestId: string; runId: string }): Promise<void>;
   readonly link: ManagedWebSocketTransport;
   /** Resolves at the first unexpected failure, before its cleanup starts. */
   readonly failed: Promise<Error>;
@@ -52,6 +56,7 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
     execution_features: options.mixed?.allowNewAllocations === false ? [] : ["workspace-allocation.per-run-v1", ...(descriptors ? ["owned-result-run.v1" as const] : [])],
     ...(descriptors ? { owned_result_profiles: [...descriptors] } : {}) };
   const link = createManagedWebSocketTransport({ url: options.url, namespace: options.journal.namespace, hello,
+    ...(options.scheduler ? { schedulerStart: true, schedulerLease: true, schedulerRun: true } : {}),
     WebSocketImpl: options.WebSocketImpl,
     allowLegacyRuns: options.mixed !== undefined,
     heartbeat: options.heartbeat ?? (options.registry ? createRegistryHeartbeat({ nodeId: hello.node_id, registry: options.registry }) : undefined),
@@ -81,6 +86,8 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
     onFatal: fail,
   });
   const client = createNodeClient({ ...options, nodeId: hello.node_id, transport: link.transport,
+    scheduler: options.scheduler ? { open: () => ({ start: link.openSchedulerStartSession(),
+      lease: link.openSchedulerLeaseSession(), run: link.openSchedulerRunSession() }) } : undefined,
     managedJournal: { journal: options.journal, channel: link.channel,
       ...(options.mixed ? { mixed: { allowNewAllocations: options.mixed.allowNewAllocations,
         bindRun: (runId: string, mode: RunDeliveryMode) => link.bindRun(runId, mode) } } : {}) } });
@@ -106,6 +113,7 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
   return {
     link, failed,
     requestStop(runId) { return client.requestManagedRunStop(runId); },
+    startSchedulerRequest(input) { return client.startSchedulerRequest(input); },
     get failure() { return failure; },
     get lossDeadlineTickMs() { return lossDeadline; },
     start() {
