@@ -3,6 +3,9 @@ import { isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import type { Readable } from "node:stream";
 import { spawnParentGuardedProcess, type ParentGuardedProcess, type ParentGuardReceipt } from "./parent-guard.js";
+import { runWindowsOwnedGit } from "./windows-owned-git.js";
+import type { PreparedWindowsProcessBackend } from "./windows-owned-process.js";
+import type { WindowsLaunchWindowV1 } from "./windows-launch-window.js";
 
 export interface OwnedGitRequest {
   readonly cwd: string;
@@ -11,6 +14,8 @@ export interface OwnedGitRequest {
   readonly signal?: AbortSignal;
 }
 export interface OwnedGitOptions {
+  readonly windowsProcessBackend?: PreparedWindowsProcessBackend;
+  readonly windowsLaunchWindow?: WindowsLaunchWindowV1;
   readonly gitExecutable: string;
   readonly readTimeoutMs: number;
   readonly materializeTimeoutMs: number;
@@ -89,6 +94,8 @@ export interface OwnedGitReceipt {
   readonly trigger: Trigger | null;
   readonly spawnErrorCode?: string;
   readonly parent_guard?: ParentGuardReceipt;
+  readonly windowsJob?: Readonly<{ version: 1; rootCreationTime: string | null; atomicJobMember: boolean; jobEmptyObserved: boolean;
+    helperExitObserved: boolean; helperCloseObserved: boolean }>;
 }
 export interface OwnedGitResult {
   readonly status: number;
@@ -115,7 +122,7 @@ function gitEnvironment(source: Readonly<NodeJS.ProcessEnv>, indexFile?: string)
   for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
   Object.assign(env, {
     GIT_CONFIG_NOSYSTEM: "1",
-    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
     GIT_TERMINAL_PROMPT: "0",
     GIT_OPTIONAL_LOCKS: "0",
     GIT_DISCOVERY_ACROSS_FILESYSTEM: "1",
@@ -125,7 +132,7 @@ function gitEnvironment(source: Readonly<NodeJS.ProcessEnv>, indexFile?: string)
     GIT_CONFIG_KEY_0: "core.fsmonitor",
     GIT_CONFIG_VALUE_0: "false",
     GIT_CONFIG_KEY_1: "core.hooksPath",
-    GIT_CONFIG_VALUE_1: "/dev/null",
+    GIT_CONFIG_VALUE_1: process.platform === "win32" ? "NUL" : "/dev/null",
   });
   if (indexFile !== undefined) env.GIT_INDEX_FILE = indexFile;
   return env;
@@ -134,6 +141,8 @@ function gitEnvironment(source: Readonly<NodeJS.ProcessEnv>, indexFile?: string)
 /** Real asynchronous execution. This is ownership-aware cleanup under a cooperating-worker model,
  * not a sandbox, a PID-reuse-proof kernel handle, or authority to promote an opaque worktree. */
 export function runOwnedGit(request: OwnedGitRequest, options: OwnedGitOptions): Promise<OwnedGitResult> {
+  if (process.platform === "win32") return runWindowsOwnedGit(request, options,
+    gitEnvironment(options.environment ?? process.env, options.indexFile));
   // Snapshot values synchronously; never retain mutable request/options/argv across callbacks.
   const inputArgs = request.args;
   const cwd = request.cwd,

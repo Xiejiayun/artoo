@@ -75,6 +75,7 @@ import {
   startWindowsOwnedProcess,
   assertWindowsProcessTargetInputCapability,
   assertWindowsProcessTargetControlCapability,
+  assertWindowsSchedulerStartBackend,
   isWindowsOwnedTargetControlReceipt,
   WINDOWS_TARGET_CONTROL_LIMITS,
   WindowsOwnedCleanupError,
@@ -83,6 +84,7 @@ import {
   type WindowsOwnedProcess,
   type WindowsOwnedStart,
 } from "./windows-owned-process.js";
+import { windowsQpcMs } from "./windows-launch-window.js";
 import {
   bootstrapWindowsGuardian,
   createWindowsGuardianRegistration,
@@ -1873,5 +1875,64 @@ describe("controlled target input protocol, not native WriteFile/CloseHandle evi
     await rejected;
     expect(helper.writes.some((write) => write.kind === "cancel")).toBe(true);
     await rejectedClosure(run, helper, "control_write");
+  });
+});
+
+describe("controlled original Windows scheduler launch window", () => {
+  const capabilities = ["artoo.windows-launch-window.v1", "artoo.windows-job-member-observation.v1"];
+  function advertise(): void {
+    const manifest = JSON.parse(mocked.files.get(`${mocked.bundle}\\manifest.json`)!.toString("utf8"));
+    manifest.capabilities = capabilities;
+    const bytes = Buffer.from(JSON.stringify(manifest));
+    mocked.files.set(`${mocked.bundle}\\manifest.json`, bytes);
+    manifestSha256 = sha(bytes);
+  }
+  function ready(helper: ControlledHelper, tick = windowsQpcMs()): void {
+    helper.send("ready", { protocol: "artoo.windows-job-process.v1", atomicJobList: true, capabilities,
+      launchClock: { version: 1, clock: "windows-qpc-ms.v1", tick_ms: tick } }, { token: null });
+  }
+  it("rejects an older pinned bundle before creating any helper", () => {
+    const backend = prepare();
+    expect(() => assertWindowsSchedulerStartBackend(backend)).toThrow(/launch-window/);
+    expect(() => startWindowsOwnedProcess(backend, input({ launchWindow: {
+      version: 1, clock: "windows-qpc-ms.v1", deadline_ms: windowsQpcMs() + 4000,
+    } }))).toThrow(/launch-window/);
+    expect(mocked.spawn).not.toHaveBeenCalled();
+  });
+  it("copies the original absolute deadline and repeats the private guard at target dispatch", async () => {
+    advertise();
+    const guard = vi.fn(), window = { version: 1 as const, clock: "windows-qpc-ms.v1" as const, deadline_ms: windowsQpcMs() + 4000 };
+    const deadline = window.deadline_ms;
+    const { run, helper } = begin({ launchWindow: window, assertStartCurrent: guard });
+    window.deadline_ms += 1000;
+    ready(helper);
+    expect(guard).toHaveBeenCalledTimes(2);
+    expect(helper.launch?.launchWindow).toEqual({ version: 1, clock: "windows-qpc-ms.v1", deadline_ms: deadline });
+    helper.created(); helper.started(); completeRoot(helper); helper.exit(); helper.close();
+    expect((await run.closed).cleanupConfirmed).toBe(true);
+  });
+  it("does not dispatch when the original admission becomes invalid during helper startup", async () => {
+    advertise();
+    let valid = true;
+    const { run, helper } = begin({ launchWindow: { version: 1, clock: "windows-qpc-ms.v1", deadline_ms: windowsQpcMs() + 4000 },
+      assertStartCurrent: () => { if (!valid) throw new Error("Original admission was revoked"); } });
+    valid = false; ready(helper);
+    expect(helper.launch).toBeUndefined();
+    helper.send("complete", noTargetFinal()); helper.exit(); helper.close();
+    const receipt = await run.closed;
+    expect(receipt.noTargetCreated).toBe(true); expect(receipt.rootStarted).toBe(false);
+    expect(receipt.cleanupConfirmed).toBe(true);
+  });
+  it("rejects a helper clock from another epoch before target dispatch", async () => {
+    advertise();
+    const { run, helper } = begin({ launchWindow: { version: 1, clock: "windows-qpc-ms.v1", deadline_ms: windowsQpcMs() + 4000 } });
+    ready(helper, windowsQpcMs() + 100000);
+    expect(helper.launch).toBeUndefined();
+    await rejectedClosure(run, helper);
+  });
+  it("rejects copied capability claims without spawning", () => {
+    advertise(); const backend = prepare();
+    expect(() => assertWindowsSchedulerStartBackend({ ...backend })).toThrow(/locally prepared/);
+    expect(mocked.spawn).not.toHaveBeenCalled();
   });
 });

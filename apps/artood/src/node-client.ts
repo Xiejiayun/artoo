@@ -652,7 +652,11 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       // wire allocation base nor the legacy injected executor grants Git access.
       const baseRepo = workspaceConfig.worktreeBaseRepo;
       const allowedRoots = Object.freeze([...(workspaceConfig.allowedRoots ?? [])]);
-      const gitOptions = snapshotGitOptions({ ...options.ownedGit, signal: controller.signal });
+      const gitOptions = snapshotGitOptions({ ...options.ownedGit, signal: controller.signal,
+        // The original journal window owns every Windows preparation launch.
+        // Local configuration cannot extend or replace this attempt's deadline.
+        windowsLaunchWindow: schedulerAdmission?.admitted.kind === "fresh"
+          ? schedulerAdmission.admitted.schedulerLaunchWindow : undefined });
       const adapter = resolveAdapter(payload.runtime);
       if (!adapter) {
         rejectionCode = "runtime_missing";

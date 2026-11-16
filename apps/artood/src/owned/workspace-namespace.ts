@@ -3,6 +3,8 @@ import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { allocateWorkspaceRoot } from "@artoo/protocol";
 import { preflightFreshWorktree, type FreshWorktreeInput, type GitReadOptions } from "./worktree-preflight.js";
+import { assertWindowsProcessBackend } from "./windows-owned-process.js";
+import { assertWindowsOwnedWorkspacePaths } from "./windows-workspace-boundary.js";
 
 export interface NamespaceInput extends FreshWorktreeInput {
   readonly basePath: string;
@@ -71,7 +73,11 @@ export async function provisionRunNamespace(
     });
   guard?.();
   assertNotAborted(options);
-  if (process.platform !== "darwin" && process.platform !== "linux")
+  if (process.platform === "win32") {
+    if (!options.windowsProcessBackend) fail("Windows namespace provisioning requires the prepared native backend");
+    assertWindowsProcessBackend(options.windowsProcessBackend!);
+    assertWindowsOwnedWorkspacePaths([{ path: input.basePath, directory: true }, { path: input.sourceRepo, directory: true }]);
+  } else if (process.platform !== "darwin" && process.platform !== "linux")
     fail("Namespace provisioning requires qualified POSIX filesystem semantics");
   const expected = allocateWorkspaceRoot({
     workspaceRoot: null,
@@ -145,6 +151,7 @@ export async function provisionRunNamespace(
     fail("Namespace preparation must leave exactly the final run target absent");
   }
   assertSame(observations);
+  if (process.platform === "win32") assertWindowsOwnedWorkspacePaths(observations.map(item => ({ path: item.canonical, directory: true })));
   assertNotAborted(options);
   return Object.freeze({ root: input.root, parent: current.path, createdDirectories: Object.freeze([...created]) });
 }
