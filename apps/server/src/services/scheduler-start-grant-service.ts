@@ -16,8 +16,8 @@ import type { SchedulerExecutionClaimInput } from "./scheduler-execution-claim-s
 import { buildSchedulerStartProposalFromPrepared } from "./scheduler-start-proposal-service.js";
 import { withRevalidatedSchedulerPreparedStart } from "./scheduler-start-revalidation-service.js";
 
-/** Internal kernel only: no route, poller or node consumer. A transport must
- * authenticate the claim independently, and nodes must enforce their private
+/** The negotiated paired channel authenticates the original consumed claim
+ * independently. Nodes must enforce their private
  * preparation capability and conservative monotonic deadline before spawning. */
 export function grantSchedulerStart(
   ctx: ServerContext,
