@@ -16,6 +16,7 @@ export function ControlTaskFacts({ entry, bootstrap }: { entry: ProjectControlTa
     {run && <span>{agent?.display_name ?? instance?.runtime ?? run.runtime_id} · {computer?.display_name ?? computerId ?? "Machine unknown"}</span>}
     {run && <span>Latest run: {run.status.replaceAll("_", " ")}{run.failure_reason ? ` · ${run.failure_reason}` : ""}</span>}
     {lease && <span>Lease #{lease.epoch} · {lease.state} · expires {at(lease.expires_at)}{lease.closed_at ? ` · closed ${at(lease.closed_at)}` : " · closure unconfirmed"}</span>}
+    {lease?.stop_requested && !lease.closed_at && <span>Stop requested · waiting for physical process closure</span>}
     {entry.execution_request?.state === "pending" && <span>Execution requested · eligibility details not reported</span>}
     {queue && queue.not_before_ms > 0 && <span>Not before {at(new Date(queue.not_before_ms).toISOString())}</span>}
     {queue?.preferred_computer_id && <span>Soft preference: {bootstrap?.computers.find((item) => item.id === queue.preferred_computer_id)?.display_name ?? queue.preferred_computer_id}{queue.prefer_until_ms ? ` until ${at(new Date(queue.prefer_until_ms).toISOString())}` : ""}</span>}
