@@ -22,7 +22,7 @@ import {
 } from "../process-adapter.js";
 import type { MaterializedWorktree } from "../owned/worktree-reservation.js";
 import { nonempty } from "./journal-boundary.js";
-import { snapshotSchedulerProposal } from "./scheduler-preparation.js";
+import { snapshotSchedulerProposal, snapshotSchedulerStartGrant } from "./scheduler-preparation.js";
 import { createSchedulerStartWindows } from "./scheduler-start-window.js";
 import type {
   AdmissionResult,
@@ -335,6 +335,7 @@ interface PermitState {
   readonly runId: string;
   readonly mode: "per-run" | "legacy";
   readonly identity?: OwnedAdmissionIdentity;
+  readonly assertLaunchCurrent?: () => void;
   payload: RunStartPayload | undefined;
   ownedResultRequest?: OwnedResultRunAdmissionV1;
   ownedResultDigest?: string;
@@ -476,6 +477,57 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
     state.bridgeAdapter = undefined;
     return result;
   }
+  function freshAdmission(
+    run: JournalRun,
+    nonce: string,
+    payload: RunStartPayload,
+    ownedResult?: ReturnType<typeof snapshotOwnedResultRunAdmission>,
+    assertLaunchCurrent?: () => void,
+  ): Extract<AdmissionResult, { kind: "fresh" }> {
+    const binding = allocationStartBinding(payload, process.platform, true),
+      key = binding?.key ?? createHash("sha256").update(JSON.stringify(payload)).digest("hex"),
+      mode = binding ? "per-run" : "legacy",
+      runId = payload.run_id;
+    if (
+      run.launchKey !== key ||
+      run.mode !== mode ||
+      run.runId !== runId ||
+      run.namespace !== namespace ||
+      run.ownership !== "local_claim" ||
+      run.phase !== "admitted" ||
+      run.stopRequested
+    )
+      throw new Error("Fresh journal admission differs from its original launch");
+    const permit = Object.freeze({}) as FreshLaunchPermit;
+    const identity = binding
+      ? Object.freeze({
+          launchKey: key,
+          runId,
+          taskId: payload.task_id,
+          agentInstanceId: payload.agent_instance_id,
+          runtime: payload.runtime,
+          workspaceRoot: payload.workspace.root,
+          workspaceBranch: payload.workspace.branch!,
+        })
+      : undefined;
+    permits.set(permit, {
+      nonce,
+      key,
+      runId,
+      mode,
+      payload,
+      ...(identity ? { identity } : {}),
+      ...(ownedResult ? { ownedResultRequest: ownedResult.request, ownedResultDigest: ownedResult.digest } : {}),
+      ...(assertLaunchCurrent ? { assertLaunchCurrent } : {}),
+      revision: run.revision,
+      phase: run.phase,
+      tail: Promise.resolve(),
+      recordedStarted: false,
+      recordedClosed: false,
+      startClaimed: false,
+    });
+    return Object.freeze({ kind: "fresh", permit, run, payload });
+  }
   async function admitStart(
     request: { expectedNamespace: string; runId: string; idempotencyKey: string; payload: RunStartPayload },
     resultRequest?: OwnedResultRunAdmissionV1,
@@ -517,34 +569,7 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
     });
     worker.assertAvailable();
     if (result.kind !== "fresh") return result as Exclude<AdmissionResult, { kind: "fresh" }>;
-    const permit = Object.freeze({}) as FreshLaunchPermit;
-    const identity = binding
-      ? Object.freeze({
-          launchKey: key,
-          runId,
-          taskId: payload.task_id,
-          agentInstanceId: payload.agent_instance_id,
-          runtime: payload.runtime,
-          workspaceRoot: payload.workspace.root,
-          workspaceBranch: payload.workspace.branch!,
-        })
-      : undefined;
-    permits.set(permit, {
-      nonce,
-      key,
-      runId,
-      mode,
-      payload,
-      ...(identity ? { identity } : {}),
-      ...(ownedResult ? { ownedResultRequest: ownedResult.request, ownedResultDigest: ownedResult.digest } : {}),
-      revision: result.run.revision,
-      phase: result.run.phase,
-      tail: Promise.resolve(),
-      recordedStarted: false,
-      recordedClosed: false,
-      startClaimed: false,
-    });
-    return Object.freeze({ kind: "fresh", permit, run: result.run, payload });
+    return freshAdmission(result.run, nonce, payload, ownedResult);
   }
   return Object.freeze({
     namespace,
@@ -555,7 +580,9 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
       ? { ownedResultFinalizationVersion: 1 as const }
       : {}),
     ...(ready.schemaVersion === 5 || ready.schemaVersion === 6 ? { schedulerPreparationVersion: 1 as const } : {}),
-    ...(ready.schemaVersion === 6 ? { schedulerStartGrantStorageVersion: 1 as const } : {}),
+    ...(ready.schemaVersion === 6
+      ? { schedulerStartGrantStorageVersion: 1 as const, schedulerStartGrantAdmissionVersion: 1 as const }
+      : {}),
     async prepareSchedulerStart(request) {
       const runId = query(request);
       if (ready.schemaVersion !== 5 && ready.schemaVersion !== 6)
@@ -584,6 +611,40 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
     beginSchedulerReady: schedulerWindows.begin,
     acceptSchedulerStartGrant: schedulerWindows.accept,
     assertSchedulerStartWindow: schedulerWindows.assertCurrent,
+    async admitSchedulerStart(window) {
+      if (ready.schemaVersion !== 6)
+        throw new Error("Scheduler grant admission requires an explicit offline journal upgrade");
+      const current = schedulerWindows.consume(window);
+      const snapshot = snapshotSchedulerProposal(current.proposal);
+      const grant = snapshotSchedulerStartGrant(current.grant, snapshot, current.record);
+      const nonce = randomUUID();
+      freeze(snapshot.launch.payload);
+      current.assertCurrent();
+      const result = await worker.call<{ kind: AdmissionResult["kind"]; run: JournalRun } | { kind: "expired" }>(
+        "scheduler_admit",
+        {
+          runId: current.record.runId,
+          grantJson: grant.canonical,
+          grantDigest: grant.digest,
+          nonce,
+          startedTickMs: current.startedTickMs,
+          deadlineTickMs: current.deadlineTickMs,
+        },
+      );
+      worker.assertAvailable();
+      if (result.kind === "expired") {
+        current.assertCurrent();
+        throw new Error("Scheduler start deadline expired before durable admission");
+      }
+      if (result.kind !== "fresh") return result as Exclude<AdmissionResult, { kind: "fresh" }>;
+      // An expired/aborted response may have committed. Keep that reservation;
+      // neither a late reply nor a replay can manufacture another producer.
+      current.assertCurrent();
+      if (result.run.schedulerStartGrant?.grantDigest !== grant.digest)
+        throw new Error("Scheduler admission reply changed its original grant");
+      freeze(result.run);
+      return freshAdmission(result.run, nonce, snapshot.launch.payload, undefined, current.assertCurrent);
+    },
     admitStart(request) {
       return admitStart(request);
     },
@@ -596,6 +657,7 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
     },
     advance(permit, phase) {
       return serialize(permit, async (state) => {
+        state.assertLaunchCurrent?.();
         const result = await worker.call<{ kind: string; run: JournalRun }>("advance", {
           ...inputFor(state),
           revision: state.revision,
@@ -604,6 +666,7 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
         update(state, result.run);
         if (result.kind !== "advanced")
           throw new Error("Journal stage was already used, changed or stopped; no side effect is authorized");
+        state.assertLaunchCurrent?.();
         return result.run;
       });
     },
@@ -630,6 +693,7 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
       state.startClaimed = true;
       const payload = state.payload;
       try {
+        state.assertLaunchCurrent?.();
         if (!isOwnedRunAdapter(adapter) || !(signal instanceof AbortSignal))
           throw new Error("A genuine producer and actual startup signal are required");
         const start = adapter.startOwnedRun.bind(adapter),
@@ -639,7 +703,7 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
         state.bridgeAdapter = adapter;
         state.bridgeWorktree = new WeakRef(worktree);
         state.inspect = inspect;
-        state.admission = createOwnedRunAdmission(state.identity);
+        state.admission = createOwnedRunAdmission(state.identity, state.assertLaunchCurrent);
         const current = await worker.call<JournalRun | null>("lookup", { runId: state.runId });
         if (!current || current.stopRequested || current.phase !== "launch_intent")
           throw new Error("Journal startup was stopped before the trusted producer invocation");

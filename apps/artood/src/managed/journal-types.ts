@@ -46,6 +46,15 @@ export interface SchedulerPreparationRecord {
   readonly proposalDigest: string;
   readonly executionAuthorized: false;
 }
+/** Historical admission identity only; not a replayable producer capability. */
+export interface SchedulerStartGrantRecord {
+  readonly version: 1;
+  readonly grantId: string;
+  readonly readyId: string;
+  readonly nodeAttemptId: string;
+  readonly proposalDigest: string;
+  readonly grantDigest: string;
+}
 declare const preparationBrand: unique symbol;
 declare const exchangeBrand: unique symbol;
 declare const windowBrand: unique symbol;
@@ -92,6 +101,7 @@ export interface JournalRun {
   readonly launchKey: string | null;
   readonly ownedResultAdmissionDigest?: string | null;
   readonly schedulerPreparation?: SchedulerPreparationRecord;
+  readonly schedulerStartGrant?: SchedulerStartGrantRecord;
   readonly revision: number;
   readonly phase: DurablePhase;
   readonly stopRequested: boolean;
@@ -199,8 +209,10 @@ export interface Journal {
   readonly ownedResultFinalizationVersion?: 1;
   /** Explicit v5 migration. Preparation alone cannot reach a producer. */
   readonly schedulerPreparationVersion?: 1;
-  /** Explicit v6 storage migration only; no grant admission or execution consumer. */
+  /** Storage capability only; admission has its own separately versioned capability. */
   readonly schedulerStartGrantStorageVersion?: 1;
+  /** Private one-shot v6 admission; no network claim/renewal consumer. */
+  readonly schedulerStartGrantAdmissionVersion?: 1;
   /** First unexpected failure; resolves before cleanup, never rejects. Clean close leaves it pending. */
   readonly failed: Promise<Error>;
   admitStart(request: StartRequest): Promise<AdmissionResult>;
@@ -211,6 +223,9 @@ export interface Journal {
   /** Caller must supply the actual authenticated reply. Still no launch permit. */
   acceptSchedulerStartGrant?(exchange: SchedulerReadyExchange, response: unknown): SchedulerStartWindow;
   assertSchedulerStartWindow?(window: SchedulerStartWindow): void;
+  /** v6 only. Consumes the genuine local window once, durably binds its grant,
+   * and withholds a permit on a late/unknown commit. No transport consumer. */
+  admitSchedulerStart?(window: SchedulerStartWindow): Promise<AdmissionResult>;
   lookupRun(request: RunQuery): Promise<JournalRun | null>;
   advance(permit: FreshLaunchPermit, phase: "preparing" | "launch_intent"): Promise<JournalRun>;
   requestStop(request: RunQuery & { readonly expectedKey?: string }): Promise<JournalRun>;

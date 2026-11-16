@@ -848,10 +848,10 @@ the window. Wall-clock-looking response timestamps cannot reset that deadline.
 
 These are preparation/window capabilities, never a `FreshLaunchPermit`.
 Accepting a grant still leaves the Run's durable producer owner fields NULL,
-phase admitted and worktree absent. There is no node grant persistence,
-materialization, transport consumer or ordinary-dispatch bypass in this slice.
-The next durable admission slice must consume a genuine window and persist its
-exact grant before issuing a one-shot launch permit.
+phase admitted and worktree absent. Only the separate explicit v6 admission
+below can consume that window and persist its exact grant before issuing a
+one-shot launch permit. Accepting a response alone creates no materialization,
+transport consumer or ordinary-dispatch bypass.
 
 The owned process adapter can now capture an optional private synchronous start
 guard in its existing admission WeakMap. It checks initially and again after
@@ -876,7 +876,8 @@ future exact server grant, with unique Run/request/attempt/ready/grant identitie
 and a composite foreign key to the original preparation. This is separate from
 PostgreSQL migrations. No existing journal migration, producer nonce, payload,
 receipt or outbox entry is rewritten. The stored JSON/digest and worker identity
-are metadata; this slice has no grant writer, grant admission or execution consumer.
+are metadata. Migration alone supplies no grant admission or execution consumer;
+the separate private admission operation is described below.
 
 `upgradeLocalJournalForSchedulerStartGrants` is an explicit offline API. Stop and
 join runners, close journals and verify a backup first. It upgrades v3/v4/v5 in
@@ -889,10 +890,9 @@ columns, immutable triggers or the preparation identity index reject open.
 The optional `schedulerStartGrantStorageVersion` describes storage only. Ordinary
 v4 owned-result execution and v5 preparation behavior remain available on v6;
 preparation still leaves both producer owner fields NULL and ordinary admission
-still rejects its Run. Upgrading/reopening cannot mint a launch permit. A later
-admission must consume a genuine private window, persist and validate the exact
-grant atomically with the private producer claim, and retain deadline checks
-through materialization and physical spawn.
+still rejects its Run. Upgrading/reopening cannot mint a launch permit. Explicit
+admission consumes a genuine private window and persists the exact grant with
+its private producer claim. Storage metadata cannot replace that operation.
 
 Real SQLite tests cover relational identity, uniqueness, immutable records and
 transaction rollback. Protected macOS fixtures additionally cover each prior
@@ -927,9 +927,10 @@ does not expire or release a running author, reservation or server capacity.
 Ordinary callers omit it. Guardian IPC startup cannot currently enforce the same
 final check in its later child launch, so combining it with the new guard fails
 closed before any helper starts. Existing guardian operations without a startup
-guard retain their behavior. The journal's scheduler grant still has no launch
-consumer; a later consumer must pass its genuine private window to these checks
-and the existing final author-spawn guard together.
+guard retain their behavior. There is still no live scheduler transport consumer.
+A caller of the private admission below must pass its original window to these
+materialization checks; the journal captures that window's guard separately for
+the final author spawn.
 
 The POSIX fixture pauses actual read-only Git subprocesses during initial
 namespace preflight, each parent-container check, reservation and materialization, expires the original
@@ -938,6 +939,54 @@ the following write boundary. It also checks one-shot failure, actual no-spawn
 receipts, successful materialization and post-startup observations. It uses real
 Git and closure handling with a controlled read-pause wrapper; no Provider is
 called and no lifecycle or process receipt is fabricated.
+
+### Private durable node grant admission (Step 4 foundation)
+
+An explicitly upgraded v6 journal additionally reports
+`schedulerStartGrantAdmissionVersion:1`. `admitSchedulerStart` accepts only this
+live facade's genuine unused start window. It consumes that window synchronously
+before its first await; copies, concurrent calls, a lost reply and reopening
+cannot reacquire the chance. It reconstructs the original immutable proposal,
+validates every grant scope and preparation identity, and sends only the private
+worker command. No HTTP, WS, polling or automatic scheduler consumer calls it yet.
+
+The worker requires its original preparation incarnation and an unowned admitted
+Run. Under one SQLite write transaction it inserts the immutable grant and claims
+the Run with a private nonce/incarnation. Failed writes roll both changes back.
+The shared `process.hrtime` millisecond epoch binds facade and worker deadlines;
+server wall clocks and a new worker's lifetime cannot renew them. SQLite lock
+waits consume the original budget. Checks follow lock acquisition, immediately
+precede commit, and run again before the facade returns any launch permit. A
+commit followed by expiry, channel loss or an unobserved reply retains its
+reservation and withholds the permit. No automatic release/adoption is inferred.
+Expected pre-commit expiry keeps unrelated journal operations available only
+after successful rollback; a storage or unconfirmed rollback failure still fences
+the worker.
+
+Admitted history exposes a separate `schedulerStartGrant` identity; it never
+changes `schedulerPreparation.executionAuthorized:false` into authority. Reads
+validate the persisted grant JSON/digest, preparation and original producer
+incarnation. Preparation metadata is returned only while the Run is unowned;
+admitted history and lookup contain no nonce or reconstructible capability.
+Ordinary admission still rejects prepared/admitted scheduler Runs. A reopened
+unfinished claim is unknown, even when its grant bytes are intact.
+
+The original window guard follows the fresh permit through both pre-start phases
+and the genuine owned-adapter admission, including the final post-await spawn
+check. Expiry cannot silently turn that permit into ordinary execution. The guard
+does not govern recording an already started process, physical Stop, terminal
+settlement or retained delivery. Those still require their exact live producer
+objects and genuine closure receipts. A start deadline is not a running lease.
+
+Regression coverage includes private one-shot consumption, actual SQLite atomic
+rollback, channel loss after the commit request, held write-lock expiry, restart
+and ordinary-admission denial. A protected macOS case uses actual Git namespace,
+reservation/materialization and a controlled real author, waits for grant expiry,
+then stops and settles through its physical closure receipt. It retains fixture
+paths if physical or journal closure is uncertain. This is controlled node
+evidence; executed results are recorded separately in the PR. Live transport,
+claim/renewal, mixed-node/restart acceptance, failover and Provider acceptance
+remain incomplete. No rollout flag or production behavior is activated here.
 
 ## Explicit delegation (independent Step 7)
 
@@ -1087,3 +1136,14 @@ four controlled module-loading failure cases and all three remote-DB lifecycle
 cases. Audit configuration passed 16 of 17 cases; its real disk-backed startup
 case reached listening at 38.5 seconds and exceeded the unchanged 30-second test
 budget. That failure remains open and is not counted as a pass.
+
+The audit startup case also exceeded the same deadline on the preceding main
+source (listening at about 64 seconds). Node 24 reproduced ordinary CLI readiness
+failure on the loading refactor, while its missing-pepper rejection passed; the
+Node version difference is not an established cause. The loading source's full
+default Web run finished at 56/57: Windows browser/helper closure was unconfirmed
+in the broken-product rejection case. That exact case passed separately with
+unchanged checks, which does not make the complete run green. Scheduler Web
+acceptance passed 4/4 and capacity acceptance 1/1. PR #153 merged this bounded
+configuration/failure-ownership change; normal readiness performance, intermittent
+browser closure and unified final acceptance remain unresolved.
