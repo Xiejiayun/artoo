@@ -2,6 +2,7 @@ import {
   autonomousReviews, projects, runs, tasks, schedulerDecisions,
   schedulerExecutionLeases, schedulerExecutionRequests, schedulerProjectPolicies,
   schedulerTaskQueueMetadata,
+  schedulerRunStopIntents,
 } from "@artoo/db";
 import {
   ProjectControlViewV1Schema, RUN_STATUSES, TASK_STATUSES,
@@ -79,6 +80,9 @@ export async function getProjectControlView(
     const requests = ids.length ? await tx.selectDistinctOn([schedulerExecutionRequests.taskId]).from(schedulerExecutionRequests)
       .where(and(eq(schedulerExecutionRequests.organizationId, ctx.organizationId), eq(schedulerExecutionRequests.projectId, projectId), inArray(schedulerExecutionRequests.taskId, ids)))
       .orderBy(schedulerExecutionRequests.taskId, desc(schedulerExecutionRequests.createdAt), desc(schedulerExecutionRequests.id)) : [];
+    const stopIntents = leases.length ? await tx.select({ leaseId: schedulerRunStopIntents.leaseId }).from(schedulerRunStopIntents)
+      .where(inArray(schedulerRunStopIntents.leaseId, leases.map((lease) => lease.id))) : [];
+    const stoppingLeases = new Set(stopIntents.map((intent) => intent.leaseId));
     const metadata = ids.length ? await tx.select().from(schedulerTaskQueueMetadata)
       .where(and(eq(schedulerTaskQueueMetadata.organizationId, ctx.organizationId), eq(schedulerTaskQueueMetadata.projectId, projectId), inArray(schedulerTaskQueueMetadata.taskId, ids))) : [];
     const decisionIds = latestRuns.map((row) => row.schedulerDecisionId).filter((id): id is string => id !== null);
@@ -112,7 +116,7 @@ export async function getProjectControlView(
           task: review && !row.goalId ? { ...task, goal_id: review.goalId, source_plan_id: review.planId } : task,
           latest_run: run ? mapRun(run) : null,
           execution_lease: lease ? { id: lease.id, run_id: lease.binding.run_id, computer_id: lease.binding.computer_id,
-            epoch: lease.epoch, state: lease.state, claimed_at: new Date(lease.claimedAt).toISOString(), observed_at: new Date(lease.observedAt).toISOString(), expires_at: new Date(lease.expiresAt).toISOString(), closed_at: lease.closedAt ? new Date(lease.closedAt).toISOString() : null } : null,
+            epoch: lease.epoch, state: lease.state, stop_requested: stoppingLeases.has(lease.id), claimed_at: new Date(lease.claimedAt).toISOString(), observed_at: new Date(lease.observedAt).toISOString(), expires_at: new Date(lease.expiresAt).toISOString(), closed_at: lease.closedAt ? new Date(lease.closedAt).toISOString() : null } : null,
           execution_request: request ? { id: request.id, state: request.state, consumed_run_id: request.consumedRunId, created_at: new Date(request.createdAt).toISOString() } : null,
           queue_metadata: queue ? { revision: queue.revision, metadata: { version: queue.version, not_before_ms: queue.notBeforeMs,
             preferred_computer_id: queue.preferredComputerId, prefer_until_ms: queue.preferUntilMs } } : null,

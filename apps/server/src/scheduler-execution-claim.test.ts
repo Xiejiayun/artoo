@@ -68,6 +68,7 @@ import {
   ingestSchedulerWireRunEvent,
 } from "./services/run-service.js";
 import { acquireSchedulerRunCredential, requestSchedulerRunStop, schedulerRunStatus } from "./services/scheduler-run-service.js";
+import { getProjectControlView } from "./services/control-view-service.js";
 import { buildTestServer, type TestServer, type BuildTestServerOptions } from "./test-support.js";
 import { mkdtemp, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1033,6 +1034,12 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
     expect(waiting.leases).toEqual(beforeStop.leases);
     expect(await server.db.db.select().from(schedulerRunStopIntents)).toHaveLength(1);
     expect(await schedulerRunStatus(server.ctx, f.input, f.lease.binding, acquired.credential)).toMatchObject({ stop_requested: true });
+    const publicView = await getProjectControlView(server.ctx, f.lease.binding.project_id, { limit: 100 });
+    expect(publicView.tasks.find((entry) => entry.task.id === f.input.taskId)).toMatchObject({
+      latest_run: { id: f.grant.run_id, status: "running" },
+      execution_lease: { id: f.lease.binding.lease_id, stop_requested: true, closed_at: null },
+    });
+    expect(JSON.stringify(publicView)).not.toContain(acquired.credential.secret);
     expect(await failRunDaemonDisconnect(server.ctx, f.grant.run_id, COMPUTER, false)).toEqual({ failed: false });
     expect((await snapshot()).runs).toEqual(waiting.runs);
     const terminal = frame(1, "cancelled");
