@@ -1,7 +1,7 @@
 // Actual production boundary + worker + SQLite. No provider, Git materialization,
 // process launch, live scheduler consumer or elapsed rollout acceptance.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
@@ -315,6 +315,64 @@ test("preparation is atomic, immutable, bounded, and grants no ordinary or forge
     assert.throws(() => f.edit("UPDATE scheduler_preparations SET node_attempt_id='rewritten'"), /immutable/);
     assert.throws(() => f.edit("DELETE FROM scheduler_preparations"), /immutable/);
   }),
+);
+
+test(
+  "only the freshly observed preparation can create one private ready window, never a launch permit",
+  native,
+  async (t) =>
+    fixture(t, async (f) => {
+      await upgradeLocalJournalForSchedulerPreparation(f.options);
+      const journal = await f.open(),
+        value = proposal(f.root),
+        request = f.request(value);
+      const result = await journal.prepareSchedulerStart(request);
+      assert.equal(result.kind, "prepared");
+      assert.equal(Object.isFrozen(result.preparation), true);
+      const signal = new AbortController();
+      assert.throws(
+        () => journal.beginSchedulerReady(structuredClone(result.preparation), signal.signal),
+        /fresh local/,
+      );
+      const ready = journal.beginSchedulerReady(result.preparation, signal.signal);
+      assert.throws(() => journal.beginSchedulerReady(result.preparation, signal.signal), /fresh local/);
+      assert.equal((await journal.prepareSchedulerStart(request)).preparation, undefined);
+      const original = value.prepared_start,
+        now = Date.now();
+      const response = {
+        version: 1,
+        remaining_ms: 5000,
+        grant: {
+          ...ready.ready,
+          scope: "scheduler-start.once.v1",
+          grant_id: randomUUID(),
+          organization_id: original.organization_id,
+          project_id: original.project_id,
+          task_id: original.task_id,
+          actor_user_id: original.actor_user_id,
+          agent_instance_id: original.agent_instance_id,
+          computer_id: original.computer_id,
+          device_id: original.device_id,
+          session_id: original.session_id,
+          issued_at: new Date(now).toISOString(),
+          expires_at: new Date(now + 5000).toISOString(),
+        },
+      };
+      const window = journal.acceptSchedulerStartGrant(ready.exchange, response);
+      journal.assertSchedulerStartWindow(window);
+      assert.throws(() => journal.advance(window, "preparing"), /fresh journal permit/);
+      assert.throws(() => journal.acceptSchedulerStartGrant(ready.exchange, response), /original local/);
+      assert.deepEqual(f.inspect("SELECT owner_nonce,owner_incarnation,phase FROM runs"), [
+        { owner_nonce: null, owner_incarnation: null, phase: "admitted" },
+      ]);
+      assert.equal(existsSync(value.run_start.workspace_allocation.base_path), false);
+      signal.abort(new Error("Original fixture channel ended"));
+      assert.throws(() => journal.assertSchedulerStartWindow(window), /Original fixture channel ended/);
+      await journal.close();
+      const reopened = await f.open();
+      assert.equal((await reopened.prepareSchedulerStart(request)).preparation, undefined);
+      assert.throws(() => reopened.assertSchedulerStartWindow(window), /private/);
+    }),
 );
 
 test(

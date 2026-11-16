@@ -49,3 +49,19 @@ export const SchedulerStartGrantV1Schema = SchedulerPreparedStartSnapshotV1Schem
     }
   });
 export type SchedulerStartGrantV1 = z.infer<typeof SchedulerStartGrantV1Schema>;
+
+export const SchedulerStartGrantResponseV1Schema = z
+  .object({
+    version: z.literal(1),
+    grant: SchedulerStartGrantV1Schema,
+    remaining_ms: z.number().int().min(1).max(5000),
+  })
+  .strict()
+  .superRefine((response, ctx) => {
+    if (response.remaining_ms > Date.parse(response.grant.expires_at) - Date.parse(response.grant.issued_at))
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Remaining grant lifetime exceeds its original authorization",
+      });
+  });
+export type SchedulerStartGrantResponseV1 = z.infer<typeof SchedulerStartGrantResponseV1Schema>;
