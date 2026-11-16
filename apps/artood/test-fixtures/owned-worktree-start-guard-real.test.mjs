@@ -87,14 +87,14 @@ async function fixture(t, body) {
     const options = { gitExecutable: wrapper, signal: t.signal };
     const namespaceInput = {
       basePath: root,
-      agentInstanceId: "fixture-agent",
-      runId: "fixture-run",
+      agentInstanceId: "ai_fixture",
+      runId: "run_fixture",
       root: allocateWorkspaceRoot({
         workspaceRoot: null,
         branchBacked: true,
         targetComputerOs: process.platform,
-        agentInstanceId: "fixture-agent",
-        runId: "fixture-run",
+        agentInstanceId: "ai_fixture",
+        runId: "run_fixture",
         worktreeBase: { version: 1, strategy: "per-run", basePath: root },
       }),
       sourceRepo: repo,
