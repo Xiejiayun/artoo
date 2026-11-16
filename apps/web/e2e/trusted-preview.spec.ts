@@ -292,9 +292,27 @@ test("review controls remain usable at desktop, tablet and phone widths", async 
         })
       ).ok(),
     ).toBeTruthy();
-    await page.reload();
+    // Exercise the same project switch as a populated suite, then bind this
+    // workspace-specific check to its route instead of a transient Board drawer.
+    const otherProjectResponse = await request.post("/api/v1/projects", {
+      data: { name: unique("Responsive alternate project") },
+    });
+    expect(otherProjectResponse.ok()).toBe(true);
+    const { project: otherProject } = await otherProjectResponse.json();
+    await page.goto(`/?project=${encodeURIComponent(otherProject.id)}`);
+    await expect(
+      page.getByRole("navigation", { name: "Primary", exact: true }).getByRole("button", {
+        name: otherProject.name,
+        exact: true,
+      }),
+    ).toHaveAttribute("aria-pressed", "true");
     await selectProject(page);
-    await page.getByRole("button", { name: new RegExp(title) }).click();
+    await page.goto(`/?project=proj_artoo&task=${encodeURIComponent(taskId)}`);
+    const taskRoom = page.getByRole("main", { name: "Task room", exact: true });
+    await expect(taskRoom).toBeVisible();
+    await expect(
+      page.getByRole("complementary", { name: "Task detail" }).getByRole("heading", { name: title, exact: true }),
+    ).toBeVisible();
     // A task can have no conversation messages after mock execution. Create a
     // real review note before checking the rendered message list's placement.
     await page.getByLabel("Message", { exact: true }).fill("Responsive review note");
@@ -315,7 +333,7 @@ test("review controls remain usable at desktop, tablet and phone widths", async 
       const messages = await page.getByRole("list", { name: "Messages" }).boundingBox();
       const composer = await page.locator(".message-composer").boundingBox();
       expect(composer!.y).toBeGreaterThanOrEqual(messages!.y + messages!.height);
-      await page.locator(".pane-center").evaluate((pane) => {
+      await taskRoom.evaluate((pane) => {
         pane.scrollTop = 0;
       });
       await page.locator(".app-main").evaluate((main) => {
