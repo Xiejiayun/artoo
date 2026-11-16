@@ -20,6 +20,14 @@ export function invalidationsForEvent(topic: string, event: EventEnvelope): Quer
   // task state, chat messages, or collaboration records.
   if (event.type === "run.output") return keys;
 
+  // The control snapshot joins Task, Run, lease and policy observations. Use a
+  // project prefix so all independently paged views refresh together. Shared
+  // machine/Agent capacity changes can affect every project in this session.
+  if (["task.", "run.", "approval.", "scheduler.", "lease."].some((prefix) => event.type.startsWith(prefix)))
+    keys.push(queryKeys.projectControlView(typeof event.project_id === "string" ? event.project_id : undefined));
+  if (["computer.", "agent.", "daemon.", "device."].some((prefix) => event.type.startsWith(prefix)))
+    keys.push(queryKeys.projectControlView());
+
   if (event.type.startsWith("run.") && typeof event.run_id === "string") keys.push(queryKeys.runUsage(event.run_id));
 
   if (typeof event.task_id === "string") {
