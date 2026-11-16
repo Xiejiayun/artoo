@@ -193,6 +193,9 @@ export function registerApiAuthGuard(app: FastifyInstance, ctx: ServerContext, c
     if (req.method === "PUT" && route === "/api/v1/node/runs/:id/artifacts") {
       return;
     }
+    if (req.method === "GET" && route === "/api/v1/node/runs/:id/dependency-artifacts/:artifactId/content") {
+      return; // Exact route checks the current paired node, Run and frozen dependency.
+    }
     if ((req.method === "PUT" || req.method === "GET") && (route === "/api/v1/node/product-source-transfers/:id/content"
       || route === "/api/v1/node/product-source-transfers-v2/:id/content")) {
       return; // Dedicated route requires paired node credentials and exact durable admission.

@@ -67,13 +67,16 @@ describe("AppRoutes", () => {
     );
   });
 
-  it("board card click selects the task and returns to the workspace detail", async () => {
+  it("opens a board task in the drawer and retains the full workspace destination", async () => {
     renderWithProviders(<AppRoutes />, { client: appClient(), route: "/board" });
     const views = within(screen.getByRole("navigation", { name: "Project views" }));
     expect(views.getByRole("link", { name: "Board" })).toHaveAttribute("aria-current", "page");
     expect(views.getByRole("link", { name: "Workspace" })).not.toHaveClass("is-active");
     await userEvent.click(await screen.findByText("Build inbox"));
+    expect(await screen.findByRole("dialog", { name: "Task workspace" })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Build inbox", level: 2 })).toBeInTheDocument();
+    expect(views.getByRole("link", { name: "Board" })).toHaveAttribute("aria-current", "page");
+    await userEvent.click(screen.getByRole("link", { name: "Open workspace ↗" }));
     expect(views.getByRole("link", { name: "Workspace" })).toHaveAttribute("aria-current", "page");
     await userEvent.click(views.getByRole("link", { name: "Board" }));
     await userEvent.click(views.getByRole("link", { name: "Workspace" }));
