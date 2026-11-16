@@ -158,55 +158,96 @@ namespace ArtooJournalV1 {
 `;
 
 type Operation = "clock" | "create-directory" | "flush-directory";
-function invoke(operation: Operation, input: { directory?: string; dev?: string; ino?: string } = {}): Record<string, unknown> {
+function invoke(
+  operation: Operation,
+  input: { directory?: string; dev?: string; ino?: string } = {},
+): Record<string, unknown> {
   assertNativeWindows();
   if (input.directory !== undefined) assertCanonicalWindowsPath(input.directory);
   const configured = process.env.SystemRoot ?? process.env.SYSTEMROOT;
-  if (!configured || !win32.isAbsolute(configured)) throw new Error("Windows journal requires the local Windows system root");
+  if (!configured || !win32.isAbsolute(configured))
+    throw new Error("Windows journal requires the local Windows system root");
   const root = physicalWindowsDirectory(realpathSync.native(configured));
   // Select fields explicitly: even an extra property on a local identity object
   // cannot replace the fixed operation, directory or request version.
-  const request = { version: 1, operation, ...(operation !== "clock" ? { directory: input.directory } : {}),
-    ...(operation === "flush-directory" ? { dev: input.dev, ino: input.ino } : {}) };
-  const result = spawnSync(win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPT], {
-      cwd: root, shell: false, windowsHide: true, input: JSON.stringify(request),
-      encoding: "utf8", timeout: 2500, maxBuffer: 8192,
-      env: { SystemRoot: root, WINDIR: root, PATH: win32.join(root, "System32"),
-        PSModulePath: win32.join(root, "System32", "WindowsPowerShell", "v1.0", "Modules") },
-    });
-  if (result.error || result.signal !== null || result.status !== 0) throw new Error(`Windows journal ${operation} failed; continuity is unqualified`);
+  const request = {
+    version: 1,
+    operation,
+    ...(operation !== "clock" ? { directory: input.directory } : {}),
+    ...(operation === "flush-directory" ? { dev: input.dev, ino: input.ino } : {}),
+  };
+  const result = spawnSync(
+    win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPT],
+    {
+      cwd: root,
+      shell: false,
+      windowsHide: true,
+      input: JSON.stringify(request),
+      encoding: "utf8",
+      timeout: 2500,
+      maxBuffer: 8192,
+      env: {
+        SystemRoot: root,
+        WINDIR: root,
+        PATH: win32.join(root, "System32"),
+        PSModulePath: win32.join(root, "System32", "WindowsPowerShell", "v1.0", "Modules"),
+      },
+    },
+  );
+  if (result.error || result.signal !== null || result.status !== 0)
+    throw new Error(`Windows journal ${operation} failed; continuity is unqualified`);
   let value: unknown;
-  try { value = JSON.parse(result.stdout); } catch { throw new Error("Windows journal native response is invalid"); }
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Windows journal native response is invalid");
+  try {
+    value = JSON.parse(result.stdout);
+  } catch {
+    throw new Error("Windows journal native response is invalid");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Windows journal native response is invalid");
   const response = value as Record<string, unknown>;
-  if (response.version !== 1 || response.operation !== operation) throw new Error("Windows journal native operation binding failed");
+  if (response.version !== 1 || response.operation !== operation)
+    throw new Error("Windows journal native operation binding failed");
   return response;
 }
 
 export function readWindowsJournalBootSample(): { readonly id: string; readonly counterNs: bigint } {
   const sample = invoke("clock");
-  if (typeof sample.bootId !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/iu.test(sample.bootId)
-    || sample.bootId === "00000000-0000-0000-0000-000000000000"
-    || typeof sample.counter !== "string" || !/^\d{1,20}$/u.test(sample.counter)
-    || typeof sample.frequency !== "string" || !/^[1-9]\d{0,12}$/u.test(sample.frequency)) {
+  if (
+    typeof sample.bootId !== "string" ||
+    !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/iu.test(sample.bootId) ||
+    sample.bootId === "00000000-0000-0000-0000-000000000000" ||
+    typeof sample.counter !== "string" ||
+    !/^\d{1,20}$/u.test(sample.counter) ||
+    typeof sample.frequency !== "string" ||
+    !/^[1-9]\d{0,12}$/u.test(sample.frequency)
+  ) {
     throw new Error("Windows journal boot/counter identity is unavailable");
   }
-  return { id: `windows-boot-v1:${sample.bootId.toLowerCase()}`, counterNs: BigInt(sample.counter) * 1_000_000_000n / BigInt(sample.frequency) };
+  return {
+    id: `windows-boot-v1:${sample.bootId.toLowerCase()}`,
+    counterNs: (BigInt(sample.counter) * 1_000_000_000n) / BigInt(sample.frequency),
+  };
 }
 
 export function createWindowsJournalDirectory(directory: string): void {
-  if (invoke("create-directory", { directory }).created !== true) throw new Error("Windows journal exclusive private creation was not confirmed");
+  if (invoke("create-directory", { directory }).created !== true)
+    throw new Error("Windows journal exclusive private creation was not confirmed");
 }
 
-export function assertWindowsJournalProtectedDirectory(directory: string, expectedSid: string,
-  identity: { readonly dev: string; readonly ino: string }): void {
+export function assertWindowsJournalProtectedDirectory(
+  directory: string,
+  expectedSid: string,
+  identity: { readonly dev: string; readonly ino: string },
+): void {
   const result = flush(directory, identity);
-  if (result.protected !== true || result.currentSid !== expectedSid) throw new Error("Windows journal directory DACL or node SID continuity failed");
+  if (result.protected !== true || result.currentSid !== expectedSid)
+    throw new Error("Windows journal directory DACL or node SID continuity failed");
 }
 
 function flush(directory: string, identity: { readonly dev: string; readonly ino: string }): Record<string, unknown> {
-  if (!/^\d{1,20}$/u.test(identity.dev) || !/^\d{1,20}$/u.test(identity.ino)) throw new Error("Windows journal directory identity is invalid");
+  if (!/^\d{1,20}$/u.test(identity.dev) || !/^\d{1,20}$/u.test(identity.ino))
+    throw new Error("Windows journal directory identity is invalid");
   const result = invoke("flush-directory", { directory, dev: identity.dev, ino: identity.ino });
   if (result.flushed !== true) {
     throw new Error("Windows journal directory durability was not confirmed");
@@ -214,6 +255,9 @@ function flush(directory: string, identity: { readonly dev: string; readonly ino
   return result;
 }
 
-export function flushWindowsJournalDirectory(directory: string, identity: { readonly dev: string; readonly ino: string }): void {
+export function flushWindowsJournalDirectory(
+  directory: string,
+  identity: { readonly dev: string; readonly ino: string },
+): void {
   flush(directory, identity);
 }

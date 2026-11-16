@@ -3,7 +3,10 @@ import type { SchedulerStartSession } from "./scheduler-start-channel.js";
 import type { SchedulerStartGrantV1, RunStartPayload } from "@artoo/domain";
 
 export type SchedulerSessionAdmission =
-  | (Extract<AdmissionResult, { kind: "fresh" }> & { readonly grant: SchedulerStartGrantV1; readonly assertStartCurrent: () => void })
+  | (Extract<AdmissionResult, { kind: "fresh" }> & {
+      readonly grant: SchedulerStartGrantV1;
+      readonly assertStartCurrent: () => void;
+    })
   | {
       readonly kind: "retained";
       readonly stage: "preparation" | "admission";

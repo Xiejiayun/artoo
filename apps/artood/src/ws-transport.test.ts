@@ -6,7 +6,7 @@ import type {
   NodeHello,
   ProductReleaseHealthMessage,
   RunStartCommand,
-  ServerToNodeMessage
+  ServerToNodeMessage,
 } from "@artoo/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket as WsServerSocket } from "ws";
@@ -18,7 +18,7 @@ const hello: NodeHello = {
   node_id: "computer_1",
   protocol_version: "2026-06-11",
   artood_version: "0.1.0",
-  machine: { hostname: "h", os: "windows", arch: "x64" }
+  machine: { hostname: "h", os: "windows", arch: "x64" },
 };
 
 const runStart: RunStartCommand = {
@@ -34,19 +34,43 @@ const runStart: RunStartCommand = {
     workspace: { root: "C:/ws" },
     context_pack: { id: "ctx_1", uri: "inline" },
     policy_snapshot: { filesystem_write_scope: ["C:/ws"], requires_approval: [] },
-    artifact_rules: { paths: ["*.patch"] }
-  }
+    artifact_rules: { paths: ["*.patch"] },
+  },
 };
 
 function healthFrame(): ProductReleaseHealthMessage {
-  const digest = `sha256:${"a".repeat(64)}`, at = new Date().toISOString();
-  return { kind: "product.release.health", node_id: hello.node_id, payload: { version: 1, event_id: "health_1", sequence: 1,
-    request: { version: 1, release_id: "release_1", goal_id: "goal_1", project_id: "project_1", run_id: "run_1",
-      release_profile_id: "release", verification_profile_id: "verify", verification_request_id: "request_1",
-      verification_profile_digest: digest, subject_digest: digest },
-    release_profile_digest: digest, artifact_digest: digest, state: "healthy", active_release_id: "release_1",
-    active_artifact_digest: digest, consecutive_failures: 0, health_checks: [{ path: "/", status_code: 200,
-      body_digest: digest, passed: true, checked_at: at }], recovery_checks: [], checked_at: at } };
+  const digest = `sha256:${"a".repeat(64)}`,
+    at = new Date().toISOString();
+  return {
+    kind: "product.release.health",
+    node_id: hello.node_id,
+    payload: {
+      version: 1,
+      event_id: "health_1",
+      sequence: 1,
+      request: {
+        version: 1,
+        release_id: "release_1",
+        goal_id: "goal_1",
+        project_id: "project_1",
+        run_id: "run_1",
+        release_profile_id: "release",
+        verification_profile_id: "verify",
+        verification_request_id: "request_1",
+        verification_profile_digest: digest,
+        subject_digest: digest,
+      },
+      release_profile_digest: digest,
+      artifact_digest: digest,
+      state: "healthy",
+      active_release_id: "release_1",
+      active_artifact_digest: digest,
+      consecutive_failures: 0,
+      health_checks: [{ path: "/", status_code: 200, body_digest: digest, passed: true, checked_at: at }],
+      recovery_checks: [],
+      checked_at: at,
+    },
+  };
 }
 
 async function waitUntil(condition: () => boolean, timeoutMs = 3000): Promise<void> {
@@ -137,121 +161,239 @@ class FakeClientWebSocket {
 
 describe("createWebSocketTransport", () => {
   it("keeps dependency content identity on the original ordinary socket and aborts it on loss", async () => {
-    const transport = createWebSocketTransport({ url: "ws://127.0.0.1/api/v1/node", hello: { ...hello, dependency_inputs: { version: 1 } },
-      reconnect: false, WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket });
-    const socket = fakeClientSockets.at(-1)!; socket.open(); await transport.ready;
-    const session = { kind: "command" as const, id: "inputs", idempotency_key: "inputs", type: "node.dependency-inputs.session.v1" as const,
-      payload: { version: 1 as const, node_id: hello.node_id, session_id: "550e8400-e29b-41d4-a716-446655440000" } };
+    const transport = createWebSocketTransport({
+      url: "ws://127.0.0.1/api/v1/node",
+      hello: { ...hello, dependency_inputs: { version: 1 } },
+      reconnect: false,
+      WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket,
+    });
+    const socket = fakeClientSockets.at(-1)!;
+    socket.open();
+    await transport.ready;
+    const session = {
+      kind: "command" as const,
+      id: "inputs",
+      idempotency_key: "inputs",
+      type: "node.dependency-inputs.session.v1" as const,
+      payload: { version: 1 as const, node_id: hello.node_id, session_id: "550e8400-e29b-41d4-a716-446655440000" },
+    };
     try {
       expect(transport.currentDependencyInputSession()).toBeUndefined();
       socket.receive({ ...session, payload: { ...session.payload, node_id: "other-node" } });
       expect(transport.currentDependencyInputSession()).toBeUndefined();
       socket.receive(session);
       const original = transport.currentDependencyInputSession()!;
-      expect(original.id).toBe(session.payload.session_id); expect(original.identity).toBe(socket);
+      expect(original.id).toBe(session.payload.session_id);
+      expect(original.identity).toBe(socket);
       expect(transport.currentPublicationSession()).toBeUndefined();
-      socket.receive(session); expect(transport.currentDependencyInputSession()).toBe(original);
-      socket.close(); expect(original.signal.aborted).toBe(true);
+      socket.receive(session);
+      expect(transport.currentDependencyInputSession()).toBe(original);
+      socket.close();
+      expect(original.signal.aborted).toBe(true);
       expect(transport.currentDependencyInputSession()).toBeUndefined();
-    } finally { await transport.close(); }
+    } finally {
+      await transport.close();
+    }
   });
 
   it("refuses unsolicited or conflicting dependency content session announcements", async () => {
     for (const enabled of [false, true]) {
-      const transport = createWebSocketTransport({ url: "ws://127.0.0.1/api/v1/node", hello: { ...hello, ...(enabled ? { dependency_inputs: { version: 1 as const } } : {}) },
-        reconnect: false, WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket });
-      const socket = fakeClientSockets.at(-1)!; socket.open(); await transport.ready;
-      const session = { kind: "command" as const, id: "inputs", idempotency_key: "inputs", type: "node.dependency-inputs.session.v1" as const,
-        payload: { version: 1 as const, node_id: hello.node_id, session_id: "550e8400-e29b-41d4-a716-446655440000" } };
+      const transport = createWebSocketTransport({
+        url: "ws://127.0.0.1/api/v1/node",
+        hello: { ...hello, ...(enabled ? { dependency_inputs: { version: 1 as const } } : {}) },
+        reconnect: false,
+        WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket,
+      });
+      const socket = fakeClientSockets.at(-1)!;
+      socket.open();
+      await transport.ready;
+      const session = {
+        kind: "command" as const,
+        id: "inputs",
+        idempotency_key: "inputs",
+        type: "node.dependency-inputs.session.v1" as const,
+        payload: { version: 1 as const, node_id: hello.node_id, session_id: "550e8400-e29b-41d4-a716-446655440000" },
+      };
       try {
         socket.receive(session);
         if (!enabled) expect(transport.currentDependencyInputSession()).toBeUndefined();
         else {
           const original = transport.currentDependencyInputSession()!;
-          socket.receive({ ...session, payload: { ...session.payload, session_id: "550e8400-e29b-41d4-a716-446655440001" } });
-          expect(original.signal.aborted).toBe(true); expect(transport.connected).toBe(false);
+          socket.receive({
+            ...session,
+            payload: { ...session.payload, session_id: "550e8400-e29b-41d4-a716-446655440001" },
+          });
+          expect(original.signal.aborted).toBe(true);
+          expect(transport.connected).toBe(false);
         }
-      } finally { await transport.close(); }
+      } finally {
+        await transport.close();
+      }
     }
   });
 
   it("notifies ordinary current-socket loss once and preserves reconnect identity", async () => {
     let disconnected = 0;
-    const transport = createWebSocketTransport({ url: "ws://fixture.invalid", hello, reconnectDelayMs: 1,
+    const transport = createWebSocketTransport({
+      url: "ws://fixture.invalid",
+      hello,
+      reconnectDelayMs: 1,
       WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket,
-      onDisconnected: () => { disconnected++; } });
+      onDisconnected: () => {
+        disconnected++;
+      },
+    });
     try {
-      const original = fakeClientSockets[0]!; original.open(); await transport.ready;
+      const original = fakeClientSockets[0]!;
+      original.open();
+      await transport.ready;
       expect(transport.currentSessionIdentity()).toBe(original);
-      original.close(); expect(disconnected).toBe(1); expect(transport.currentSessionIdentity()).toBeUndefined();
+      original.close();
+      expect(disconnected).toBe(1);
+      expect(transport.currentSessionIdentity()).toBeUndefined();
       await waitUntil(() => fakeClientSockets.length === 2);
-      const current = fakeClientSockets[1]!; current.open();
-      expect(transport.connected).toBe(true); expect(transport.currentSessionIdentity()).toBe(current);
+      const current = fakeClientSockets[1]!;
+      current.open();
+      expect(transport.connected).toBe(true);
+      expect(transport.currentSessionIdentity()).toBe(current);
       // Delayed/repeated close from the old socket must not revoke new waiters.
-      original.close(); expect(disconnected).toBe(1); expect(transport.currentSessionIdentity()).toBe(current);
-      await transport.close(); expect(disconnected).toBe(2); expect(transport.currentSessionIdentity()).toBeUndefined();
-      await transport.close(); expect(disconnected).toBe(2);
-    } finally { await transport.close(); }
+      original.close();
+      expect(disconnected).toBe(1);
+      expect(transport.currentSessionIdentity()).toBe(current);
+      await transport.close();
+      expect(disconnected).toBe(2);
+      expect(transport.currentSessionIdentity()).toBeUndefined();
+      await transport.close();
+      expect(disconnected).toBe(2);
+    } finally {
+      await transport.close();
+    }
   });
 
   it("notifies a real ordinary socket close without requiring a publication session", async () => {
-    const harness = await startServer(); activeServer = harness.wss;
-    let disconnected = 0, publicationEnded = 0;
-    const transport = createWebSocketTransport({ url: harness.url, hello, reconnect: false,
-      onDisconnected: () => { disconnected++; }, onPublicationSessionEnded: () => { publicationEnded++; } });
+    const harness = await startServer();
+    activeServer = harness.wss;
+    let disconnected = 0,
+      publicationEnded = 0;
+    const transport = createWebSocketTransport({
+      url: harness.url,
+      hello,
+      reconnect: false,
+      onDisconnected: () => {
+        disconnected++;
+      },
+      onPublicationSessionEnded: () => {
+        publicationEnded++;
+      },
+    });
     try {
-      await transport.ready; const socket = await harness.connection;
-      socket.close(); await waitUntil(() => disconnected === 1);
-      expect(transport.currentSessionIdentity()).toBeUndefined(); expect(publicationEnded).toBe(0);
-      await transport.close(); expect(disconnected).toBe(1);
-    } finally { await transport.close(); }
+      await transport.ready;
+      const socket = await harness.connection;
+      socket.close();
+      await waitUntil(() => disconnected === 1);
+      expect(transport.currentSessionIdentity()).toBeUndefined();
+      expect(publicationEnded).toBe(0);
+      await transport.close();
+      expect(disconnected).toBe(1);
+    } finally {
+      await transport.close();
+    }
   });
 
   it("explicit close invalidates pending-session observers even before the socket close event", async () => {
     let disconnected = 0;
-    const transport = createWebSocketTransport({ url: "ws://fixture.invalid", hello,
+    const transport = createWebSocketTransport({
+      url: "ws://fixture.invalid",
+      hello,
       WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket,
-      onDisconnected: () => { disconnected++; expect(transport.currentSessionIdentity()).toBeUndefined(); } });
-    const socket = fakeClientSockets[0]!; socket.open(); await transport.ready;
-    socket.close = () => { socket.readyState = 2; }; // Deliberately withhold the close event.
-    await transport.close(); expect(disconnected).toBe(1);
-    await transport.close(); expect(disconnected).toBe(1);
+      onDisconnected: () => {
+        disconnected++;
+        expect(transport.currentSessionIdentity()).toBeUndefined();
+      },
+    });
+    const socket = fakeClientSockets[0]!;
+    socket.open();
+    await transport.ready;
+    socket.close = () => {
+      socket.readyState = 2;
+    }; // Deliberately withhold the close event.
+    await transport.close();
+    expect(disconnected).toBe(1);
+    await transport.close();
+    expect(disconnected).toBe(1);
   });
 
   it("binds an ordinary publication session to its original socket and revokes it on close", async () => {
-    const harness = await startServer(); activeServer = harness.wss;
+    const harness = await startServer();
+    activeServer = harness.wss;
     let ended = 0;
-    const transport = createWebSocketTransport({ url: harness.url, hello, reconnect: false, onPublicationSessionEnded: () => { ended++; } });
+    const transport = createWebSocketTransport({
+      url: harness.url,
+      hello,
+      reconnect: false,
+      onPublicationSessionEnded: () => {
+        ended++;
+      },
+    });
     try {
-      await transport.ready; const socket = await harness.connection;
+      await transport.ready;
+      const socket = await harness.connection;
       expect(transport.currentPublicationSession()).toBeUndefined();
-      const session = { kind: "command", id: "session", idempotency_key: "session", type: "application.publication.session.v1",
-        payload: { version: 1, node_id: hello.node_id, session_id: "550e8400-e29b-41d4-a716-446655440000" } };
+      const session = {
+        kind: "command",
+        id: "session",
+        idempotency_key: "session",
+        type: "application.publication.session.v1",
+        payload: { version: 1, node_id: hello.node_id, session_id: "550e8400-e29b-41d4-a716-446655440000" },
+      };
       socket.send(JSON.stringify({ ...session, payload: { ...session.payload, node_id: "different_node" } }));
-      await new Promise(resolve => setTimeout(resolve, 20)); expect(transport.currentPublicationSession()).toBeUndefined();
-      socket.send(JSON.stringify(session)); await waitUntil(() => !!transport.currentPublicationSession());
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(transport.currentPublicationSession()).toBeUndefined();
+      socket.send(JSON.stringify(session));
+      await waitUntil(() => !!transport.currentPublicationSession());
       const original = transport.currentPublicationSession()!;
-      expect(original.id).toBe(session.payload.session_id); expect(original.identity).toBe(transport.currentSessionIdentity());
-      socket.send(JSON.stringify(session)); await new Promise(resolve => setTimeout(resolve, 20));
+      expect(original.id).toBe(session.payload.session_id);
+      expect(original.identity).toBe(transport.currentSessionIdentity());
+      socket.send(JSON.stringify(session));
+      await new Promise((resolve) => setTimeout(resolve, 20));
       expect(transport.currentPublicationSession()).toBe(original);
       // Leaving OPEN precedes the close event; wait for its revocation callback.
-      socket.close(1012); await waitUntil(() => ended > 0);
-      expect(transport.connected).toBe(false); expect(transport.currentSessionIdentity()).toBeUndefined();
-      expect(transport.currentPublicationSession()).toBeUndefined(); expect(ended).toBe(1);
-      await transport.close(); expect(ended).toBe(1);
-    } finally { await transport.close(); }
+      socket.close(1012);
+      await waitUntil(() => ended > 0);
+      expect(transport.connected).toBe(false);
+      expect(transport.currentSessionIdentity()).toBeUndefined();
+      expect(transport.currentPublicationSession()).toBeUndefined();
+      expect(ended).toBe(1);
+      await transport.close();
+      expect(ended).toBe(1);
+    } finally {
+      await transport.close();
+    }
   });
 
   it("hides publication authority while closing and notifies once on the close event", async () => {
     let ended = 0;
-    const transport = createWebSocketTransport({ url: "ws://fixture.invalid", hello, reconnect: false,
-      WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket, onPublicationSessionEnded: () => { ended++; } });
+    const transport = createWebSocketTransport({
+      url: "ws://fixture.invalid",
+      hello,
+      reconnect: false,
+      WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket,
+      onPublicationSessionEnded: () => {
+        ended++;
+      },
+    });
     try {
       const socket = fakeClientSockets.at(-1)!;
-      socket.open(); await transport.ready;
+      socket.open();
+      await transport.ready;
       const sessionId = "550e8400-e29b-41d4-a716-446655440000";
-      socket.receive({ kind: "command", id: "session", idempotency_key: "session", type: "application.publication.session.v1",
-        payload: { version: 1, node_id: hello.node_id, session_id: sessionId } });
+      socket.receive({
+        kind: "command",
+        id: "session",
+        idempotency_key: "session",
+        type: "application.publication.session.v1",
+        payload: { version: 1, node_id: hello.node_id, session_id: sessionId },
+      });
       expect(transport.connected).toBe(true);
       expect(transport.currentPublicationSession()).toEqual({ id: sessionId, identity: socket });
       expect(transport.currentSessionIdentity()).toBe(socket);
@@ -271,45 +413,91 @@ describe("createWebSocketTransport", () => {
       expect(ended).toBe(1);
       await transport.close();
       expect(ended).toBe(1);
-    } finally { await transport.close(); }
+    } finally {
+      await transport.close();
+    }
   });
 
   it("does not replace an original ordinary publication session with a conflicting announcement", async () => {
-    const harness = await startServer(); activeServer = harness.wss;
+    const harness = await startServer();
+    activeServer = harness.wss;
     const transport = createWebSocketTransport({ url: harness.url, hello, reconnect: false });
     try {
-      await transport.ready; const socket = await harness.connection;
-      const session = { kind: "command", id: "session", idempotency_key: "session", type: "application.publication.session.v1",
-        payload: { version: 1, node_id: hello.node_id, session_id: "550e8400-e29b-41d4-a716-446655440000" } };
-      socket.send(JSON.stringify(session)); await waitUntil(() => !!transport.currentPublicationSession());
-      socket.send(JSON.stringify({ ...session, payload: { ...session.payload, session_id: "550e8400-e29b-41d4-a716-446655440001" } }));
-      await waitUntil(() => !transport.connected); expect(transport.currentPublicationSession()).toBeUndefined();
-    } finally { await transport.close(); }
+      await transport.ready;
+      const socket = await harness.connection;
+      const session = {
+        kind: "command",
+        id: "session",
+        idempotency_key: "session",
+        type: "application.publication.session.v1",
+        payload: { version: 1, node_id: hello.node_id, session_id: "550e8400-e29b-41d4-a716-446655440000" },
+      };
+      socket.send(JSON.stringify(session));
+      await waitUntil(() => !!transport.currentPublicationSession());
+      socket.send(
+        JSON.stringify({
+          ...session,
+          payload: { ...session.payload, session_id: "550e8400-e29b-41d4-a716-446655440001" },
+        }),
+      );
+      await waitUntil(() => !transport.connected);
+      expect(transport.currentPublicationSession()).toBeUndefined();
+    } finally {
+      await transport.close();
+    }
   });
 
   it("forwards a run-event ACK only for the original pending sequence and before send resolves", async () => {
-    const harness = await startServer(); activeServer = harness.wss;
+    const harness = await startServer();
+    activeServer = harness.wss;
     const transport = createWebSocketTransport({ url: harness.url, hello, acknowledgeRunEvents: true });
     try {
-      await transport.ready; const socket = await harness.connection;
-      let settled = false; const observed: { sequence: number; settled: boolean }[] = [];
-      transport.subscribe(message => { if (message.type === "run.event.ack") observed.push({ sequence: message.payload.sequence, settled }); });
-      const sending = transport.send({ kind: "run.event", node_id: hello.node_id, run_id: "run_1", sequence: 3,
-        event: { type: "run.lifecycle", payload: { phase: "completed" } } }).then(() => { settled = true; });
-      await waitUntil(() => harness.received.some(value => (value as { sequence?: number }).sequence === 3));
-      const ack = { kind: "command", id: "receipt", idempotency_key: "receipt", type: "run.event.ack",
-        payload: { run_id: "run_1", sequence: 2, status: "accepted" } };
-      socket.send(JSON.stringify(ack)); await new Promise(resolve => setTimeout(resolve, 20)); expect(observed).toEqual([]); expect(settled).toBe(false);
-      socket.send(JSON.stringify({ ...ack, payload: { ...ack.payload, sequence: 3 } })); await sending;
+      await transport.ready;
+      const socket = await harness.connection;
+      let settled = false;
+      const observed: { sequence: number; settled: boolean }[] = [];
+      transport.subscribe((message) => {
+        if (message.type === "run.event.ack") observed.push({ sequence: message.payload.sequence, settled });
+      });
+      const sending = transport
+        .send({
+          kind: "run.event",
+          node_id: hello.node_id,
+          run_id: "run_1",
+          sequence: 3,
+          event: { type: "run.lifecycle", payload: { phase: "completed" } },
+        })
+        .then(() => {
+          settled = true;
+        });
+      await waitUntil(() => harness.received.some((value) => (value as { sequence?: number }).sequence === 3));
+      const ack = {
+        kind: "command",
+        id: "receipt",
+        idempotency_key: "receipt",
+        type: "run.event.ack",
+        payload: { run_id: "run_1", sequence: 2, status: "accepted" },
+      };
+      socket.send(JSON.stringify(ack));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(observed).toEqual([]);
+      expect(settled).toBe(false);
+      socket.send(JSON.stringify({ ...ack, payload: { ...ack.payload, sequence: 3 } }));
+      await sending;
       expect(observed).toEqual([{ sequence: 3, settled: false }]);
-      socket.send(JSON.stringify({ ...ack, payload: { ...ack.payload, sequence: 3 } })); await new Promise(resolve => setTimeout(resolve, 20));
+      socket.send(JSON.stringify({ ...ack, payload: { ...ack.payload, sequence: 3 } }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
       expect(observed).toHaveLength(1);
-    } finally { await transport.close(); }
+    } finally {
+      await transport.close();
+    }
   });
 
   it("replays a health report after disconnect and waits for its exact committed receipt", async () => {
-    const harness = await startServer(); activeServer = harness.wss;
-    const reports: ProductReleaseHealthMessage[] = []; let current: WsServerSocket | undefined;
+    const harness = await startServer();
+    activeServer = harness.wss;
+    const reports: ProductReleaseHealthMessage[] = [];
+    let current: WsServerSocket | undefined;
     harness.wss.on("connection", (socket) => {
       current = socket;
       socket.on("message", (raw: Buffer) => {
@@ -323,25 +511,45 @@ describe("createWebSocketTransport", () => {
     try {
       await transport.ready;
       let delivered = false;
-      const delivery = transport.send(healthFrame()).then(() => { delivered = true; });
+      const delivery = transport.send(healthFrame()).then(() => {
+        delivered = true;
+      });
       await waitUntil(() => reports.length === 2);
-      expect(delivered).toBe(false); expect(reports[1]).toEqual(reports[0]);
-      const ack = { kind: "command", id: "health_ack", idempotency_key: "health_ack", type: "product.release.health.ack",
-        payload: { event_id: "other_event", release_id: "release_1", sequence: 1, status: "accepted" } };
+      expect(delivered).toBe(false);
+      expect(reports[1]).toEqual(reports[0]);
+      const ack = {
+        kind: "command",
+        id: "health_ack",
+        idempotency_key: "health_ack",
+        type: "product.release.health.ack",
+        payload: { event_id: "other_event", release_id: "release_1", sequence: 1, status: "accepted" },
+      };
       current!.send(JSON.stringify(ack));
-      await new Promise((resolve) => setTimeout(resolve, 20)); expect(delivered).toBe(false);
-      ack.payload.event_id = "health_1"; current!.send(JSON.stringify(ack));
-      await delivery; expect(delivered).toBe(true);
-    } finally { await transport.close(); }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(delivered).toBe(false);
+      ack.payload.event_id = "health_1";
+      current!.send(JSON.stringify(ack));
+      await delivery;
+      expect(delivered).toBe(true);
+    } finally {
+      await transport.close();
+    }
   });
 
   it("expires health receipt waits instead of silently treating a socket write as a commit", async () => {
-    const transport = createWebSocketTransport({ url: "ws://fixture.invalid", hello,
-      WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket, releaseHealthReceiptTimeoutMs: 20 });
+    const transport = createWebSocketTransport({
+      url: "ws://fixture.invalid",
+      hello,
+      WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket,
+      releaseHealthReceiptTimeoutMs: 20,
+    });
     try {
-      fakeClientSockets.at(-1)!.open(); await transport.ready;
+      fakeClientSockets.at(-1)!.open();
+      await transport.ready;
       await expect(transport.send(healthFrame())).rejects.toThrow("health receipt timed out");
-    } finally { await transport.close(); }
+    } finally {
+      await transport.close();
+    }
   });
   it("reconnects and replays an unacknowledged terminal event before resolving delivery", async () => {
     const harness = await startServer();
@@ -353,20 +561,42 @@ describe("createWebSocketTransport", () => {
       let first = true;
       socket.on("message", (raw: Buffer) => {
         const frame = JSON.parse(raw.toString()) as { kind: string; run_id: string; sequence: number };
-        if (first) { firstFrames.push(frame); first = false; }
+        if (first) {
+          firstFrames.push(frame);
+          first = false;
+        }
         if (frame.kind !== "run.event") return;
         events.push(frame);
-        if (events.length === 1) { socket.close(1012, "temporary restart before commit receipt"); return; }
-        socket.send(JSON.stringify({
-          kind: "command", id: "receipt", idempotency_key: "receipt", type: "run.event.ack",
-          payload: { run_id: frame.run_id, sequence: frame.sequence, status: "accepted" },
-        }));
+        if (events.length === 1) {
+          socket.close(1012, "temporary restart before commit receipt");
+          return;
+        }
+        socket.send(
+          JSON.stringify({
+            kind: "command",
+            id: "receipt",
+            idempotency_key: "receipt",
+            type: "run.event.ack",
+            payload: { run_id: frame.run_id, sequence: frame.sequence, status: "accepted" },
+          }),
+        );
       });
     });
-    const transport = createWebSocketTransport({ url: harness.url, hello, acknowledgeRunEvents: true, reconnectDelayMs: 10,
-      onConnected: () => { connections++; } });
+    const transport = createWebSocketTransport({
+      url: harness.url,
+      hello,
+      acknowledgeRunEvents: true,
+      reconnectDelayMs: 10,
+      onConnected: () => {
+        connections++;
+      },
+    });
     await transport.ready;
-    await transport.send({ kind: "run.event", node_id: hello.node_id, run_id: "run_1", sequence: 9,
+    await transport.send({
+      kind: "run.event",
+      node_id: hello.node_id,
+      run_id: "run_1",
+      sequence: 9,
       event: { type: "run.lifecycle", payload: { phase: "completed" } },
     });
     expect(events).toHaveLength(2);
@@ -402,7 +632,7 @@ describe("createWebSocketTransport", () => {
       node_id: "computer_1",
       command_id: "cmd_1",
       status: "accepted",
-      message: null
+      message: null,
     };
     await transport.send(ack);
     await waitUntil(() => harness.received.length >= 2);
@@ -446,13 +676,15 @@ describe("createWebSocketTransport", () => {
         sequence: sequence++,
         resources: { cpu_load: 0.1, memory_used_pct: 20, disk_free_gb: 100 },
         runtimes: [{ runtime: "codex", status: "available", capabilities: [] }],
-        running_instances: []
-      })
+        running_instances: [],
+      }),
     });
     await transport.ready;
     await harness.connection;
 
-    await waitUntil(() => harness.received.filter((m) => (m as { kind?: string }).kind === "node.heartbeat").length >= 2);
+    await waitUntil(
+      () => harness.received.filter((m) => (m as { kind?: string }).kind === "node.heartbeat").length >= 2,
+    );
     await transport.close();
   });
 
@@ -460,7 +692,7 @@ describe("createWebSocketTransport", () => {
     const transport = createWebSocketTransport({
       url: "ws://example.invalid/api/v1/node?token=dev",
       hello,
-      WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket
+      WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket,
     });
     fakeClientSockets[0]?.close();
     await expect(transport.ready).rejects.toThrow("websocket closed before ready");

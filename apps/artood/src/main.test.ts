@@ -14,13 +14,13 @@ import {
   loadConfigFromEnv,
   loadPreparedConfigFromEnv,
   installShutdownHandlers,
-  type ArtoodConfig
+  type ArtoodConfig,
 } from "./main.js";
 
 const baseEnv = {
   ARTOO_NODE_URL: "ws://h:4000/api/v1/node?token=dev",
   ARTOO_NODE_ID: "computer_1",
-  ARTOO_ALLOWED_ROOTS: "/ws"
+  ARTOO_ALLOWED_ROOTS: "/ws",
 };
 
 function configWith(overrides: Partial<ArtoodConfig> = {}): ArtoodConfig {
@@ -29,11 +29,21 @@ function configWith(overrides: Partial<ArtoodConfig> = {}): ArtoodConfig {
 
 describe("Windows process bootstrap (controlled installation admission, not native qualification)", () => {
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
-  const bundle = process.cwd(), manifestSha256 = `sha256:${"a".repeat(64)}`;
-  const nativeEnv = { ...baseEnv, ARTOO_WINDOWS_PROCESS_BUNDLE: bundle, ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256: manifestSha256 };
+  const bundle = process.cwd(),
+    manifestSha256 = `sha256:${"a".repeat(64)}`;
+  const nativeEnv = {
+    ...baseEnv,
+    ARTOO_WINDOWS_PROCESS_BUNDLE: bundle,
+    ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256: manifestSha256,
+  };
   const backend = Object.freeze({}) as PreparedWindowsProcessBackend;
-  beforeEach(() => { Object.defineProperty(process, "platform", { ...platform, value: "win32" }); });
-  afterEach(() => { vi.restoreAllMocks(); Object.defineProperty(process, "platform", platform); });
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    Object.defineProperty(process, "platform", platform);
+  });
 
   it("keeps ordinary unconfigured startup unchanged and does not qualify an installation", () => {
     const prepare = vi.spyOn(windowsInstallation, "prepareWindowsProcessInstallation");
@@ -45,12 +55,14 @@ describe("Windows process bootstrap (controlled installation admission, not nati
   it("requires both nonempty local settings and rejects malformed paths or digests before admission", () => {
     const prepare = vi.spyOn(windowsInstallation, "prepareWindowsProcessInstallation");
     for (const settings of [
-      { ARTOO_WINDOWS_PROCESS_BUNDLE: bundle }, { ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256: manifestSha256 },
+      { ARTOO_WINDOWS_PROCESS_BUNDLE: bundle },
+      { ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256: manifestSha256 },
       { ARTOO_WINDOWS_PROCESS_BUNDLE: "", ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256: "" },
       { ...nativeEnv, ARTOO_WINDOWS_PROCESS_BUNDLE: "relative" },
       { ...nativeEnv, ARTOO_WINDOWS_PROCESS_BUNDLE: `${bundle}\0` },
       { ...nativeEnv, ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256: "not-a-digest" },
-    ]) expect(() => loadConfigFromEnv({ ...baseEnv, ...settings })).toThrow(/ARTOO_WINDOWS_PROCESS/);
+    ])
+      expect(() => loadConfigFromEnv({ ...baseEnv, ...settings })).toThrow(/ARTOO_WINDOWS_PROCESS/);
     expect(prepare).not.toHaveBeenCalled();
   });
 
@@ -64,7 +76,9 @@ describe("Windows process bootstrap (controlled installation admission, not nati
 
   it("passes every allowed writable root through local qualification and preserves the exact opaque backend", () => {
     const prepare = vi.spyOn(windowsInstallation, "prepareWindowsProcessInstallation").mockReturnValue(backend);
-    const create = vi.spyOn(nodeRunner, "createArtoodNode").mockReturnValue({ start: async () => {}, stop: async () => {} });
+    const create = vi
+      .spyOn(nodeRunner, "createArtoodNode")
+      .mockReturnValue({ start: async () => {}, stop: async () => {} });
     const roots = [process.cwd(), `${process.cwd()}/second-workspace`];
     const config = loadConfigFromEnv({ ...nativeEnv, ARTOO_ALLOWED_ROOTS: roots.join(";") });
     expect(prepare).toHaveBeenCalledTimes(1);
@@ -78,36 +92,65 @@ describe("Windows process bootstrap (controlled installation admission, not nati
     // The allowlist is now an explicit UI advertisement. Native installation
     // handles, digests and protected verifier configuration remain private.
     const wire = JSON.stringify(identity);
-    for (const privateValue of ["windowsProcessBackend", "manifestSha256", "writableWorkspaceRoots", bundle]) expect(wire).not.toContain(privateValue);
+    for (const privateValue of ["windowsProcessBackend", "manifestSha256", "writableWorkspaceRoots", bundle])
+      expect(wire).not.toContain(privateValue);
   });
 
   it("propagates failed protected installation admission instead of producing an enabled config", () => {
-    vi.spyOn(windowsInstallation, "prepareWindowsProcessInstallation").mockImplementation(() => { throw new Error("Unprotected Windows installation"); });
+    vi.spyOn(windowsInstallation, "prepareWindowsProcessInstallation").mockImplementation(() => {
+      throw new Error("Unprotected Windows installation");
+    });
     expect(() => loadConfigFromEnv(nativeEnv)).toThrow("Unprotected Windows installation");
   });
 
-  it.each(["0", "1"])("rejects a saved managed journal even when new allocations are %s", mode => {
+  it.each(["0", "1"])("rejects a saved managed journal even when new allocations are %s", (mode) => {
     const prepare = vi.spyOn(windowsInstallation, "prepareWindowsProcessInstallation");
-    expect(() => loadConfigFromEnv({ ...nativeEnv, ARTOO_NODE_URL: "ws://127.0.0.1:4000/api/v1/node",
-      ARTOO_MANAGED_EXECUTION: mode, ARTOO_JOURNAL_VERSION: "1", ARTOO_JOURNAL_SERVER_ORIGIN: "http://127.0.0.1:4000",
-      ARTOO_JOURNAL_NODE_ID: baseEnv.ARTOO_NODE_ID, ARTOO_JOURNAL_DIRECTORY: "/tmp/prepared-journal",
-      ARTOO_JOURNAL_NAMESPACE: "namespace", ARTOO_JOURNAL_CONTROLLER_SCOPE: "controller" })).toThrow(/cannot be combined with managed/);
+    expect(() =>
+      loadConfigFromEnv({
+        ...nativeEnv,
+        ARTOO_NODE_URL: "ws://127.0.0.1:4000/api/v1/node",
+        ARTOO_MANAGED_EXECUTION: mode,
+        ARTOO_JOURNAL_VERSION: "1",
+        ARTOO_JOURNAL_SERVER_ORIGIN: "http://127.0.0.1:4000",
+        ARTOO_JOURNAL_NODE_ID: baseEnv.ARTOO_NODE_ID,
+        ARTOO_JOURNAL_DIRECTORY: "/tmp/prepared-journal",
+        ARTOO_JOURNAL_NAMESPACE: "namespace",
+        ARTOO_JOURNAL_CONTROLLER_SCOPE: "controller",
+      }),
+    ).toThrow(/cannot be combined with managed/);
     expect(prepare).not.toHaveBeenCalled();
   });
 
   it("rejects direct managed/native configuration before constructing a runtime or node", () => {
     const create = vi.spyOn(nodeRunner, "createArtoodNode");
-    expect(() => createNodeFromConfig(configWith({ windowsProcessBackend: backend, allowNewAllocations: false,
-      managedJournal: { version: 1, serverOrigin: "http://127.0.0.1:4000", nodeId: "c1", directory: "/tmp/prepared-journal",
-        expectedNamespace: "namespace", controllerScope: "controller" } }))).toThrow(/cannot be combined with managed/);
+    expect(() =>
+      createNodeFromConfig(
+        configWith({
+          windowsProcessBackend: backend,
+          allowNewAllocations: false,
+          managedJournal: {
+            version: 1,
+            serverOrigin: "http://127.0.0.1:4000",
+            nodeId: "c1",
+            directory: "/tmp/prepared-journal",
+            expectedNamespace: "namespace",
+            controllerScope: "controller",
+          },
+        }),
+      ),
+    ).toThrow(/cannot be combined with managed/);
     expect(create).not.toHaveBeenCalled();
   });
 });
 
 describe("explicit prepared configuration loading (controlled loader results)", () => {
-  afterEach(() => { vi.restoreAllMocks(); });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
   const file = "/protected/verifiers.json";
-  const raw = [{ id: "local", project_id: "project", workspace_root: "/ws", commands: [], required_files: [], subject_paths: [] }];
+  const raw = [
+    { id: "local", project_id: "project", workspace_root: "/ws", commands: [], required_files: [], subject_paths: [] },
+  ];
 
   it("keeps the legacy loader on its original raw objects", () => {
     const legacy = vi.spyOn(verification, "loadVerificationProfilesFile").mockReturnValue(raw);
@@ -120,7 +163,9 @@ describe("explicit prepared configuration loading (controlled loader results)", 
   });
 
   it("passes the explicit loader's same-process prepared identities onward", () => {
-    const profiles = Object.freeze([Object.freeze({ ...raw[0]!, digest: `sha256:${"a".repeat(64)}`, trustedFiles: [] })]);
+    const profiles = Object.freeze([
+      Object.freeze({ ...raw[0]!, digest: `sha256:${"a".repeat(64)}`, trustedFiles: [] }),
+    ]);
     const legacy = vi.spyOn(verification, "loadVerificationProfilesFile");
     const prepared = vi.spyOn(verification, "loadPreparedVerificationProfilesFile").mockReturnValue(profiles);
     const config = loadPreparedConfigFromEnv({ ...baseEnv, ARTOO_VERIFICATION_PROFILES_FILE: file });
@@ -151,9 +196,19 @@ describe("loadConfigFromEnv", () => {
     expect(loadConfigFromEnv(baseEnv).initializeRepository).toBeUndefined();
     expect(() => loadConfigFromEnv({ ...baseEnv, ARTOO_RESEARCH_ENABLED: "1" })).toThrow(/RECEIPTS_DIR/);
     expect(() => loadConfigFromEnv({ ...baseEnv, ARTOO_INITIALIZE_REPOSITORY: "true" })).toThrow(/0 or 1/);
-    const enabled = loadConfigFromEnv({ ...baseEnv, ARTOO_RESEARCH_ENABLED: "1", ARTOO_RESEARCH_RECEIPTS_DIR: "C:/protected/receipts", ARTOO_RESEARCH_BRAVE_KEY: "do-not-copy", ARTOO_INITIALIZE_REPOSITORY: "1" });
-    expect(enabled.research).toEqual({ receiptDirectory: "C:/protected/receipts", braveApiKeyEnv: "ARTOO_RESEARCH_BRAVE_KEY" });
-    expect(enabled.initializeRepository).toBe(true); expect(JSON.stringify(enabled)).not.toContain("do-not-copy");
+    const enabled = loadConfigFromEnv({
+      ...baseEnv,
+      ARTOO_RESEARCH_ENABLED: "1",
+      ARTOO_RESEARCH_RECEIPTS_DIR: "C:/protected/receipts",
+      ARTOO_RESEARCH_BRAVE_KEY: "do-not-copy",
+      ARTOO_INITIALIZE_REPOSITORY: "1",
+    });
+    expect(enabled.research).toEqual({
+      receiptDirectory: "C:/protected/receipts",
+      braveApiKeyEnv: "ARTOO_RESEARCH_BRAVE_KEY",
+    });
+    expect(enabled.initializeRepository).toBe(true);
+    expect(JSON.stringify(enabled)).not.toContain("do-not-copy");
   });
   it("keeps preset artifact collection unless the local operator explicitly disables it", () => {
     expect(loadConfigFromEnv(baseEnv).reportArtifacts).toBeUndefined();
@@ -161,18 +216,38 @@ describe("loadConfigFromEnv", () => {
     expect(loadConfigFromEnv({ ...baseEnv, ARTOO_REPORT_ARTIFACTS: "default" }).reportArtifacts).toBe("default");
     expect(loadConfigFromEnv({ ...baseEnv, ARTOO_REPORT_ARTIFACTS: " none " }).reportArtifacts).toBe("none");
     for (const value of ["false", "off", "NONE", "some", "none,default"]) {
-      expect(() => loadConfigFromEnv({ ...baseEnv, ARTOO_REPORT_ARTIFACTS: value })).toThrow("ARTOO_REPORT_ARTIFACTS must be default or none");
+      expect(() => loadConfigFromEnv({ ...baseEnv, ARTOO_REPORT_ARTIFACTS: value })).toThrow(
+        "ARTOO_REPORT_ARTIFACTS must be default or none",
+      );
     }
   });
   it("passes only local provider metadata and an env key name to runtime presets", () => {
-    const config = loadConfigFromEnv({ ...baseEnv, ARTOO_CODEX_BINARY: process.execPath, ARTOO_CODEX_MODEL: "copilot-test",
-      ARTOO_CODEX_PROVIDER_URL: "http://127.0.0.1:18181/v1", ARTOO_CODEX_PROVIDER_KEY: "never-in-config" });
-    expect(config.codex).toEqual({ binaryPath: process.execPath, model: "copilot-test", baseUrl: "http://127.0.0.1:18181/v1", apiKeyEnv: "ARTOO_CODEX_PROVIDER_KEY" });
+    const config = loadConfigFromEnv({
+      ...baseEnv,
+      ARTOO_CODEX_BINARY: process.execPath,
+      ARTOO_CODEX_MODEL: "copilot-test",
+      ARTOO_CODEX_PROVIDER_URL: "http://127.0.0.1:18181/v1",
+      ARTOO_CODEX_PROVIDER_KEY: "never-in-config",
+    });
+    expect(config.codex).toEqual({
+      binaryPath: process.execPath,
+      model: "copilot-test",
+      baseUrl: "http://127.0.0.1:18181/v1",
+      apiKeyEnv: "ARTOO_CODEX_PROVIDER_KEY",
+    });
     expect(JSON.stringify(config)).not.toContain("never-in-config");
-    expect(loadConfigFromEnv({ ...baseEnv, ARTOO_CODEX_MODEL: "test", ARTOO_CODEX_PROVIDER_URL: "https://example.test/v1" }).codex?.apiKeyEnv).toBeUndefined();
+    expect(
+      loadConfigFromEnv({ ...baseEnv, ARTOO_CODEX_MODEL: "test", ARTOO_CODEX_PROVIDER_URL: "https://example.test/v1" })
+        .codex?.apiKeyEnv,
+    ).toBeUndefined();
     expect(loadConfigFromEnv(baseEnv).codex).toEqual({});
-    for (const values of [{ ARTOO_CODEX_BINARY: "relative.exe" }, { ARTOO_CODEX_PROVIDER_URL: "http://remote.example/v1" },
-      { ARTOO_CODEX_PROVIDER_URL: "https://user:secret@example.test/v1" }, { ARTOO_CODEX_PROVIDER_URL: "https://example.test/v1?key=secret" }, { ARTOO_CODEX_PROVIDER_URL: "https://example.test/v1" }]) {
+    for (const values of [
+      { ARTOO_CODEX_BINARY: "relative.exe" },
+      { ARTOO_CODEX_PROVIDER_URL: "http://remote.example/v1" },
+      { ARTOO_CODEX_PROVIDER_URL: "https://user:secret@example.test/v1" },
+      { ARTOO_CODEX_PROVIDER_URL: "https://example.test/v1?key=secret" },
+      { ARTOO_CODEX_PROVIDER_URL: "https://example.test/v1" },
+    ]) {
       expect(() => loadConfigFromEnv({ ...baseEnv, ...values })).toThrow();
     }
   });
@@ -196,7 +271,7 @@ describe("loadConfigFromEnv", () => {
     expect(loadConfigFromEnv({ ...baseEnv, ARTOO_RUNTIMES: "codex" }).runtimes).toEqual(["codex"]);
     expect(loadConfigFromEnv({ ...baseEnv, ARTOO_RUNTIMES: " codex , claude-code " }).runtimes).toEqual([
       "codex",
-      "claude-code"
+      "claude-code",
     ]);
   });
 
@@ -211,11 +286,21 @@ describe("loadConfigFromEnv", () => {
     expect(() => loadConfigFromEnv({ ...baseEnv, ARTOO_SCHEDULER_ENABLED: "true" })).toThrow("must be 0 or 1");
     expect(() => loadConfigFromEnv({ ...baseEnv, ARTOO_SCHEDULER_ENABLED: "1" })).toThrow("prepared journal");
     expect(() => createNodeFromConfig(configWith({ scheduler: true }))).toThrow("prepared fresh-allocation");
-    const managed = { ...baseEnv, ARTOO_NODE_URL: "ws://127.0.0.1:4000/api/v1/node", ARTOO_MANAGED_EXECUTION: "1",
-      ARTOO_JOURNAL_VERSION: "1", ARTOO_JOURNAL_SERVER_ORIGIN: "http://127.0.0.1:4000", ARTOO_JOURNAL_NODE_ID: "computer_1",
-      ARTOO_JOURNAL_DIRECTORY: "/tmp/scheduler-journal", ARTOO_JOURNAL_NAMESPACE: "namespace", ARTOO_JOURNAL_CONTROLLER_SCOPE: "controller" };
+    const managed = {
+      ...baseEnv,
+      ARTOO_NODE_URL: "ws://127.0.0.1:4000/api/v1/node",
+      ARTOO_MANAGED_EXECUTION: "1",
+      ARTOO_JOURNAL_VERSION: "1",
+      ARTOO_JOURNAL_SERVER_ORIGIN: "http://127.0.0.1:4000",
+      ARTOO_JOURNAL_NODE_ID: "computer_1",
+      ARTOO_JOURNAL_DIRECTORY: "/tmp/scheduler-journal",
+      ARTOO_JOURNAL_NAMESPACE: "namespace",
+      ARTOO_JOURNAL_CONTROLLER_SCOPE: "controller",
+    };
     expect(loadConfigFromEnv({ ...managed, ARTOO_SCHEDULER_ENABLED: "1" }).scheduler).toBe(true);
-    expect(() => loadConfigFromEnv({ ...managed, ARTOO_MANAGED_EXECUTION: "0", ARTOO_SCHEDULER_ENABLED: "1" })).toThrow("ARTOO_MANAGED_EXECUTION=1");
+    expect(() => loadConfigFromEnv({ ...managed, ARTOO_MANAGED_EXECUTION: "0", ARTOO_SCHEDULER_ENABLED: "1" })).toThrow(
+      "ARTOO_MANAGED_EXECUTION=1",
+    );
   });
 
   it("parses ARTOO_HEARTBEAT_INTERVAL_MS only when a positive finite number", () => {
@@ -230,7 +315,7 @@ describe("loadConfigFromEnv", () => {
     expect(loadConfigFromEnv({ ...baseEnv, ARTOO_ALLOWED_ROOTS: "C:/a; C:/b , C:/c" }).allowedRoots).toEqual([
       "C:/a",
       "C:/b",
-      "C:/c"
+      "C:/c",
     ]);
   });
 
@@ -248,18 +333,27 @@ describe("buildRegistry", () => {
     try {
       const defaults = loadConfigFromEnv(baseEnv);
       buildRegistry(defaults);
-      for (const [options] of create.mock.calls) expect(options.artifacts).toEqual([{ type: "patch", path: "changes.patch" }]);
+      for (const [options] of create.mock.calls)
+        expect(options.artifacts).toEqual([{ type: "patch", path: "changes.patch" }]);
       create.mockClear();
       buildRegistry(loadConfigFromEnv({ ...baseEnv, ARTOO_REPORT_ARTIFACTS: "none" }));
       expect(create).toHaveBeenCalledTimes(2);
       for (const [options] of create.mock.calls) {
         expect(options.artifacts).toEqual([]);
         // Disabling legacy extra reports must not tell a product agent to omit its required stage handoffs.
-        expect(options.command.some((argument) => argument.includes("No additional artifact files are required beyond the task's requested files and any product stage handoffs"))).toBe(true);
+        expect(
+          options.command.some((argument) =>
+            argument.includes(
+              "No additional artifact files are required beyond the task's requested files and any product stage handoffs",
+            ),
+          ),
+        ).toBe(true);
         expect(options.command.some((argument) => argument.includes("Otherwise create changes.patch"))).toBe(false);
         expect(options.allowedRoots).toEqual(["/ws"]);
       }
-    } finally { create.mockRestore(); }
+    } finally {
+      create.mockRestore();
+    }
   });
   it("registers the configured runtime presets in order", () => {
     const registry = buildRegistry(configWith({ runtimes: ["codex", "claude-code"], allowedRoots: ["/ws"] }));
@@ -290,7 +384,9 @@ describe("createNodeFromConfig", () => {
       expect(create.mock.calls[0]![0].heartbeat!().runtimes[0]?.status).toBe("available");
       createNodeFromConfig(configWith({ codex: { binaryPath: `${process.execPath}.missing` } }));
       expect(create.mock.calls[1]![0].heartbeat!().runtimes[0]?.status).toBe("missing");
-    } finally { create.mockRestore(); }
+    } finally {
+      create.mockRestore();
+    }
   });
   it("constructs a node (with worktree config) without connecting", () => {
     const node = createNodeFromConfig(configWith({ worktreeBaseRepo: "C:/repo" }));
@@ -303,57 +399,111 @@ describe("desktop worker shutdown", () => {
   it("joins cleanup after a lifecycle failure and exits nonzero exactly once", async () => {
     const events: string[] = [];
     let fail!: (error: Error) => void, finish!: () => void;
-    const failed = new Promise<Error>((resolve) => { fail = resolve; });
-    const cleanup = new Promise<void>((resolve) => { finish = resolve; });
-    const stop = vi.fn(async () => { events.push("stop"); await cleanup; });
-    const host = Object.assign(new EventEmitter(), { connected: true,
-      disconnect: () => events.push("disconnect"), exit: (code: number) => events.push(`exit:${code}`) });
+    const failed = new Promise<Error>((resolve) => {
+      fail = resolve;
+    });
+    const cleanup = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const stop = vi.fn(async () => {
+      events.push("stop");
+      await cleanup;
+    });
+    const host = Object.assign(new EventEmitter(), {
+      connected: true,
+      disconnect: () => events.push("disconnect"),
+      exit: (code: number) => events.push(`exit:${code}`),
+    });
     const remove = installShutdownHandlers({ start: async () => {}, stop, failed }, host);
-    fail(new Error("journal failed")); await new Promise((resolve) => setImmediate(resolve));
-    host.emit("message", { type: "shutdown" }); host.emit("SIGTERM");
-    expect(events).toEqual(["stop"]); expect(stop).toHaveBeenCalledTimes(1);
-    finish(); await new Promise((resolve) => setImmediate(resolve));
-    expect(events).toEqual(["stop", "disconnect", "exit:1"]); remove();
+    fail(new Error("journal failed"));
+    await new Promise((resolve) => setImmediate(resolve));
+    host.emit("message", { type: "shutdown" });
+    host.emit("SIGTERM");
+    expect(events).toEqual(["stop"]);
+    expect(stop).toHaveBeenCalledTimes(1);
+    finish();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(events).toEqual(["stop", "disconnect", "exit:1"]);
+    remove();
   });
 
   it("a failure arriving during requested Stop cannot turn into exit zero", async () => {
     let fail!: (error: Error) => void, finish!: () => void;
-    const failed = new Promise<Error>((resolve) => { fail = resolve; });
-    const cleanup = new Promise<void>((resolve) => { finish = resolve; });
-    const stop = vi.fn(() => cleanup), exit = vi.fn(), host = Object.assign(new EventEmitter(), { exit });
+    const failed = new Promise<Error>((resolve) => {
+      fail = resolve;
+    });
+    const cleanup = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const stop = vi.fn(() => cleanup),
+      exit = vi.fn(),
+      host = Object.assign(new EventEmitter(), { exit });
     const remove = installShutdownHandlers({ start: async () => {}, stop, failed }, host);
-    host.emit("SIGTERM"); fail(new Error("late lifecycle failure")); finish();
+    host.emit("SIGTERM");
+    fail(new Error("late lifecycle failure"));
+    finish();
     await new Promise((resolve) => setImmediate(resolve));
-    expect(stop).toHaveBeenCalledTimes(1); expect(exit).toHaveBeenCalledTimes(1); expect(exit).toHaveBeenCalledWith(1); remove();
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(1);
+    remove();
   });
 
   it("keeps a failed cleanup nonzero and does not exit before it settles", async () => {
     let reject!: (error: Error) => void;
-    const cleanup = new Promise<void>((_resolve, no) => { reject = no; });
-    const exit = vi.fn(), disconnect = vi.fn(), host = Object.assign(new EventEmitter(), { connected: true, exit, disconnect });
+    const cleanup = new Promise<void>((_resolve, no) => {
+      reject = no;
+    });
+    const exit = vi.fn(),
+      disconnect = vi.fn(),
+      host = Object.assign(new EventEmitter(), { connected: true, exit, disconnect });
     const remove = installShutdownHandlers({ start: async () => {}, stop: () => cleanup }, host);
-    host.emit("SIGTERM"); expect(exit).not.toHaveBeenCalled(); reject(new Error("cleanup uncertain"));
+    host.emit("SIGTERM");
+    expect(exit).not.toHaveBeenCalled();
+    reject(new Error("cleanup uncertain"));
     await new Promise((resolve) => setImmediate(resolve));
-    expect(exit).toHaveBeenCalledWith(1); expect(disconnect).not.toHaveBeenCalled(); remove();
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(disconnect).not.toHaveBeenCalled();
+    remove();
   });
 
   it("detaches future failure notifications when shutdown handlers are removed", async () => {
     let fail!: (error: Error) => void;
-    const failed = new Promise<Error>((resolve) => { fail = resolve; });
-    const stop = vi.fn(async () => {}), exit = vi.fn(), host = Object.assign(new EventEmitter(), { exit });
+    const failed = new Promise<Error>((resolve) => {
+      fail = resolve;
+    });
+    const stop = vi.fn(async () => {}),
+      exit = vi.fn(),
+      host = Object.assign(new EventEmitter(), { exit });
     const remove = installShutdownHandlers({ start: async () => {}, stop, failed }, host);
-    remove(); fail(new Error("retired owner")); await new Promise((resolve) => setImmediate(resolve));
-    expect(stop).not.toHaveBeenCalled(); expect(exit).not.toHaveBeenCalled();
+    remove();
+    fail(new Error("retired owner"));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(stop).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
   });
 
   it("waits for node process cleanup before disconnecting and exiting, and deduplicates signals", async () => {
     const events: string[] = [];
     let stopped!: () => void;
-    const gate = new Promise<void>((resolve) => { stopped = resolve; });
-    const host = Object.assign(new EventEmitter(), {
-      connected: true, disconnect: () => events.push("disconnect"), exit: (code: number) => events.push(`exit:${code}`),
+    const gate = new Promise<void>((resolve) => {
+      stopped = resolve;
     });
-    const remove = installShutdownHandlers({ start: async () => {}, stop: async () => { events.push("stop"); await gate; } }, host);
+    const host = Object.assign(new EventEmitter(), {
+      connected: true,
+      disconnect: () => events.push("disconnect"),
+      exit: (code: number) => events.push(`exit:${code}`),
+    });
+    const remove = installShutdownHandlers(
+      {
+        start: async () => {},
+        stop: async () => {
+          events.push("stop");
+          await gate;
+        },
+      },
+      host,
+    );
     host.emit("message", { type: "shutdown" });
     host.emit("SIGTERM");
     expect(events).toEqual(["stop"]);
@@ -367,26 +517,49 @@ describe("desktop worker shutdown", () => {
   it("awaits node cleanup on IPC loss without using the disconnected channel", async () => {
     const events: string[] = [];
     let finish!: () => void;
-    const stopped = new Promise<void>((resolve) => { finish = resolve; });
-    const host = Object.assign(new EventEmitter(), { connected: true,
-      disconnect: vi.fn(() => { throw new Error("IPC already closed"); }), exit: (code: number) => events.push(`exit:${code}`) });
-    const remove = installShutdownHandlers({ start: async () => {}, stop: async () => { events.push("stop"); await stopped; } }, host);
+    const stopped = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const host = Object.assign(new EventEmitter(), {
+      connected: true,
+      disconnect: vi.fn(() => {
+        throw new Error("IPC already closed");
+      }),
+      exit: (code: number) => events.push(`exit:${code}`),
+    });
+    const remove = installShutdownHandlers(
+      {
+        start: async () => {},
+        stop: async () => {
+          events.push("stop");
+          await stopped;
+        },
+      },
+      host,
+    );
     host.connected = false;
-    host.emit("disconnect"); host.emit("SIGTERM");
+    host.emit("disconnect");
+    host.emit("SIGTERM");
     expect(events).toEqual(["stop"]);
-    finish(); await new Promise((resolve) => setImmediate(resolve));
+    finish();
+    await new Promise((resolve) => setImmediate(resolve));
     expect(events).toEqual(["stop", "exit:0"]);
     expect(host.disconnect).not.toHaveBeenCalled();
-    remove(); expect(host.listenerCount("disconnect")).toBe(0);
+    remove();
+    expect(host.listenerCount("disconnect")).toBe(0);
   });
 
   it("keeps standalone workers without IPC on their existing signal lifecycle", async () => {
-    const stop = vi.fn(async () => {}); const exit = vi.fn();
+    const stop = vi.fn(async () => {});
+    const exit = vi.fn();
     const host = Object.assign(new EventEmitter(), { exit });
     const remove = installShutdownHandlers({ start: async () => {}, stop }, host);
-    host.emit("disconnect"); expect(stop).not.toHaveBeenCalled();
-    host.emit("SIGTERM"); await new Promise((resolve) => setImmediate(resolve));
-    expect(stop).toHaveBeenCalledTimes(1); expect(exit).toHaveBeenCalledWith(0);
+    host.emit("disconnect");
+    expect(stop).not.toHaveBeenCalled();
+    host.emit("SIGTERM");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
     remove();
   });
 });

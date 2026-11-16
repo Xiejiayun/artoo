@@ -262,7 +262,10 @@ export async function ingestSchedulerWireRunEvent(ctx: ServerContext, raw: unkno
   const qualified = qualifyRunEventMessage(parsed.data.frame);
   const env = mapRunEvent(qualified.message);
   if (!env) throw AppError.validation("Unsupported scheduler lifecycle event");
-  const result = await ingestRunEventInternal(ctx, env, qualified.bodyIdentity, undefined, { ...parsed.data, frame: qualified.message });
+  const result = await ingestRunEventInternal(ctx, env, qualified.bodyIdentity, undefined, {
+    ...parsed.data,
+    frame: qualified.message,
+  });
   return { ...result, receiptBodyIdentity: qualified.bodyIdentity };
 }
 
@@ -294,9 +297,23 @@ async function ingestRunEventInternal(
   const result = await ctx.db.transaction(async (tx) => {
     // Detect committed replay before authorization. Only an exact qualified
     // receipt may use the revoked terminal credential's replay-only path.
-    const [prior] = schedulerMessage ? await tx.select({ body: runEventIngest.bodyIdentity }).from(runEventIngest).where(and(eq(runEventIngest.nodeId, env.nodeId), eq(runEventIngest.runId, env.runId), eq(runEventIngest.sequence, env.sequence))) : [];
-    if (schedulerMessage && prior && prior.body !== wireIdentity) throw AppError.conflict("run event receipt body mismatch");
-    const assertScheduler = schedulerMessage ? await authorizeSchedulerRunEvent(ctx, tx, schedulerMessage, prior !== undefined) : undefined;
+    const [prior] = schedulerMessage
+      ? await tx
+          .select({ body: runEventIngest.bodyIdentity })
+          .from(runEventIngest)
+          .where(
+            and(
+              eq(runEventIngest.nodeId, env.nodeId),
+              eq(runEventIngest.runId, env.runId),
+              eq(runEventIngest.sequence, env.sequence),
+            ),
+          )
+      : [];
+    if (schedulerMessage && prior && prior.body !== wireIdentity)
+      throw AppError.conflict("run event receipt body mismatch");
+    const assertScheduler = schedulerMessage
+      ? await authorizeSchedulerRunEvent(ctx, tx, schedulerMessage, prior !== undefined)
+      : undefined;
     const runQuery = tx
       .select()
       .from(runs)
@@ -453,7 +470,13 @@ async function ingestRunEventInternal(
       }
     }
     if (ev.kind === "scheduler_permit_unused") {
-      eventId = await settleUnusedSchedulerPermit(ctx, tx, { binding: schedulerMessage!.binding, proof: ev.proof, run, task: taskRow, sequence: env.sequence });
+      eventId = await settleUnusedSchedulerPermit(ctx, tx, {
+        binding: schedulerMessage!.binding,
+        proof: ev.proof,
+        run,
+        task: taskRow,
+        sequence: env.sequence,
+      });
     } else if (ev.kind === "product_source_export" || ev.kind === "product_source_semantic_export") {
       if (run.status !== "running" || taskRow.status !== "running")
         throw AppError.conflict("Product source export requires its active run and task");
@@ -1015,10 +1038,15 @@ export async function failRunDaemonDisconnect(
     if (processExitConfirmed) await assertOrdinaryRunControl(ctx, tx, runId);
     // A scoped scheduler owner must report genuine closure. Disconnect timers
     // cannot terminalize it and thereby revoke the only closure-reporting lane.
-    const [scopedOwner] = await tx.select({ id: schedulerRunCredentials.id }).from(schedulerRunCredentials)
+    const [scopedOwner] = await tx
+      .select({ id: schedulerRunCredentials.id })
+      .from(schedulerRunCredentials)
       .innerJoin(schedulerExecutionLeases, eq(schedulerExecutionLeases.id, schedulerRunCredentials.leaseId))
       .innerJoin(schedulerStartGrants, eq(schedulerStartGrants.requestId, schedulerExecutionLeases.requestId))
-      .where(and(eq(schedulerExecutionLeases.organizationId, ctx.organizationId), eq(schedulerStartGrants.runId, runId))).limit(1);
+      .where(
+        and(eq(schedulerExecutionLeases.organizationId, ctx.organizationId), eq(schedulerStartGrants.runId, runId)),
+      )
+      .limit(1);
     if (scopedOwner) return { failed: false };
     const status = run.status as RunStatus;
     if (status === "failed" && run.failureReason === REASON && processExitConfirmed) {

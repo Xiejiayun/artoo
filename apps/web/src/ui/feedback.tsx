@@ -22,7 +22,12 @@ import type { Tone } from "./Badge.js";
 import "./feedback.css";
 
 /* ----------------------------------------------------------------- Skeleton */
-export function Skeleton({ width, height = 16, radius, className }: {
+export function Skeleton({
+  width,
+  height = 16,
+  radius,
+  className,
+}: {
   width?: number | string;
   height?: number | string;
   radius?: number | string;
@@ -49,7 +54,12 @@ export function SkeletonText({ lines = 3 }: { lines?: number }): React.ReactNode
 }
 
 /* --------------------------------------------------------------- EmptyState */
-export function EmptyState({ icon = Inbox, title, description, action }: {
+export function EmptyState({
+  icon = Inbox,
+  title,
+  description,
+  action,
+}: {
   icon?: LucideIcon;
   title: string;
   description?: string;
@@ -66,7 +76,11 @@ export function EmptyState({ icon = Inbox, title, description, action }: {
 }
 
 /* --------------------------------------------------------------- ErrorState */
-export function ErrorState({ title = "Something went wrong", description, action }: {
+export function ErrorState({
+  title = "Something went wrong",
+  description,
+  action,
+}: {
   title?: string;
   description?: string;
   action?: ReactNode;
@@ -84,7 +98,10 @@ export function ErrorState({ title = "Something went wrong", description, action
 /* ------------------------------------------------------------ OfflineBanner */
 /** Persistent, non-blocking offline/reconnecting banner with queued count
  *  (gate §9). */
-export function OfflineBanner({ queuedCount = 0, reconnecting = false }: {
+export function OfflineBanner({
+  queuedCount = 0,
+  reconnecting = false,
+}: {
   queuedCount?: number;
   reconnecting?: boolean;
 }): React.ReactNode {
@@ -115,7 +132,11 @@ const TONE_ICON: Partial<Record<Tone, LucideIcon>> = {
   info: CircleAlert,
 };
 
-export function Toast({ tone = "neutral", message, onClose }: {
+export function Toast({
+  tone = "neutral",
+  message,
+  onClose,
+}: {
   tone?: Tone;
   message: ReactNode;
   onClose?: () => void;
@@ -154,11 +175,13 @@ export function ToastProvider({ children }: { children: ReactNode }): React.Reac
   return (
     <ToastContext.Provider value={api}>
       {children}
-      {items.length > 0 && <div className="ui-toast-viewport" role="region" aria-label="Notifications">
-        {items.map((t) => (
-          <ToastAutoDismiss key={t.id} item={t} onClose={remove} />
-        ))}
-      </div>}
+      {items.length > 0 && (
+        <div className="ui-toast-viewport" role="region" aria-label="Notifications">
+          {items.map((t) => (
+            <ToastAutoDismiss key={t.id} item={t} onClose={remove} />
+          ))}
+        </div>
+      )}
     </ToastContext.Provider>
   );
 }
@@ -195,7 +218,14 @@ export function Tooltip({ label, children }: { label: string; children: ReactNod
 /* -------------------------------------------------------------------- Modal */
 const activeModals: symbol[] = [];
 
-export function Modal({ open, onClose, title, children, footer, variant = "modal" }: {
+export function Modal({
+  open,
+  onClose,
+  title,
+  children,
+  footer,
+  variant = "modal",
+}: {
   open: boolean;
   onClose: () => void;
   title?: ReactNode;
@@ -240,7 +270,11 @@ export function Modal({ open, onClose, title, children, footer, variant = "modal
     return null;
   }
   return (
-    <div className="ui-modal-overlay" data-variant={variant} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div
+      className="ui-modal-overlay"
+      data-variant={variant}
+      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+    >
       <div
         className="ui-modal"
         role="dialog"
@@ -251,10 +285,18 @@ export function Modal({ open, onClose, title, children, footer, variant = "modal
         ref={panelRef}
       >
         <div className="ui-modal__header">
-          {title != null ? <span className="ui-modal__title" id={titleId}>{title}</span> : <span className="ui-modal__title" />}
-          <Tooltip label="Close dialog"><button type="button" className="ui-modal__close" aria-label="Close" onClick={onClose}>
-            <Icon icon={X} size={16} />
-          </button></Tooltip>
+          {title != null ? (
+            <span className="ui-modal__title" id={titleId}>
+              {title}
+            </span>
+          ) : (
+            <span className="ui-modal__title" />
+          )}
+          <Tooltip label="Close dialog">
+            <button type="button" className="ui-modal__close" aria-label="Close" onClick={onClose}>
+              <Icon icon={X} size={16} />
+            </button>
+          </Tooltip>
         </div>
         <div className="ui-modal__body">{children}</div>
         {footer != null ? <div className="ui-modal__footer">{footer}</div> : null}

@@ -25,11 +25,7 @@ function hello(nodeId: string): NodeHello {
   };
 }
 
-async function waitFor(
-  predicate: () => boolean | Promise<boolean>,
-  label: string,
-  timeoutMs = 5000,
-): Promise<void> {
+async function waitFor(predicate: () => boolean | Promise<boolean>, label: string, timeoutMs = 5000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (await predicate()) {
@@ -79,9 +75,7 @@ async function createRunningRun(server: TestServer, title: string): Promise<stri
 }
 
 async function computerStatus(server: TestServer): Promise<string> {
-  const row = (
-    await server.ctx.db.db.select().from(computers).where(eq(computers.id, NODE_ID))
-  )[0];
+  const row = (await server.ctx.db.db.select().from(computers).where(eq(computers.id, NODE_ID)))[0];
   return row?.status ?? "missing";
 }
 
@@ -130,17 +124,23 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
   it("exposes workspace suggestions only from the current authenticated node session", async () => {
     server = await buildTestServer();
     const port = await listen(server);
-    transport = createWebSocketTransport({ url: `ws://127.0.0.1:${port}/api/v1/node?token=dev`,
-      hello: { ...hello(NODE_ID), workspace_roots: { version: 1, paths: ["C:/ArtooWorkspaces"] } } });
+    transport = createWebSocketTransport({
+      url: `ws://127.0.0.1:${port}/api/v1/node?token=dev`,
+      hello: { ...hello(NODE_ID), workspace_roots: { version: 1, paths: ["C:/ArtooWorkspaces"] } },
+    });
     await transport.ready;
     await waitFor(() => server?.nodeRegistry.get(NODE_ID) !== undefined, "workspace hello registered");
     const online = await server.app.inject({ method: "GET", url: "/api/v1/daemons" });
     expect(online.statusCode).toBe(200);
-    expect(online.json().daemons.find((item: { computer_id: string }) => item.computer_id === NODE_ID).workspace_roots).toEqual({ version: 1, paths: ["C:/ArtooWorkspaces"] });
+    expect(
+      online.json().daemons.find((item: { computer_id: string }) => item.computer_id === NODE_ID).workspace_roots,
+    ).toEqual({ version: 1, paths: ["C:/ArtooWorkspaces"] });
     await transport.close();
     await waitFor(() => server?.nodeRegistry.get(NODE_ID) === undefined, "node disconnected");
     const offline = await server.app.inject({ method: "GET", url: "/api/v1/daemons" });
-    expect(offline.json().daemons.find((item: { computer_id: string }) => item.computer_id === NODE_ID)).not.toHaveProperty("workspace_roots");
+    expect(
+      offline.json().daemons.find((item: { computer_id: string }) => item.computer_id === NODE_ID),
+    ).not.toHaveProperty("workspace_roots");
   });
 
   it("requires the first persisted runtime advertisement before registering an agent workspace", async () => {
@@ -151,7 +151,8 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
     // A connected hello is deliberately observable before the first heartbeat.
     // Drive that boundary over the real socket instead of sleeping until a timer.
     transport = createWebSocketTransport({
-      url: `ws://127.0.0.1:${port}/api/v1/node?token=dev`, hello: hello(computerId),
+      url: `ws://127.0.0.1:${port}/api/v1/node?token=dev`,
+      hello: hello(computerId),
     });
     await transport.ready;
     await waitFor(() => server?.nodeRegistry.get(computerId) !== undefined, "hello registered");
@@ -160,13 +161,22 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
     expect(await advertisedRuntimeIds(server, computerId)).toEqual([]);
     expect((await server.app.inject({ method: "POST", url, payload })).statusCode).toBe(409);
 
-    await transport.send({ kind: "node.heartbeat", node_id: computerId, sequence: 0,
-      resources: { cpu_load: 0, memory_used_pct: 0, disk_free_gb: 1 }, running_instances: [],
-      runtimes: [{ runtime: "codex", status: "available", capabilities: ["code.modify"] }] });
+    await transport.send({
+      kind: "node.heartbeat",
+      node_id: computerId,
+      sequence: 0,
+      resources: { cpu_load: 0, memory_used_pct: 0, disk_free_gb: 1 },
+      running_instances: [],
+      runtimes: [{ runtime: "codex", status: "available", capabilities: ["code.modify"] }],
+    });
     await waitFor(async () => (await advertisedRuntimeIds(server!, computerId)).includes("codex"), "runtime persisted");
     const created = await server.app.inject({ method: "POST", url, payload });
     expect(created.statusCode).toBe(201);
-    expect(created.json().agent_instance).toMatchObject({ computer_id: computerId, runtime: "codex", workspace_root: payload.workspace_root });
+    expect(created.json().agent_instance).toMatchObject({
+      computer_id: computerId,
+      runtime: "codex",
+      workspace_root: payload.workspace_root,
+    });
   });
 
   it("drives an assigned run to review over a real WebSocket node connection", async () => {
@@ -203,9 +213,7 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
 
     // run.start dispatched over WS -> node MockAdapter streams run.events -> server ingests.
     await waitFor(async () => (await status(server!, taskId)) === "review", "task -> review");
-    const snap = (
-      await server.app.inject({ method: "GET", url: `/api/v1/tasks/${taskId}` })
-    ).json();
+    const snap = (await server.app.inject({ method: "GET", url: `/api/v1/tasks/${taskId}` })).json();
     expect(snap.runs[0].status).toBe("completed");
     expect(snap.artifacts).toHaveLength(1);
   });
@@ -252,8 +260,15 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
     const first = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=dev`);
     await new Promise<void>((resolve) => {
       first.addEventListener("open", () => {
-        first.send(JSON.stringify({ ...hello(NODE_ID), execution_features: ["run-verification.v1"],
-          verification_profiles: [{ profile_id: "default", project_id: "proj_artoo", workspace_root: "/work/product" }] }));
+        first.send(
+          JSON.stringify({
+            ...hello(NODE_ID),
+            execution_features: ["run-verification.v1"],
+            verification_profiles: [
+              { profile_id: "default", project_id: "proj_artoo", workspace_root: "/work/product" },
+            ],
+          }),
+        );
         resolve();
       });
     });
@@ -276,17 +291,29 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
     expect(firstBinding?.supportsVerificationProfile("default", "proj_artoo", "/work/product")).toBe(false);
     expect(server.ctx.supportsVerificationProfile?.(NODE_ID, "default", "proj_artoo", "/work/product")).toBe(false);
 
-    const heartbeat = { kind: "node.heartbeat", node_id: NODE_ID, sequence: 0,
-      resources: { cpu_load: 0, memory_used_pct: 0, disk_free_gb: 1 }, running_instances: [],
-      runtimes: [{ runtime: "codex", status: "available", capabilities: ["code.modify"] }] };
+    const heartbeat = {
+      kind: "node.heartbeat",
+      node_id: NODE_ID,
+      sequence: 0,
+      resources: { cpu_load: 0, memory_used_pct: 0, disk_free_gb: 1 },
+      running_instances: [],
+      runtimes: [{ runtime: "codex", status: "available", capabilities: ["code.modify"] }],
+    };
     second.send(JSON.stringify(heartbeat));
-    await waitFor(async () => (await advertisedRuntimeIds(server!, NODE_ID)).includes("codex"), "current runtime snapshot persisted");
+    await waitFor(
+      async () => (await advertisedRuntimeIds(server!, NODE_ID)).includes("codex"),
+      "current runtime snapshot persisted",
+    );
     let replacedCloseCode: number | undefined;
-    first.addEventListener("close", (event) => { replacedCloseCode = event.code; });
+    first.addEventListener("close", (event) => {
+      replacedCloseCode = event.code;
+    });
     first.send(JSON.stringify({ ...heartbeat, sequence: 1, runtimes: [] }));
     await waitFor(() => replacedCloseCode !== undefined, "replaced heartbeat sender closed");
     expect(replacedCloseCode).toBe(1008);
-    const runtimeRows = (await server.app.inject({ method: "GET", url: `/api/v1/computers/${NODE_ID}/runtimes` })).json().runtimes;
+    const runtimeRows = (
+      await server.app.inject({ method: "GET", url: `/api/v1/computers/${NODE_ID}/runtimes` })
+    ).json().runtimes;
     expect(runtimeRows.find((runtime: { runtime: string }) => runtime.runtime === "codex").status).toBe("available");
     expect(server.nodeRegistry.get(NODE_ID)).toBe(secondBinding);
     expect(await computerStatus(server)).toBe("online");
@@ -357,10 +384,7 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
           resolve();
         });
       });
-      await waitFor(
-        () => commands.some((command) => command.type === "run.resume"),
-        "resume command sent",
-      );
+      await waitFor(() => commands.some((command) => command.type === "run.resume"), "resume command sent");
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       const resumeRunIds = commands.flatMap((command) =>
@@ -378,15 +402,24 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
     server = await buildTestServer({ graceWindow: { arm, disarm: () => [], isArmed: () => false } });
     const port = await listen(server);
     const first = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=dev`);
-    await new Promise<void>((resolve) => first.addEventListener("open", () => { first.send(JSON.stringify(hello(NODE_ID))); resolve(); }));
+    await new Promise<void>((resolve) =>
+      first.addEventListener("open", () => {
+        first.send(JSON.stringify(hello(NODE_ID)));
+        resolve();
+      }),
+    );
     await waitFor(() => server?.nodeRegistry.get(NODE_ID) !== undefined, "initial connection");
     const runId = await createRunningRun(server, "pending snapshot");
     let release!: () => void;
     let snapshotStarted = false;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const original = runService.activeRunIdsForComputer;
     const read = vi.spyOn(runService, "activeRunIdsForComputer").mockImplementationOnce(async (ctx, id) => {
-      snapshotStarted = true; await gate; return original(ctx, id);
+      snapshotStarted = true;
+      await gate;
+      return original(ctx, id);
     });
     let second: WebSocket | undefined;
     try {
@@ -394,14 +427,29 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
       await waitFor(() => snapshotStarted, "snapshot query started");
       const commands: ServerToNodeMessage[] = [];
       second = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=dev`);
-      second.addEventListener("message", (event) => { commands.push(JSON.parse(String(event.data)) as ServerToNodeMessage); });
-      await new Promise<void>((resolve) => second!.addEventListener("open", () => { second!.send(JSON.stringify(hello(NODE_ID))); resolve(); }));
+      second.addEventListener("message", (event) => {
+        commands.push(JSON.parse(String(event.data)) as ServerToNodeMessage);
+      });
+      await new Promise<void>((resolve) =>
+        second!.addEventListener("open", () => {
+          second!.send(JSON.stringify(hello(NODE_ID)));
+          resolve();
+        }),
+      );
       await waitFor(() => server?.nodeRegistry.get(NODE_ID) !== undefined, "reconnected before snapshot resolved");
       release();
-      await waitFor(() => commands.some((command) => command.type === "run.resume" && command.payload.run_id === runId), "pending snapshot resumed");
+      await waitFor(
+        () => commands.some((command) => command.type === "run.resume" && command.payload.run_id === runId),
+        "pending snapshot resumed",
+      );
       expect(arm).not.toHaveBeenCalled();
       expect(commands.some((command) => command.type === "run.start")).toBe(false);
-    } finally { release(); read.mockRestore(); first.close(); second?.close(); }
+    } finally {
+      release();
+      read.mockRestore();
+      first.close();
+      second?.close();
+    }
   });
 });
 
@@ -431,11 +479,7 @@ describe("node WS auth gate (#28 slice 3a)", () => {
 
   /** Insert a device + its node credential, optionally linked to a computer.
    *  Returns the raw node token (`sk_device_<lookup>_<secret>`). */
-  async function seedNodeToken(
-    s: TestServer,
-    name: string,
-    opts: { computerId: string | null },
-  ): Promise<string> {
+  async function seedNodeToken(s: TestServer, name: string, opts: { computerId: string | null }): Promise<string> {
     const tok = generateDeviceToken();
     if (opts.computerId !== null) {
       await addComputer(s, opts.computerId);
@@ -486,10 +530,7 @@ describe("node WS auth gate (#28 slice 3a)", () => {
         resolve();
       });
     });
-    await waitFor(
-      () => server?.nodeRegistry.get("computer_linked") !== undefined,
-      "device node registered",
-    );
+    await waitFor(() => server?.nodeRegistry.get("computer_linked") !== undefined, "device node registered");
     expect(server.nodeRegistry.get("computer_linked")).toBeDefined();
     socket.close();
   });
@@ -512,23 +553,46 @@ describe("node WS auth gate (#28 slice 3a)", () => {
       const received: ServerToNodeMessage[] = [];
       const socket = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=${token}`);
       sockets.push(socket);
-      socket.addEventListener("message", (event) => received.push(JSON.parse(String(event.data)) as ServerToNodeMessage));
+      socket.addEventListener("message", (event) =>
+        received.push(JSON.parse(String(event.data)) as ServerToNodeMessage),
+      );
       await new Promise<void>((resolve, reject) => {
         socket.addEventListener("error", reject, { once: true });
-        socket.addEventListener("open", () => { socket.send(JSON.stringify({ ...hello(computerId), ...(requested ? { dependency_inputs: { version: 1 } } : {}) })); resolve(); }, { once: true });
+        socket.addEventListener(
+          "open",
+          () => {
+            socket.send(
+              JSON.stringify({ ...hello(computerId), ...(requested ? { dependency_inputs: { version: 1 } } : {}) }),
+            );
+            resolve();
+          },
+          { once: true },
+        );
       });
       await waitFor(() => server?.nodeRegistry.get(computerId) !== undefined, "dependency node registered");
       return received;
     }
     try {
       const first = await connect(raw, true);
-      await waitFor(() => first.some((item) => item.type === "node.dependency-inputs.session.v1"), "first input session");
+      await waitFor(
+        () => first.some((item) => item.type === "node.dependency-inputs.session.v1"),
+        "first input session",
+      );
       const announced = first.find((item) => item.type === "node.dependency-inputs.session.v1")!;
-      expect(announced.payload).toEqual({ version: 1, node_id: computerId, session_id: server.nodeRegistry.get(computerId)!.getPairedNodeSession!()!.sessionId });
+      expect(announced.payload).toEqual({
+        version: 1,
+        node_id: computerId,
+        session_id: server.nodeRegistry.get(computerId)!.getPairedNodeSession!()!.sessionId,
+      });
       const old = server.nodeRegistry.get(computerId)!;
       const second = await connect(raw, true);
-      await waitFor(() => second.some((item) => item.type === "node.dependency-inputs.session.v1"), "replacement input session");
-      expect(second.find((item) => item.type === "node.dependency-inputs.session.v1")!.payload).not.toEqual(announced.payload);
+      await waitFor(
+        () => second.some((item) => item.type === "node.dependency-inputs.session.v1"),
+        "replacement input session",
+      );
+      expect(second.find((item) => item.type === "node.dependency-inputs.session.v1")!.payload).not.toEqual(
+        announced.payload,
+      );
       expect(old.getPairedNodeSession!()).toBeUndefined();
       const count = first.length;
       await old.announceDependencyInputsSession!();
@@ -543,7 +607,9 @@ describe("node WS auth gate (#28 slice 3a)", () => {
       await waitFor(() => server?.nodeRegistry.get(computerId) !== legacyBinding, "development replacement");
       await server.nodeRegistry.get(computerId)!.announceDependencyInputsSession!();
       expect(dev.some((item) => item.type === "node.dependency-inputs.session.v1")).toBe(false);
-    } finally { for (const socket of sockets) socket.close(); }
+    } finally {
+      for (const socket of sockets) socket.close();
+    }
   });
 
   it("rejects an unlinked device node token (no computer) — fail closed", async () => {
@@ -566,38 +632,97 @@ describe("H6 server WebSocket envelope routing", () => {
   const review = { version: 1, review_id: "h6-review", request_digest: digest } as const;
   const repair = { version: 1, repair_id: "h6-repair", request_digest: digest, run_id: "repair-run" } as const;
   const envelopes = [
-    { kind: "product.source.execution-review.ack.v1", node_id: "node-B", command_id: "review-command", payload: review, status: "accepted" },
-    { kind: "product.source.execution-review.result.v1", node_id: "node-B", command_id: "review-command",
-      payload: { ...review, execution_authorized: false, outcome: "cancelled_before_start", closed: true, reason: "Controlled cancellation" } },
-    { kind: "product.source.execution-repair.ack.v1", node_id: "node-B", command_id: "repair-command", payload: repair, status: "accepted" },
-    { kind: "product.source.execution-repair.result.v1", node_id: "node-B", command_id: "repair-command",
-      payload: { ...repair, outcome: "cancelled_before_start", closed: true } },
+    {
+      kind: "product.source.execution-review.ack.v1",
+      node_id: "node-B",
+      command_id: "review-command",
+      payload: review,
+      status: "accepted",
+    },
+    {
+      kind: "product.source.execution-review.result.v1",
+      node_id: "node-B",
+      command_id: "review-command",
+      payload: {
+        ...review,
+        execution_authorized: false,
+        outcome: "cancelled_before_start",
+        closed: true,
+        reason: "Controlled cancellation",
+      },
+    },
+    {
+      kind: "product.source.execution-repair.ack.v1",
+      node_id: "node-B",
+      command_id: "repair-command",
+      payload: repair,
+      status: "accepted",
+    },
+    {
+      kind: "product.source.execution-repair.result.v1",
+      node_id: "node-B",
+      command_id: "repair-command",
+      payload: { ...repair, outcome: "cancelled_before_start", closed: true },
+    },
   ] as const;
 
-  it.each(envelopes)("parses $kind from actual text and byte wire input", envelope => {
+  it.each(envelopes)("parses $kind from actual text and byte wire input", (envelope) => {
     const wire = JSON.stringify(envelope);
     expect(parseNodeToServer(wire)).toEqual(envelope);
     expect(parseNodeToServer(new TextEncoder().encode(wire))).toEqual(envelope);
   });
 
-  it.each(envelopes)("keeps strict envelope and nested payload validation for $kind", envelope => {
+  it.each(envelopes)("keeps strict envelope and nested payload validation for $kind", (envelope) => {
     expect(parseNodeToServer(JSON.stringify({ ...envelope, node_id: "" }))).toBeNull();
     expect(parseNodeToServer(JSON.stringify({ ...envelope, command_id: "" }))).toBeNull();
     expect(parseNodeToServer(JSON.stringify({ ...envelope, unexpected: true }))).toBeNull();
-    expect(parseNodeToServer(JSON.stringify({ ...envelope, payload: { ...envelope.payload, request_digest: "not-a-digest" } }))).toBeNull();
-    expect(parseNodeToServer(JSON.stringify({ ...envelope, payload: { ...envelope.payload, unexpected: true } }))).toBeNull();
+    expect(
+      parseNodeToServer(
+        JSON.stringify({ ...envelope, payload: { ...envelope.payload, request_digest: "not-a-digest" } }),
+      ),
+    ).toBeNull();
+    expect(
+      parseNodeToServer(JSON.stringify({ ...envelope, payload: { ...envelope.payload, unexpected: true } })),
+    ).toBeNull();
     const otherKind = envelope.kind.includes("execution-review")
-      ? envelope.kind.replace("execution-review", "execution-repair") : envelope.kind.replace("execution-repair", "execution-review");
+      ? envelope.kind.replace("execution-review", "execution-repair")
+      : envelope.kind.replace("execution-repair", "execution-review");
     expect(parseNodeToServer(JSON.stringify({ ...envelope, kind: otherKind }))).toBeNull();
   });
 
   it("does not promote transport fields into execution or closure authority", () => {
     expect(parseNodeToServer(JSON.stringify({ ...envelopes[0], status: "reviewed" }))).toBeNull();
     expect(parseNodeToServer(JSON.stringify({ ...envelopes[2], status: "finished" }))).toBeNull();
-    expect(parseNodeToServer(JSON.stringify({ ...envelopes[1], payload: { ...envelopes[1].payload, execution_authorized: true } }))).toBeNull();
-    expect(parseNodeToServer(JSON.stringify({ ...envelopes[1], payload: { ...review, execution_authorized: false, outcome: "uncertain", closed: true, reason: "Unknown closure" } }))).toBeNull();
-    expect(parseNodeToServer(JSON.stringify({ ...envelopes[3], payload: { ...repair, outcome: "uncertain", closed: true, reason: "Unknown closure" } }))).toBeNull();
-    expect(parseNodeToServer(JSON.stringify({ ...envelopes[3], payload: { ...envelopes[3].payload, verified_repair: {} } }))).toBeNull();
+    expect(
+      parseNodeToServer(
+        JSON.stringify({ ...envelopes[1], payload: { ...envelopes[1].payload, execution_authorized: true } }),
+      ),
+    ).toBeNull();
+    expect(
+      parseNodeToServer(
+        JSON.stringify({
+          ...envelopes[1],
+          payload: {
+            ...review,
+            execution_authorized: false,
+            outcome: "uncertain",
+            closed: true,
+            reason: "Unknown closure",
+          },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseNodeToServer(
+        JSON.stringify({
+          ...envelopes[3],
+          payload: { ...repair, outcome: "uncertain", closed: true, reason: "Unknown closure" },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseNodeToServer(JSON.stringify({ ...envelopes[3], payload: { ...envelopes[3].payload, verified_repair: {} } })),
+    ).toBeNull();
   });
 });
 
@@ -606,22 +731,64 @@ describe("H7 server WebSocket envelope routing", () => {
   const author = { version: 1, validation_id: "validation", request_digest: digest, run_id: "validation-run" } as const;
   const review = { version: 1, review_id: "validation-review", request_digest: digest } as const;
   const envelopes = [
-    { kind: "product.source.validation.ack.v1", node_id: "node-B", command_id: "author-command", payload: author, status: "accepted" },
-    { kind: "product.source.validation.result.v1", node_id: "node-B", command_id: "author-command", payload: { ...author, outcome: "cancelled_before_start", closed: true } },
-    { kind: "product.source.validation-review.ack.v1", node_id: "node-B", command_id: "review-command", payload: review, status: "accepted" },
-    { kind: "product.source.validation-review.result.v1", node_id: "node-B", command_id: "review-command",
-      payload: { ...review, execution_authorized: false, outcome: "cancelled_before_start", closed: true, reason: "Controlled cancellation" } },
+    {
+      kind: "product.source.validation.ack.v1",
+      node_id: "node-B",
+      command_id: "author-command",
+      payload: author,
+      status: "accepted",
+    },
+    {
+      kind: "product.source.validation.result.v1",
+      node_id: "node-B",
+      command_id: "author-command",
+      payload: { ...author, outcome: "cancelled_before_start", closed: true },
+    },
+    {
+      kind: "product.source.validation-review.ack.v1",
+      node_id: "node-B",
+      command_id: "review-command",
+      payload: review,
+      status: "accepted",
+    },
+    {
+      kind: "product.source.validation-review.result.v1",
+      node_id: "node-B",
+      command_id: "review-command",
+      payload: {
+        ...review,
+        execution_authorized: false,
+        outcome: "cancelled_before_start",
+        closed: true,
+        reason: "Controlled cancellation",
+      },
+    },
   ] as const;
-  it.each(envelopes)("routes actual text/byte $kind and rejects broken identities", envelope => {
+  it.each(envelopes)("routes actual text/byte $kind and rejects broken identities", (envelope) => {
     const wire = JSON.stringify(envelope);
     expect(parseNodeToServer(wire)).toEqual(envelope);
     expect(parseNodeToServer(new TextEncoder().encode(wire))).toEqual(envelope);
     expect(parseNodeToServer(JSON.stringify({ ...envelope, command_id: "" }))).toBeNull();
-    expect(parseNodeToServer(JSON.stringify({ ...envelope, payload: { ...envelope.payload, request_digest: "unbound" } }))).toBeNull();
+    expect(
+      parseNodeToServer(JSON.stringify({ ...envelope, payload: { ...envelope.payload, request_digest: "unbound" } })),
+    ).toBeNull();
   });
   it("cannot turn unknown H7 closure or reviewer metadata into execution authority", () => {
-    expect(parseNodeToServer(JSON.stringify({ ...envelopes[1], payload: { ...author, outcome: "uncertain", closed: true, reason: "Unknown native closure" } }))).toBeNull();
-    expect(parseNodeToServer(JSON.stringify({ ...envelopes[3], payload: { ...envelopes[3].payload, execution_authorized: true } }))).toBeNull();
-    expect(parseNodeToServer(JSON.stringify({ ...envelopes[1], payload: { ...envelopes[1].payload, closed_failure: {} } }))).toBeNull();
+    expect(
+      parseNodeToServer(
+        JSON.stringify({
+          ...envelopes[1],
+          payload: { ...author, outcome: "uncertain", closed: true, reason: "Unknown native closure" },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseNodeToServer(
+        JSON.stringify({ ...envelopes[3], payload: { ...envelopes[3].payload, execution_authorized: true } }),
+      ),
+    ).toBeNull();
+    expect(
+      parseNodeToServer(JSON.stringify({ ...envelopes[1], payload: { ...envelopes[1].payload, closed_failure: {} } })),
+    ).toBeNull();
   });
 });

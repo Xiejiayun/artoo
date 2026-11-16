@@ -43,10 +43,21 @@ export function ArtifactReview({ task, artifacts, reviews, versionCursor }: Arti
   const comment = draft.taskId === task.id ? draft.comment : "";
   const mutation = useMutation({
     mutationFn: (submission: ReviewSubmission) =>
-      api.reviewTask(submission.taskId, { outcome: submission.outcome, ...(submission.comment.trim() ? { comment: submission.comment } : {}),
-        ...(submission.versionCursor === undefined ? {} : { base_version: submission.versionCursor }) }, newIdempotencyKey()),
+      api.reviewTask(
+        submission.taskId,
+        {
+          outcome: submission.outcome,
+          ...(submission.comment.trim() ? { comment: submission.comment } : {}),
+          ...(submission.versionCursor === undefined ? {} : { base_version: submission.versionCursor }),
+        },
+        newIdempotencyKey(),
+      ),
     onSuccess: async (_, submission) => {
-      setDraft((current) => current.taskId === submission.taskId && current.comment === submission.comment ? { ...current, comment: "" } : current);
+      setDraft((current) =>
+        current.taskId === submission.taskId && current.comment === submission.comment
+          ? { ...current, comment: "" }
+          : current,
+      );
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.task(submission.taskId) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.tasks(submission.projectId) }),
@@ -55,28 +66,68 @@ export function ArtifactReview({ task, artifacts, reviews, versionCursor }: Arti
       ]);
     },
     onError: async (error, submission) => {
-      if (error instanceof ApiClientError && error.status === 409) await queryClient.invalidateQueries({ queryKey: queryKeys.task(submission.taskId) });
+      if (error instanceof ApiClientError && error.status === 409)
+        await queryClient.invalidateQueries({ queryKey: queryKeys.task(submission.taskId) });
     },
   });
   const reviewError = mutation.variables?.taskId === task.id ? mutation.error : null;
-  const submit = (outcome: ReviewSubmission["outcome"]): void => mutation.mutate({ taskId: task.id, projectId: task.project_id, outcome, comment, versionCursor });
+  const submit = (outcome: ReviewSubmission["outcome"]): void =>
+    mutation.mutate({ taskId: task.id, projectId: task.project_id, outcome, comment, versionCursor });
 
   return (
     <section aria-label="Artifacts" className="artifact-review insights-artifact-review">
-      <div className="insights-section-heading"><FileText size={16} aria-hidden="true" /><h3>Artifacts</h3><Badge>{artifacts.length}</Badge></div>
+      <div className="insights-section-heading">
+        <FileText size={16} aria-hidden="true" />
+        <h3>Artifacts</h3>
+        <Badge>{artifacts.length}</Badge>
+      </div>
       <ActionError error={reviewError} />
-      {reviewError instanceof ApiClientError && reviewError.details.reason === "stale_base_version" && <p role="status">This task changed. Review the refreshed details and submit your decision again.</p>}
+      {reviewError instanceof ApiClientError && reviewError.details.reason === "stale_base_version" && (
+        <p role="status">This task changed. Review the refreshed details and submit your decision again.</p>
+      )}
       {artifacts.length === 0 ? (
         <p className="no-artifacts">No artifacts yet.</p>
       ) : (
         <ul className="artifact-list">
           {artifacts.map((artifact) => (
-            <li key={artifact.id} className="artifact" data-type={artifact.type} data-artifact-id={artifact.id} aria-label={`Artifact ${artifact.id}`}>
-              <header className="action-row"><strong className="artifact-filename">{artifactFilename(artifact)}</strong><Badge>{artifact.type}</Badge></header>
+            <li
+              key={artifact.id}
+              className="artifact"
+              data-type={artifact.type}
+              data-artifact-id={artifact.id}
+              aria-label={`Artifact ${artifact.id}`}
+            >
+              <header className="action-row">
+                <strong className="artifact-filename">{artifactFilename(artifact)}</strong>
+                <Badge>{artifact.type}</Badge>
+              </header>
               <dl className="artifact-metadata">
-                <div><dt>Originating run</dt><dd>{artifact.run_id ? <Link to={`/runs?task=${encodeURIComponent(task.id)}&run=${encodeURIComponent(artifact.run_id)}&project=${encodeURIComponent(task.project_id)}`}><code>{artifact.run_id}</code></Link> : "Originating run not recorded"}</dd></div>
-                <div><dt>Created</dt><dd><RecordedTime value={artifact.created_at} /></dd></div>
-                <div><dt>Artifact ID</dt><dd><code>{artifact.id}</code></dd></div>
+                <div>
+                  <dt>Originating run</dt>
+                  <dd>
+                    {artifact.run_id ? (
+                      <Link
+                        to={`/runs?task=${encodeURIComponent(task.id)}&run=${encodeURIComponent(artifact.run_id)}&project=${encodeURIComponent(task.project_id)}`}
+                      >
+                        <code>{artifact.run_id}</code>
+                      </Link>
+                    ) : (
+                      "Originating run not recorded"
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Created</dt>
+                  <dd>
+                    <RecordedTime value={artifact.created_at} />
+                  </dd>
+                </div>
+                <div>
+                  <dt>Artifact ID</dt>
+                  <dd>
+                    <code>{artifact.id}</code>
+                  </dd>
+                </div>
               </dl>
               <ArtifactDownload artifact={artifact} />
               <ArtifactTextPreview key={artifact.id} artifact={artifact} />
@@ -86,20 +137,36 @@ export function ArtifactReview({ task, artifacts, reviews, versionCursor }: Arti
       )}
       <ReviewHistory reviews={history} artifacts={artifacts} />
       {task.status === "review" ? (
-        <div className="insights-review-decision"><h4>Review this work</h4><p className="insights-help">Accept to complete the task, or request changes for another attempt.</p><Textarea label="Review comment" placeholder="Share your feedback and any changes needed…" value={comment} onChange={(event) => setDraft({ taskId: task.id, comment: event.target.value })} disabled={mutation.isPending} />
-        <div className="review-actions">
-          <Button variant="primary" iconLeft={Check} type="button" disabled={mutation.isPending} onClick={() => submit("accepted")}>
-            Accept
-          </Button>
-          <Button
-            iconLeft={RotateCcw}
-            type="button"
+        <div className="insights-review-decision">
+          <h4>Review this work</h4>
+          <p className="insights-help">Accept to complete the task, or request changes for another attempt.</p>
+          <Textarea
+            label="Review comment"
+            placeholder="Share your feedback and any changes needed…"
+            value={comment}
+            onChange={(event) => setDraft({ taskId: task.id, comment: event.target.value })}
             disabled={mutation.isPending}
-            onClick={() => submit("changes_requested")}
-          >
-            Request changes
-          </Button>
-        </div></div>
+          />
+          <div className="review-actions">
+            <Button
+              variant="primary"
+              iconLeft={Check}
+              type="button"
+              disabled={mutation.isPending}
+              onClick={() => submit("accepted")}
+            >
+              Accept
+            </Button>
+            <Button
+              iconLeft={RotateCcw}
+              type="button"
+              disabled={mutation.isPending}
+              onClick={() => submit("changes_requested")}
+            >
+              Request changes
+            </Button>
+          </div>
+        </div>
       ) : null}
     </section>
   );
@@ -109,15 +176,40 @@ export function ArtifactReview({ task, artifacts, reviews, versionCursor }: Arti
 function ArtifactTextPreview({ artifact }: { artifact: Artifact }): React.ReactNode {
   const api = useApi();
   const [open, setOpen] = useState(false);
-  const preview = useMutation({ mutationFn: async () => {
-    const blob = await api.downloadArtifact(artifact.id);
-    if (blob.size > 256 * 1024) throw new Error("This artifact is too large for inline preview. Download it to inspect the full content.");
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer());
-    if (text.includes(String.fromCharCode(0))) throw new Error("This artifact contains binary data. Use its download to inspect it.");
-    return text;
-  }, onSuccess: () => setOpen(true) });
-  if (!artifact.uri.startsWith("/api/v1/artifacts/") || !["patch", "report", "test_result", "contract"].includes(artifact.type)) return null;
-  return <div className="cowork-artifact-preview"><Button size="sm" loading={preview.isPending} onClick={() => preview.data === undefined ? preview.mutate() : setOpen((value) => !value)}>{open ? "Hide artifact text" : "Preview artifact text"}</Button><ActionError error={preview.error} />{open && <pre tabIndex={0} aria-label={`Artifact ${artifact.id} recorded text`}>{preview.data || "(Empty recorded artifact)"}</pre>}</div>;
+  const preview = useMutation({
+    mutationFn: async () => {
+      const blob = await api.downloadArtifact(artifact.id);
+      if (blob.size > 256 * 1024)
+        throw new Error("This artifact is too large for inline preview. Download it to inspect the full content.");
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer());
+      if (text.includes(String.fromCharCode(0)))
+        throw new Error("This artifact contains binary data. Use its download to inspect it.");
+      return text;
+    },
+    onSuccess: () => setOpen(true),
+  });
+  if (
+    !artifact.uri.startsWith("/api/v1/artifacts/") ||
+    !["patch", "report", "test_result", "contract"].includes(artifact.type)
+  )
+    return null;
+  return (
+    <div className="cowork-artifact-preview">
+      <Button
+        size="sm"
+        loading={preview.isPending}
+        onClick={() => (preview.data === undefined ? preview.mutate() : setOpen((value) => !value))}
+      >
+        {open ? "Hide artifact text" : "Preview artifact text"}
+      </Button>
+      <ActionError error={preview.error} />
+      {open && (
+        <pre tabIndex={0} aria-label={`Artifact ${artifact.id} recorded text`}>
+          {preview.data || "(Empty recorded artifact)"}
+        </pre>
+      )}
+    </div>
+  );
 }
 
 function artifactFilename(artifact: Artifact): string {
@@ -127,48 +219,111 @@ function artifactFilename(artifact: Artifact): string {
 
 function RecordedTime({ value }: { value: string }): React.ReactNode {
   const date = new Date(value);
-  return <time dateTime={value} title={value}>{Number.isNaN(date.getTime()) ? value || "Time unavailable" : date.toLocaleString()}</time>;
+  return (
+    <time dateTime={value} title={value}>
+      {Number.isNaN(date.getTime()) ? value || "Time unavailable" : date.toLocaleString()}
+    </time>
+  );
 }
 
-function ReviewHistory({ reviews, artifacts }: { reviews: TaskReview[] | undefined; artifacts: Artifact[] }): React.ReactNode {
+function ReviewHistory({
+  reviews,
+  artifacts,
+}: {
+  reviews: TaskReview[] | undefined;
+  artifacts: Artifact[];
+}): React.ReactNode {
   const byId = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
-  return <section aria-label="Review history" className="review-history u-stack u-stack-sm">
-    <div className="insights-section-heading"><h3>Review history</h3>{reviews && <Badge>{reviews.length}</Badge>}</div>
-    {reviews === undefined ? <p className="t-subtle">Review history is unavailable from this server.</p>
-      : reviews.length === 0 ? <p className="t-subtle">No submitted reviews yet.</p>
-        : reviews.map((review) => <article key={review.event_id} className="task-review u-stack u-stack-sm" data-review-id={review.event_id} data-outcome={review.outcome}>
-          <header className="u-stack u-stack-sm"><strong>{review.outcome === "accepted" ? "Accepted" : "Changes requested"}</strong>
-            <span className="t-subtle" data-actor-id={review.actor.id}>{review.actor_name || `${review.actor.type}:${review.actor.id}`} · <RecordedTime value={review.occurred_at} /></span></header>
-          <p className="review-comment">{review.comment ?? "No comment provided."}</p>
-          {review.artifact_ids === null ? <p className="t-subtle">Artifact attribution was not recorded for this review.</p>
-            : review.artifact_ids.length === 0 ? <p className="t-subtle">No task artifacts were recorded at this review.</p>
-              : <><p className="t-subtle">Task artifacts at this review</p><ul className="review-artifacts">{review.artifact_ids.map((id) => {
-                const artifact = byId.get(id);
-                return <li key={id} data-review-artifact-id={id}>
-                  <strong>{artifact ? artifactFilename(artifact) : "Artifact details unavailable"}</strong>
-                  <code>{id}</code>
-                  {artifact && <span>Originating run: {artifact.run_id ? <code>{artifact.run_id}</code> : "not recorded"}</span>}
-                </li>;
-              })}</ul></>}
-        </article>)}
-  </section>;
+  return (
+    <section aria-label="Review history" className="review-history u-stack u-stack-sm">
+      <div className="insights-section-heading">
+        <h3>Review history</h3>
+        {reviews && <Badge>{reviews.length}</Badge>}
+      </div>
+      {reviews === undefined ? (
+        <p className="t-subtle">Review history is unavailable from this server.</p>
+      ) : reviews.length === 0 ? (
+        <p className="t-subtle">No submitted reviews yet.</p>
+      ) : (
+        reviews.map((review) => (
+          <article
+            key={review.event_id}
+            className="task-review u-stack u-stack-sm"
+            data-review-id={review.event_id}
+            data-outcome={review.outcome}
+          >
+            <header className="u-stack u-stack-sm">
+              <strong>{review.outcome === "accepted" ? "Accepted" : "Changes requested"}</strong>
+              <span className="t-subtle" data-actor-id={review.actor.id}>
+                {review.actor_name || `${review.actor.type}:${review.actor.id}`} ·{" "}
+                <RecordedTime value={review.occurred_at} />
+              </span>
+            </header>
+            <p className="review-comment">{review.comment ?? "No comment provided."}</p>
+            {review.artifact_ids === null ? (
+              <p className="t-subtle">Artifact attribution was not recorded for this review.</p>
+            ) : review.artifact_ids.length === 0 ? (
+              <p className="t-subtle">No task artifacts were recorded at this review.</p>
+            ) : (
+              <>
+                <p className="t-subtle">Task artifacts at this review</p>
+                <ul className="review-artifacts">
+                  {review.artifact_ids.map((id) => {
+                    const artifact = byId.get(id);
+                    return (
+                      <li key={id} data-review-artifact-id={id}>
+                        <strong>{artifact ? artifactFilename(artifact) : "Artifact details unavailable"}</strong>
+                        <code>{id}</code>
+                        {artifact && (
+                          <span>
+                            Originating run: {artifact.run_id ? <code>{artifact.run_id}</code> : "not recorded"}
+                          </span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </>
+            )}
+          </article>
+        ))
+      )}
+    </section>
+  );
 }
 
 function ArtifactDownload({ artifact }: { artifact: Artifact }): React.ReactNode {
   const api = useApi();
-  const download = useMutation({ mutationFn: async () => {
-    const blob = await api.downloadArtifact(artifact.id);
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = typeof artifact.metadata.filename === "string" ? artifact.metadata.filename : `${artifact.id}.txt`;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  } });
-  if (artifact.uri.startsWith("/api/v1/artifacts/")) return <>
-    <Button size="sm" loading={download.isPending} onClick={() => download.mutate()}>Download artifact</Button>
-    <ActionError error={download.error} />
-  </>;
-  if (/^https?:\/\//i.test(artifact.uri)) return <a href={artifact.uri} className="artifact-uri" target="_blank" rel="noopener noreferrer">{artifact.uri}</a>;
-  return <span className="artifact-uri"><span>{artifact.uri}</span> — Unavailable remotely: this legacy artifact is stored on the execution computer.</span>;
+  const download = useMutation({
+    mutationFn: async () => {
+      const blob = await api.downloadArtifact(artifact.id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download =
+        typeof artifact.metadata.filename === "string" ? artifact.metadata.filename : `${artifact.id}.txt`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    },
+  });
+  if (artifact.uri.startsWith("/api/v1/artifacts/"))
+    return (
+      <>
+        <Button size="sm" loading={download.isPending} onClick={() => download.mutate()}>
+          Download artifact
+        </Button>
+        <ActionError error={download.error} />
+      </>
+    );
+  if (/^https?:\/\//i.test(artifact.uri))
+    return (
+      <a href={artifact.uri} className="artifact-uri" target="_blank" rel="noopener noreferrer">
+        {artifact.uri}
+      </a>
+    );
+  return (
+    <span className="artifact-uri">
+      <span>{artifact.uri}</span> — Unavailable remotely: this legacy artifact is stored on the execution computer.
+    </span>
+  );
 }

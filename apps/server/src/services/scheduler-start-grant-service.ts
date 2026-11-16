@@ -43,8 +43,12 @@ export function grantSchedulerStartInTransaction(
   if (!parsed.success) throw AppError.validation("Invalid scheduler node-ready binding");
   const ready = parsed.data;
   return withRevalidatedSchedulerPreparedStart(ctx, tx, input, async (prepared, credentialExpiresAt) => {
-    const [stopped] = await tx.select({ id: schedulerRequestStopIntents.requestId }).from(schedulerRequestStopIntents).where(eq(schedulerRequestStopIntents.requestId, prepared.request_id));
-    if (stopped) throw AppError.conflict("Scheduler start has a durable Stop request; no physical permit may be issued");
+    const [stopped] = await tx
+      .select({ id: schedulerRequestStopIntents.requestId })
+      .from(schedulerRequestStopIntents)
+      .where(eq(schedulerRequestStopIntents.requestId, prepared.request_id));
+    if (stopped)
+      throw AppError.conflict("Scheduler start has a durable Stop request; no physical permit may be issued");
     const proposal = await buildSchedulerStartProposalFromPrepared(ctx, tx, prepared);
     if (
       ready.request_id !== prepared.request_id ||

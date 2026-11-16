@@ -134,15 +134,21 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
   if (url.protocol !== "wss:" && !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))
     throw new Error("Managed remote transport requires TLS");
   if (!options.namespace) throw new Error("Managed transport requires its configured journal namespace");
-  const { scheduler_start: _untrustedScheduler, scheduler_lease: _untrustedLease, scheduler_run: _untrustedRun,
-    scheduler_claim: _untrustedClaim, ...ordinaryHello } = options.hello;
+  const {
+    scheduler_start: _untrustedScheduler,
+    scheduler_lease: _untrustedLease,
+    scheduler_run: _untrustedRun,
+    scheduler_claim: _untrustedClaim,
+    ...ordinaryHello
+  } = options.hello;
   if (options.schedulerLease && !options.schedulerStart)
     throw new Error("Scheduler lease requires scheduler start opt-in");
   const schedulerLease = options.schedulerLease ? schedulerLeaseRegistrationSchema.parse({ version: 1 }) : undefined;
   if (options.schedulerRun && (!options.schedulerStart || !options.schedulerLease))
     throw new Error("Scheduler run requires independent start and lease opt-ins");
   const schedulerRun = options.schedulerRun ? schedulerRunRegistrationSchema.parse({ version: 1 }) : undefined;
-  if (options.schedulerClaim && !options.schedulerRun) throw new Error("Scheduler claim requires its private run authority opt-in");
+  if (options.schedulerClaim && !options.schedulerRun)
+    throw new Error("Scheduler claim requires its private run authority opt-in");
   const schedulerClaim = options.schedulerClaim ? schedulerClaimRegistrationSchema.parse({ version: 1 }) : undefined;
   const scheduler = options.schedulerStart
     ? schedulerStartRegistrationSchema.parse({ version: 1, journal_namespace: options.namespace })
@@ -515,18 +521,33 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
       if (schedulerRun)
         g.schedulerRun = createSchedulerRunClientChannel({
           session: g.session,
-          assertCurrent: () => { assertSession(g.session); },
+          assertCurrent: () => {
+            assertSession(g.session);
+          },
           send: (request) => {
             if (request.kind === "scheduler.run.acquire.v1") schedulerRuns.add(request.grant.run_id);
-            try { raw(g, request); }
-            catch { lose(g, new DeliveryStopped("Scheduler run write failed")); throw new DeliveryStopped("Scheduler run write failed"); }
+            try {
+              raw(g, request);
+            } catch {
+              lose(g, new DeliveryStopped("Scheduler run write failed"));
+              throw new DeliveryStopped("Scheduler run write failed");
+            }
           },
         });
       if (schedulerClaim)
-        g.schedulerClaim = createSchedulerClaimClientChannel({ session: g.session,
-          assertCurrent: () => { assertSession(g.session); },
-          send: (request) => { try { raw(g, request); }
-            catch { lose(g, new DeliveryStopped("Scheduler claim write failed")); throw new DeliveryStopped("Scheduler claim write failed"); } },
+        g.schedulerClaim = createSchedulerClaimClientChannel({
+          session: g.session,
+          assertCurrent: () => {
+            assertSession(g.session);
+          },
+          send: (request) => {
+            try {
+              raw(g, request);
+            } catch {
+              lose(g, new DeliveryStopped("Scheduler claim write failed"));
+              throw new DeliveryStopped("Scheduler claim write failed");
+            }
+          },
         });
       probe(g);
       return;
@@ -805,9 +826,14 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
             if (monotonicMs() >= context.deadlineTickMs)
               throw new DeliveryDeadline("Managed event expired before socket write");
             observer.exposed = true; // send invocation is conservatively a possible exposure.
-            g.socket.send(schedulerRuns.has(snapshot.run_id)
-              ? (g.schedulerRun?.encode(snapshot) ?? (() => { throw new Error("Original scheduler event authority was lost"); })())
-              : encoded);
+            g.socket.send(
+              schedulerRuns.has(snapshot.run_id)
+                ? (g.schedulerRun?.encode(snapshot) ??
+                    (() => {
+                      throw new Error("Original scheduler event authority was lost");
+                    })())
+                : encoded,
+            );
           } catch (error) {
             settleReceipt(
               identity,
@@ -837,9 +863,14 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
         throw new Error("Scheduler start frames require their generation-bound exchange lane");
       if (message.kind === "scheduler.lease.acquire.v1" || message.kind === "scheduler.lease.renew.v1")
         throw new Error("Scheduler lease frames require their generation-bound exchange lane");
-      if (message.kind === "scheduler.run.acquire.v1" || message.kind === "scheduler.run.status.v1" || message.kind === "scheduler.run.event.v1")
+      if (
+        message.kind === "scheduler.run.acquire.v1" ||
+        message.kind === "scheduler.run.status.v1" ||
+        message.kind === "scheduler.run.event.v1"
+      )
         throw new Error("Scheduler run frames require their private generation-bound lane");
-      if (message.kind === "scheduler.claim.poll.v1") throw new Error("Scheduler claim frames require their private generation-bound lane");
+      if (message.kind === "scheduler.claim.poll.v1")
+        throw new Error("Scheduler claim frames require their private generation-bound lane");
       assertSession();
       const g = current!;
       try {

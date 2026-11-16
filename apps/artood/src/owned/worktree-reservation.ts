@@ -438,7 +438,9 @@ export function assertOwnedWorktreeLocalBoundary(worktree: MaterializedWorktree)
 }
 
 /** Same genuine handle and trusted options, never reconstructed from wire data. */
-export function readOwnedWorktreeWindowsBackend(worktree: MaterializedWorktree): PreparedWindowsProcessBackend | undefined {
+export function readOwnedWorktreeWindowsBackend(
+  worktree: MaterializedWorktree,
+): PreparedWindowsProcessBackend | undefined {
   const state = materializedStates.get(worktree);
   if (!state || state.phase !== "materialized") fail("invalid_handle", "A current materialized worktree is required");
   return state!.options.windowsProcessBackend;
@@ -455,7 +457,11 @@ export function completeOwnedWorktreeStartup(worktree: MaterializedWorktree): vo
 
 export function assertOwnedWindowsWorktreeBoundary(worktree: MaterializedWorktree): void {
   const state = materializedStates.get(worktree);
-  if (!state || state.phase !== "materialized" || !state.options.windowsProcessBackend) fail("invalid_handle", "An original native owned worktree is required");
-  assertWindowsOwnedWorkspacePaths([{ path: worktree.root, directory: true },
-    { path: worktree.commonDirectory, directory: true }, ...state!.boundaries.map(item => ({ path: item.path, directory: true }))]);
+  if (!state || state.phase !== "materialized" || !state.options.windowsProcessBackend)
+    fail("invalid_handle", "An original native owned worktree is required");
+  assertWindowsOwnedWorkspacePaths([
+    { path: worktree.root, directory: true },
+    { path: worktree.commonDirectory, directory: true },
+    ...state!.boundaries.map((item) => ({ path: item.path, directory: true })),
+  ]);
 }

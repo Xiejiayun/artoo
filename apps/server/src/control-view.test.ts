@@ -6,14 +6,25 @@ import { buildTestServer, type TestServer } from "./test-support.js";
 
 let server: TestServer;
 const endpoint = "/api/v1/projects/proj_artoo/control-view";
-beforeEach(async () => { server = await buildTestServer(); });
-afterEach(async () => { await server.close(); });
+beforeEach(async () => {
+  server = await buildTestServer();
+});
+afterEach(async () => {
+  await server.close();
+});
 
 async function createTask(title: string): Promise<string> {
-  const response = await server.app.inject({ method: "POST", url: "/api/v1/tasks", payload: {
-    project_id: "proj_artoo", title, description: "Read-only control view regression",
-    acceptance_criteria: ["Preserve real state"], required_capabilities: ["code.modify"],
-  } });
+  const response = await server.app.inject({
+    method: "POST",
+    url: "/api/v1/tasks",
+    payload: {
+      project_id: "proj_artoo",
+      title,
+      description: "Read-only control view regression",
+      acceptance_criteria: ["Preserve real state"],
+      required_capabilities: ["code.modify"],
+    },
+  });
   expect(response.statusCode, response.body).toBe(201);
   return response.json().task.id;
 }
@@ -29,7 +40,10 @@ it("keeps full project totals while paging tied task timestamps without overlaps
   await createTask("Second bounded row");
   await createTask("Third bounded row");
   const full = await read("?limit=100");
-  const expected = full.tasks.map((entry) => entry.task.id).sort().reverse();
+  const expected = full.tasks
+    .map((entry) => entry.task.id)
+    .sort()
+    .reverse();
   const ids: string[] = [];
   let page = await read("?limit=1");
   for (;;) {
@@ -49,10 +63,17 @@ it("keeps full project totals while paging tied task timestamps without overlaps
 it("retains failed latest Run history and exposes capacity only as an explicit observation", async () => {
   const id = await createTask("Failure stays an attempt");
   expect((await server.app.inject({ method: "POST", url: `/api/v1/tasks/${id}/ready` })).statusCode).toBe(200);
-  const assigned = await server.app.inject({ method: "POST", url: `/api/v1/tasks/${id}/assign`, payload: { mode: "auto" } });
+  const assigned = await server.app.inject({
+    method: "POST",
+    url: `/api/v1/tasks/${id}/assign`,
+    payload: { mode: "auto" },
+  });
   expect(assigned.statusCode, assigned.body).toBe(200);
   const run = assigned.json().run;
-  expect((await server.app.inject({ method: "POST", url: `/api/v1/dev/runs/${run.id}/mock-execute?outcome=failed` })).statusCode).toBe(200);
+  expect(
+    (await server.app.inject({ method: "POST", url: `/api/v1/dev/runs/${run.id}/mock-execute?outcome=failed` }))
+      .statusCode,
+  ).toBe(200);
   const eventsBefore = await server.db.db.select().from(eventLog);
   const ordinary = await read("?limit=100");
   const row = ordinary.tasks.find((entry) => entry.task.id === id)!;
@@ -70,10 +91,24 @@ it("retains failed latest Run history and exposes capacity only as an explicit o
 });
 
 it("rejects malformed or foreign cursors, invalid bounds and cross-organization reads", async () => {
-  const foreign = Buffer.from(JSON.stringify({ version: 1, organization_id: "foreign", project_id: "proj_artoo", last_task_id: "any" })).toString("base64url");
-  for (const query of ["limit=0", "limit=101", "limit=NaN", "capacity=yes", "extra=1", "after=broken", `after=${foreign}`]) {
+  const foreign = Buffer.from(
+    JSON.stringify({ version: 1, organization_id: "foreign", project_id: "proj_artoo", last_task_id: "any" }),
+  ).toString("base64url");
+  for (const query of [
+    "limit=0",
+    "limit=101",
+    "limit=NaN",
+    "capacity=yes",
+    "extra=1",
+    "after=broken",
+    `after=${foreign}`,
+  ]) {
     expect((await server.app.inject({ method: "GET", url: `${endpoint}?${query}` })).statusCode, query).toBe(400);
   }
-  expect((await server.app.inject({ method: "GET", url: "/api/v1/projects/missing/control-view" })).statusCode).toBe(404);
-  await expect(getProjectControlView({ ...server.ctx, organizationId: "foreign" }, "proj_artoo", {})).rejects.toThrow("Project not found");
+  expect((await server.app.inject({ method: "GET", url: "/api/v1/projects/missing/control-view" })).statusCode).toBe(
+    404,
+  );
+  await expect(getProjectControlView({ ...server.ctx, organizationId: "foreign" }, "proj_artoo", {})).rejects.toThrow(
+    "Project not found",
+  );
 });

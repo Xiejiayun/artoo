@@ -3,7 +3,9 @@ import type { MaterializedWorktree } from "./owned/worktree-reservation.js";
 
 declare const admissionBrand: unique symbol;
 /** In-memory authority only; a serialized or copied object has no authority. */
-export interface OwnedRunAdmission { readonly [admissionBrand]: true }
+export interface OwnedRunAdmission {
+  readonly [admissionBrand]: true;
+}
 
 export interface OwnedAdmissionIdentity {
   readonly launchKey: string;
@@ -29,10 +31,15 @@ export interface OwnedPhysicalFacts {
   readonly guardianStdioClosed: boolean;
   readonly guardianGroupAbsent: boolean;
   /** Genuine original Job observations; POSIX group absence is never synthesized on Windows. */
-  readonly windowsJob?: Readonly<{ readonly version: 1; readonly rootCreationTime: string | null;
-    readonly atomicJobMember: boolean; readonly jobEmptyObserved: boolean;
-    readonly helperExitObserved: boolean; readonly helperCloseObserved: boolean;
-    readonly nativeClosureConfirmed: boolean }>;
+  readonly windowsJob?: Readonly<{
+    readonly version: 1;
+    readonly rootCreationTime: string | null;
+    readonly atomicJobMember: boolean;
+    readonly jobEmptyObserved: boolean;
+    readonly helperExitObserved: boolean;
+    readonly helperCloseObserved: boolean;
+    readonly nativeClosureConfirmed: boolean;
+  }>;
 }
 
 export interface OwnedStartupReceipt {
@@ -53,10 +60,17 @@ export interface OwnedRunStatusReceipt {
 }
 
 export interface OwnedRunRuntimeAdapter extends RuntimeAdapter {
-  startOwnedRun(config: AgentInstanceConfig, worktree: MaterializedWorktree,
-    admission: OwnedRunAdmission, signal: AbortSignal): Promise<AgentInstanceHandle>;
-  stopOwnedRun(handle: AgentInstanceHandle, admission: OwnedRunAdmission,
-    reason: StopReason): Promise<OwnedStopReceipt>;
+  startOwnedRun(
+    config: AgentInstanceConfig,
+    worktree: MaterializedWorktree,
+    admission: OwnedRunAdmission,
+    signal: AbortSignal,
+  ): Promise<AgentInstanceHandle>;
+  stopOwnedRun(
+    handle: AgentInstanceHandle,
+    admission: OwnedRunAdmission,
+    reason: StopReason,
+  ): Promise<OwnedStopReceipt>;
   /** Physical state only. Buffered delivery is tracked separately by NodeClient. */
   inspectOwnedRun(handle: AgentInstanceHandle, admission: OwnedRunAdmission): Promise<OwnedRunStatusReceipt>;
 }

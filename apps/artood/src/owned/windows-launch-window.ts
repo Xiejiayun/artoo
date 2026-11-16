@@ -6,11 +6,19 @@ export interface WindowsLaunchWindowV1 {
   readonly deadline_ms: number;
 }
 export const windowsQpcMs = () => Number(process.hrtime.bigint() / 1_000_000n);
-export function snapshotWindowsLaunchWindow(input: WindowsLaunchWindowV1 | undefined): WindowsLaunchWindowV1 | undefined {
+export function snapshotWindowsLaunchWindow(
+  input: WindowsLaunchWindowV1 | undefined,
+): WindowsLaunchWindowV1 | undefined {
   if (input === undefined) return;
   const now = windowsQpcMs();
-  if (process.platform !== "win32" || input.version !== 1 || input.clock !== "windows-qpc-ms.v1"
-    || !Number.isSafeInteger(input.deadline_ms) || input.deadline_ms <= now || input.deadline_ms - now > 5000)
+  if (
+    process.platform !== "win32" ||
+    input.version !== 1 ||
+    input.clock !== "windows-qpc-ms.v1" ||
+    !Number.isSafeInteger(input.deadline_ms) ||
+    input.deadline_ms <= now ||
+    input.deadline_ms - now > 5000
+  )
     throw new Error("An unexpired original bounded Windows QPC launch window is required");
   return Object.freeze({ version: 1, clock: "windows-qpc-ms.v1", deadline_ms: input.deadline_ms });
 }

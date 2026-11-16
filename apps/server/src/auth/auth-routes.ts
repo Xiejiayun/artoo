@@ -18,16 +18,15 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import type { AuthConfig } from "./auth-config.js";
-import {
-  consumeOauthFlow,
-  createOauthFlow,
-  createSession,
-  provisionUser,
-  revokeSession,
-} from "./auth-service.js";
+import { consumeOauthFlow, createOauthFlow, createSession, provisionUser, revokeSession } from "./auth-service.js";
 import { clearCookie, parseCookies, serializeCookie } from "./cookies.js";
 import { buildAuthorizationUrl, validateIdToken, type OidcHttp } from "./oidc-client.js";
-import { mayAdministerRoute, requestCredential, resolveRequestPrincipal, revokeControlSession } from "./request-auth.js";
+import {
+  mayAdministerRoute,
+  requestCredential,
+  resolveRequestPrincipal,
+  revokeControlSession,
+} from "./request-auth.js";
 
 export interface AuthDeps {
   config: AuthConfig;
@@ -147,8 +146,10 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: ServerContext, dep
       void reply.status(401);
       return unauthorized();
     }
-    return { user: principal.user, ...(principal.credential.kind === "device"
-      ? { device_id: principal.credential.deviceId } : {}) };
+    return {
+      user: principal.user,
+      ...(principal.credential.kind === "device" ? { device_id: principal.credential.deviceId } : {}),
+    };
   });
 
   app.post("/auth/logout", async (req, reply) => {
@@ -196,8 +197,11 @@ export function registerApiAuthGuard(app: FastifyInstance, ctx: ServerContext, c
     if (req.method === "GET" && route === "/api/v1/node/runs/:id/dependency-artifacts/:artifactId/content") {
       return; // Exact route checks the current paired node, Run and frozen dependency.
     }
-    if ((req.method === "PUT" || req.method === "GET") && (route === "/api/v1/node/product-source-transfers/:id/content"
-      || route === "/api/v1/node/product-source-transfers-v2/:id/content")) {
+    if (
+      (req.method === "PUT" || req.method === "GET") &&
+      (route === "/api/v1/node/product-source-transfers/:id/content" ||
+        route === "/api/v1/node/product-source-transfers-v2/:id/content")
+    ) {
       return; // Dedicated route requires paired node credentials and exact durable admission.
     }
     // Device pairing claim (#28 4b) is authenticated by the pairing CODE itself —
@@ -214,7 +218,7 @@ export function registerApiAuthGuard(app: FastifyInstance, ctx: ServerContext, c
     }
     // Bind the authenticated user to the request so handlers run services as them.
     (req as RequestWithActor).actorUserId = principal.user.id;
-    if (!await mayAdministerRoute(ctx, principal, req)) {
+    if (!(await mayAdministerRoute(ctx, principal, req))) {
       throw AppError.permissionDenied("an owner or admin is required for this action");
     }
   });

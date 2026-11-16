@@ -2,7 +2,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { dependencyInputsRegistrationSchema } from "@artoo/protocol";
-import { assertTaskAgentReviewCurrent, assertTaskAgentReviewRun, taskAgentReviewForTask } from "./services/task-agent-review-binding.js";
+import {
+  assertTaskAgentReviewCurrent,
+  assertTaskAgentReviewRun,
+  taskAgentReviewForTask,
+} from "./services/task-agent-review-binding.js";
 
 import { and, eq } from "drizzle-orm";
 
@@ -1539,11 +1543,13 @@ export function attachNodeBinding(
       }
       await ctx.db.transaction(async (tx) => {
         const opinion = await taskAgentReviewForTask(ctx, tx, run.taskId);
-        if (Boolean(opinion) !== Boolean(context.payload?.agent_review_subject)) throw AppError.conflict("Artifact opinion dispatch lost its persisted relation");
+        if (Boolean(opinion) !== Boolean(context.payload?.agent_review_subject))
+          throw AppError.conflict("Artifact opinion dispatch lost its persisted relation");
         if (opinion) {
           await assertTaskAgentReviewCurrent(ctx, tx, opinion, { lockSource: true });
           await assertTaskAgentReviewRun(ctx, tx, opinion, run);
-          if (!binding.supportsDependencyInputs?.()) throw AppError.conflict("The paired node cannot load this artifact opinion's actual inputs");
+          if (!binding.supportsDependencyInputs?.())
+            throw AppError.conflict("The paired node cannot load this artifact opinion's actual inputs");
         }
         await assertDesignRevisionRunAdmission(ctx, tx, run, { live: true });
         // Keep the computer fence through the real send. prepareStop takes this
@@ -1925,7 +1931,8 @@ export function attachNodeBinding(
         type: "node.dependency-inputs.session.v1",
         payload: { version: 1, node_id: computerId, session_id: pairedSession.sessionId },
       });
-      if (closed || !isCurrentBinding()) throw AppError.conflict("Dependency input session announcement lost its original binding");
+      if (closed || !isCurrentBinding())
+        throw AppError.conflict("Dependency input session announcement lost its original binding");
     },
     getApplicationPublicationCapabilities(profileId, projectId) {
       if (

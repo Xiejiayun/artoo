@@ -94,8 +94,14 @@ export interface OwnedGitReceipt {
   readonly trigger: Trigger | null;
   readonly spawnErrorCode?: string;
   readonly parent_guard?: ParentGuardReceipt;
-  readonly windowsJob?: Readonly<{ version: 1; rootCreationTime: string | null; atomicJobMember: boolean; jobEmptyObserved: boolean;
-    helperExitObserved: boolean; helperCloseObserved: boolean }>;
+  readonly windowsJob?: Readonly<{
+    version: 1;
+    rootCreationTime: string | null;
+    atomicJobMember: boolean;
+    jobEmptyObserved: boolean;
+    helperExitObserved: boolean;
+    helperCloseObserved: boolean;
+  }>;
 }
 export interface OwnedGitResult {
   readonly status: number;
@@ -141,8 +147,8 @@ function gitEnvironment(source: Readonly<NodeJS.ProcessEnv>, indexFile?: string)
 /** Real asynchronous execution. This is ownership-aware cleanup under a cooperating-worker model,
  * not a sandbox, a PID-reuse-proof kernel handle, or authority to promote an opaque worktree. */
 export function runOwnedGit(request: OwnedGitRequest, options: OwnedGitOptions): Promise<OwnedGitResult> {
-  if (process.platform === "win32") return runWindowsOwnedGit(request, options,
-    gitEnvironment(options.environment ?? process.env, options.indexFile));
+  if (process.platform === "win32")
+    return runWindowsOwnedGit(request, options, gitEnvironment(options.environment ?? process.env, options.indexFile));
   // Snapshot values synchronously; never retain mutable request/options/argv across callbacks.
   const inputArgs = request.args;
   const cwd = request.cwd,

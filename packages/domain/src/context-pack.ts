@@ -46,7 +46,17 @@ import {
 export const ContextPackSchema = z.object({
   agent_review_subject: TaskAgentReviewSubjectV1Schema.optional(),
   // Frozen descriptive guidance only; this carries no admission or verifier authority.
-  agent_configuration: z.object({ version: z.literal(1), agent_id: z.string().min(1), revision: z.number().int().positive(), role: z.string(), description: z.string(), instructions: z.string() }).strict().optional(),
+  agent_configuration: z
+    .object({
+      version: z.literal(1),
+      agent_id: z.string().min(1),
+      revision: z.number().int().positive(),
+      role: z.string(),
+      description: z.string(),
+      instructions: z.string(),
+    })
+    .strict()
+    .optional(),
   source_inputs: SourceInputsV1Schema.optional(),
   app_delivery: ApplicationDeliveryV1Schema.optional(),
   app_publication: ApplicationPublicationGrantV1Schema.optional(),

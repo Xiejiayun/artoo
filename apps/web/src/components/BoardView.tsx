@@ -172,8 +172,22 @@ export function BoardView(): React.ReactNode {
           <p>{goal ? goal.title : "Keep work moving, from the first brief to the final review."}</p>
         </div>
         <div className="action-row">
-          <div className="cowork-layout-picker" role="group" aria-label="Board layout"><Button size="sm" iconLeft={LayoutGrid} aria-pressed={layout === "lanes"} onClick={() => setLayout("lanes")}>Lanes</Button><Button size="sm" iconLeft={GitFork} aria-pressed={layout === "tree"} onClick={() => setLayout("tree")}>Delegation tree</Button></div>
-          <Link className="os-secondary-link" to={`/agents?project=${encodeURIComponent(projectId ?? "")}`}>Squad</Link>
+          <div className="cowork-layout-picker" role="group" aria-label="Board layout">
+            <Button
+              size="sm"
+              iconLeft={LayoutGrid}
+              aria-pressed={layout === "lanes"}
+              onClick={() => setLayout("lanes")}
+            >
+              Lanes
+            </Button>
+            <Button size="sm" iconLeft={GitFork} aria-pressed={layout === "tree"} onClick={() => setLayout("tree")}>
+              Delegation tree
+            </Button>
+          </div>
+          <Link className="os-secondary-link" to={`/agents?project=${encodeURIComponent(projectId ?? "")}`}>
+            Squad
+          </Link>
           <Link className="os-secondary-link" to={goal ? `/?goal=${encodeURIComponent(goal.id)}` : "/"}>
             Task list
           </Link>
@@ -188,7 +202,25 @@ export function BoardView(): React.ReactNode {
           )}
         </div>
       </header>
-      <div className="cowork-board-observation"><span>{control.isError ? "Execution observations unavailable; task list remains available." : control.view ? `${control.view.summary.total_tasks} project tasks · ${control.entries.length} execution observations loaded · observed ${new Date(control.view.observed_at).toLocaleTimeString()}` : "Loading execution observations…"}</span>{control.isError && <Button size="sm" onClick={() => void control.refetch()}>Retry observations</Button>}{control.hasNextPage && <Button size="sm" loading={control.isFetchingNextPage} onClick={() => void control.fetchNextPage()}>Load more tasks</Button>}</div>
+      <div className="cowork-board-observation">
+        <span>
+          {control.isError
+            ? "Execution observations unavailable; task list remains available."
+            : control.view
+              ? `${control.view.summary.total_tasks} project tasks · ${control.entries.length} execution observations loaded · observed ${new Date(control.view.observed_at).toLocaleTimeString()}`
+              : "Loading execution observations…"}
+        </span>
+        {control.isError && (
+          <Button size="sm" onClick={() => void control.refetch()}>
+            Retry observations
+          </Button>
+        )}
+        {control.hasNextPage && (
+          <Button size="sm" loading={control.isFetchingNextPage} onClick={() => void control.fetchNextPage()}>
+            Load more tasks
+          </Button>
+        )}
+      </div>
       <div className="work-board__toolbar">
         <Select
           label="Goal scope"
@@ -225,7 +257,15 @@ export function BoardView(): React.ReactNode {
             </option>
           ))}
         </Select>
-        <Select label="Assignee" value={assignee} onChange={(event) => setAssignee(event.target.value)}><option value="all">All assignees</option>{bootstrap.data?.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.display_name}</option>)}{bootstrap.data?.user && <option value={bootstrap.data.user.id}>{bootstrap.data.user.display_name}</option>}</Select>
+        <Select label="Assignee" value={assignee} onChange={(event) => setAssignee(event.target.value)}>
+          <option value="all">All assignees</option>
+          {bootstrap.data?.agents.map((agent) => (
+            <option key={agent.id} value={agent.id}>
+              {agent.display_name}
+            </option>
+          ))}
+          {bootstrap.data?.user && <option value={bootstrap.data.user.id}>{bootstrap.data.user.display_name}</option>}
+        </Select>
         <Button
           size="sm"
           className="os-attention-filter"
@@ -345,7 +385,9 @@ export function BoardView(): React.ReactNode {
                             {task.title}
                           </span>
                           <span className="cowork-task-reference">{task.id}</span>
-                          {!control.isError && observations.has(task.id) && <ControlTaskFacts entry={observations.get(task.id)!} bootstrap={bootstrap.data} />}
+                          {!control.isError && observations.has(task.id) && (
+                            <ControlTaskFacts entry={observations.get(task.id)!} bootstrap={bootstrap.data} />
+                          )}
                           {task.description ? (
                             <span className="work-board-card__description" title={task.description}>
                               {task.description}
@@ -380,8 +422,30 @@ export function BoardView(): React.ReactNode {
         <CreateTaskModal projectId={projectId} onClose={() => setCreating(false)} onCreated={openTask} />
       ) : null}
       {taskContext.requested && taskContext.contextLoading && <p role="status">Opening linked task…</p>}
-      {taskContext.contextError && <ErrorState title="Task unavailable" description={taskContext.contextError.message} action={<><Button onClick={taskContext.retryContext}>Retry linked task</Button><Button onClick={() => taskContext.selectTask(null)}>Close linked task</Button></>} />}
-      {taskContext.requested && taskContext.taskId && projectId && !taskContext.contextLoading && !taskContext.contextError && <TaskDrawer taskId={taskContext.taskId} projectId={projectId} onClose={() => taskContext.selectTask(null)} onSelectTask={openTask} />}
+      {taskContext.contextError && (
+        <ErrorState
+          title="Task unavailable"
+          description={taskContext.contextError.message}
+          action={
+            <>
+              <Button onClick={taskContext.retryContext}>Retry linked task</Button>
+              <Button onClick={() => taskContext.selectTask(null)}>Close linked task</Button>
+            </>
+          }
+        />
+      )}
+      {taskContext.requested &&
+        taskContext.taskId &&
+        projectId &&
+        !taskContext.contextLoading &&
+        !taskContext.contextError && (
+          <TaskDrawer
+            taskId={taskContext.taskId}
+            projectId={projectId}
+            onClose={() => taskContext.selectTask(null)}
+            onSelectTask={openTask}
+          />
+        )}
     </div>
   );
 }

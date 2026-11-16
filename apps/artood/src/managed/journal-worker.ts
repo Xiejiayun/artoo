@@ -467,11 +467,22 @@ function view(value: RunRow): JournalRun {
   };
   const unused = readSchedulerUnusedPermit(result);
   if (unused) {
-    const saved = row<EventRow>("SELECT * FROM outbox WHERE namespace=? AND run_id=? AND event_id=?",
-      value.namespace, value.run_id, `sys:unused-permit:${unused.grant_id}`);
-    if (!saved || saved.sequence !== 0 || saved.role !== "event" || saved.superseded !== 0
-      || value.next_sequence !== 1 || value.delivery_revision !== 0 || value.delivery_correction_json !== null
-      || saved.content_json !== JSON.stringify({ type: "scheduler.permit_unused", payload: unused }))
+    const saved = row<EventRow>(
+      "SELECT * FROM outbox WHERE namespace=? AND run_id=? AND event_id=?",
+      value.namespace,
+      value.run_id,
+      `sys:unused-permit:${unused.grant_id}`,
+    );
+    if (
+      !saved ||
+      saved.sequence !== 0 ||
+      saved.role !== "event" ||
+      saved.superseded !== 0 ||
+      value.next_sequence !== 1 ||
+      value.delivery_revision !== 0 ||
+      value.delivery_correction_json !== null ||
+      saved.content_json !== JSON.stringify({ type: "scheduler.permit_unused", payload: unused })
+    )
       throw new Error("Unused scheduler permit lacks its exact unique durable receipt event");
     event(saved);
   }
@@ -638,7 +649,9 @@ function closedRun(input: Record<string, unknown>): RunRow {
     value.mode !== "per-run" ||
     value.launch_key !== input["key"] ||
     value.receipt_id !== input["physicalReceiptId"] ||
-    (input["settlementScope"] === "scheduler-unused-permit.v1" ? !unused : unused !== undefined || view(value).receipt?.kind !== "process_exit_confirmed")
+    (input["settlementScope"] === "scheduler-unused-permit.v1"
+      ? !unused
+      : unused !== undefined || view(value).receipt?.kind !== "process_exit_confirmed")
   ) {
     throw new Error("Closed-run delivery requires an exact durable physical settlement, key and receipt");
   }
@@ -850,7 +863,9 @@ function failAttempt(
   if (target.committed || attempt.accepted) return;
   if (attempt.failure === null) attempt.failure = reason;
   const completedPath =
-    !readSchedulerUnusedPermit(view(value)) && value.delivery_revision === 0 && JSON.parse(value.final_outcome_json!).terminal.payload.phase === "completed";
+    !readSchedulerUnusedPermit(view(value)) &&
+    value.delivery_revision === 0 &&
+    JSON.parse(value.final_outcome_json!).terminal.payload.phase === "completed";
   const exhausted =
     (reason === "rejected" && (completedPath || readSchedulerUnusedPermit(view(value)) !== undefined)) ||
     now >= target.deadline_tick_ms! ||
@@ -1083,7 +1098,9 @@ function executeDelivery(op: string, input: Record<string, unknown>): unknown {
   }
   events = runEvents(value.run_id);
   const active = events.filter((e) => !e.committed && !e.superseded),
-    originalCompleted = !readSchedulerUnusedPermit(view(value)) && JSON.parse(value.final_outcome_json!).terminal.payload.phase === "completed";
+    originalCompleted =
+      !readSchedulerUnusedPermit(view(value)) &&
+      JSON.parse(value.final_outcome_json!).terminal.payload.phase === "completed";
   const successPath = originalCompleted && value.delivery_revision === 0;
   // Non-success metadata gets an initial attempt before its terminal. After a
   // failed attempt, let the failure terminal proceed and retry metadata later.
@@ -1389,18 +1406,44 @@ function execute(op: string, input: Record<string, unknown>): unknown {
     });
   if (op === "scheduler_permit_unused")
     return transaction(() => {
-      const value = owned(input), prepared = schedulerPreparation(value.run_id);
+      const value = owned(input),
+        prepared = schedulerPreparation(value.run_id);
       const grant = prepared && startGrantView(value, prepared);
-      if (schemaVersion !== 6 || !grant || value.mode !== "per-run" || value.phase === "closed"
-        || value.phase === "started" || value.receipt_id !== null || value.next_sequence !== 0 || value.final_outcome_json !== null)
+      if (
+        schemaVersion !== 6 ||
+        !grant ||
+        value.mode !== "per-run" ||
+        value.phase === "closed" ||
+        value.phase === "started" ||
+        value.receipt_id !== null ||
+        value.next_sequence !== 0 ||
+        value.final_outcome_json !== null
+      )
         throw new Error("Unused scheduler permit requires the untouched original prestart Run");
-      const payload = SchedulerPermitUnusedV1Schema.parse({ version: 1, scope: "scheduler-unused-permit.v1",
-        grant_id: grant.grantId, journal_namespace: marker.namespace, node_attempt_id: grant.nodeAttemptId, process_never_started: true });
+      const payload = SchedulerPermitUnusedV1Schema.parse({
+        version: 1,
+        scope: "scheduler-unused-permit.v1",
+        grant_id: grant.grantId,
+        journal_namespace: marker.namespace,
+        node_attempt_id: grant.nodeAttemptId,
+        process_never_started: true,
+      });
       const content = JSON.stringify({ type: "scheduler.permit_unused", payload });
-      write("INSERT INTO outbox (namespace,node_id,run_id,sequence,event_id,content_json,content_sha256,committed,role) VALUES (?,?,?,0,?,?,?,0,'event')",
-        marker.namespace, marker.nodeId, value.run_id, `sys:unused-permit:${grant.grantId}`, content, digest(content));
-      write("UPDATE runs SET phase='closed',stop_requested=1,revision=revision+1,next_sequence=1,final_outcome_json=? WHERE namespace=? AND run_id=?",
-        JSON.stringify({ schedulerUnusedPermit: { type: "scheduler.permit_unused", payload } }), marker.namespace, value.run_id);
+      write(
+        "INSERT INTO outbox (namespace,node_id,run_id,sequence,event_id,content_json,content_sha256,committed,role) VALUES (?,?,?,0,?,?,?,0,'event')",
+        marker.namespace,
+        marker.nodeId,
+        value.run_id,
+        `sys:unused-permit:${grant.grantId}`,
+        content,
+        digest(content),
+      );
+      write(
+        "UPDATE runs SET phase='closed',stop_requested=1,revision=revision+1,next_sequence=1,final_outcome_json=? WHERE namespace=? AND run_id=?",
+        JSON.stringify({ schedulerUnusedPermit: { type: "scheduler.permit_unused", payload } }),
+        marker.namespace,
+        value.run_id,
+      );
       insertReceipt(run(value.run_id)!, "not_started_fenced", payload);
       return view(run(value.run_id)!);
     });

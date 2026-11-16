@@ -144,7 +144,9 @@ export function registerNodeWsRoute(
       registered = true;
       clearTimeout(initializationTimer);
       registry.register(nodeId, binding);
-      void binding.announceDependencyInputsSession?.().catch(() => close(1008, "dependency input session announcement failed"));
+      void binding
+        .announceDependencyInputsSession?.()
+        .catch(() => close(1008, "dependency input session announcement failed"));
       if (qualifiedReceiptsReady)
         void binding.announceSourceRecoverySession?.().catch(() => close(1008, "recovery session announcement failed"));
       void setComputerOnline(ctx, nodeId);
@@ -250,11 +252,20 @@ export function registerNodeWsRoute(
         close(1008, "unsupported managed receipt request");
         return;
       }
-      if (message.scheduler_claim && (message.scheduler_claim.version !== 1 || !message.scheduler_run || !message.scheduler_lease || !message.scheduler_start)) {
+      if (
+        message.scheduler_claim &&
+        (message.scheduler_claim.version !== 1 ||
+          !message.scheduler_run ||
+          !message.scheduler_lease ||
+          !message.scheduler_start)
+      ) {
         close(1008, "scheduler claim requires supported lifecycle, lease and start negotiation");
         return;
       }
-      if (message.scheduler_run && (message.scheduler_run.version !== 1 || !message.scheduler_start || !message.scheduler_lease)) {
+      if (
+        message.scheduler_run &&
+        (message.scheduler_run.version !== 1 || !message.scheduler_start || !message.scheduler_lease)
+      ) {
         close(1008, "scheduler lifecycle requires supported start and lease negotiation");
         return;
       }
@@ -325,18 +336,40 @@ export function registerNodeWsRoute(
             });
           if (message.scheduler_run)
             schedulerRun = createSchedulerRunServerChannel(ctx, {
-              computerId, sessionId, namespace: message.scheduler_start.journal_namespace,
-              isCurrent: () => raw.readyState === 1 && !terminated && registered && managed?.active === true && managed.id === sessionId && registry.get(computerId) === binding && binding?.getPairedNodeSession?.()?.sessionId === sessionId,
-              send: (reply) => transport.send(reply), close: (reason) => close(1008, reason),
+              computerId,
+              sessionId,
+              namespace: message.scheduler_start.journal_namespace,
+              isCurrent: () =>
+                raw.readyState === 1 &&
+                !terminated &&
+                registered &&
+                managed?.active === true &&
+                managed.id === sessionId &&
+                registry.get(computerId) === binding &&
+                binding?.getPairedNodeSession?.()?.sessionId === sessionId,
+              send: (reply) => transport.send(reply),
+              close: (reason) => close(1008, reason),
               onRejected: (operation) => app.log.debug({ operation }, "Scheduler lifecycle exchange rejected"),
             });
         }
         if (message.scheduler_claim) {
-          const computerId = nodeId!, sessionId = managed.id;
-          const isCurrent = () => raw.readyState === 1 && !terminated && registered && managed?.active === true && managed.id === sessionId && registry.get(computerId) === binding && binding?.getPairedNodeSession?.()?.sessionId === sessionId;
+          const computerId = nodeId!,
+            sessionId = managed.id;
+          const isCurrent = () =>
+            raw.readyState === 1 &&
+            !terminated &&
+            registered &&
+            managed?.active === true &&
+            managed.id === sessionId &&
+            registry.get(computerId) === binding &&
+            binding?.getPairedNodeSession?.()?.sessionId === sessionId;
           binding!.schedulerClaimConsumer = isCurrent;
-          schedulerClaim = createSchedulerClaimServerChannel(ctx, { computerId, sessionId, isCurrent,
-            send: (reply) => transport.send(reply), close: (reason) => close(1008, reason),
+          schedulerClaim = createSchedulerClaimServerChannel(ctx, {
+            computerId,
+            sessionId,
+            isCurrent,
+            send: (reply) => transport.send(reply),
+            close: (reason) => close(1008, reason),
             onRejected: () => app.log.debug("Scheduler claim poll rejected"),
           });
         }
@@ -406,7 +439,10 @@ export function registerNodeWsRoute(
         }
         nodeId = computerId;
         managedRequested = message.managed_receipts !== undefined;
-        if ((message.scheduler_start || message.scheduler_lease || message.scheduler_run || message.scheduler_claim) && !managedRequested) {
+        if (
+          (message.scheduler_start || message.scheduler_lease || message.scheduler_run || message.scheduler_claim) &&
+          !managedRequested
+        ) {
           close(1008, "scheduler start requires managed receipts");
           return;
         }
@@ -507,7 +543,11 @@ export function registerNodeWsRoute(
         void schedulerClaim(message);
         return;
       }
-      if (message.kind === "scheduler.run.acquire.v1" || message.kind === "scheduler.run.status.v1" || message.kind === "scheduler.run.event.v1") {
+      if (
+        message.kind === "scheduler.run.acquire.v1" ||
+        message.kind === "scheduler.run.status.v1" ||
+        message.kind === "scheduler.run.event.v1"
+      ) {
         if (!schedulerRun || message.node_id !== nodeId || message.session_id !== managed?.id) {
           close(1008, "scheduler lifecycle session was not negotiated or no longer matches");
           return;
