@@ -12,6 +12,7 @@ import * as runService from "./services/run-service.js";
 import { buildTestServer, type TestServer } from "./test-support.js";
 import type { GraceWindowManager } from "./ws/grace-window.js";
 import { parseNodeToServer } from "./ws/ws-node-transport.js";
+import { MemoryArtifactStore } from "./test-fixtures/memory-artifact-store.js";
 
 const NODE_ID = "computer_local_mock";
 
@@ -544,7 +545,9 @@ describe("node WS auth gate (#28 slice 3a)", () => {
   });
 
   it("announces dependency reads only to the opted-in paired socket and fences its old session on reconnect", async () => {
-    server = await buildTestServer();
+    // Paired dependency reads require a configured content store; a token alone
+    // must not advertise content access when the server cannot serve the bytes.
+    server = await buildTestServer({ artifactStore: new MemoryArtifactStore() });
     const computerId = "computer_dependency_inputs";
     const raw = await seedNodeToken(server, "dependency_inputs", { computerId });
     const port = await listen(server);
