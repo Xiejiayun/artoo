@@ -105,6 +105,34 @@ function fixture() {
 }
 
 describe("private scheduler ready exchange and conservative start window (no launch authority)", () => {
+  it("consumes only the original window once and retains the original guard after consumption", () => {
+    const f = fixture(),
+      request = f.begin();
+    const window = f.manager.accept(request.exchange, f.response(request.ready));
+    expect(() => f.manager.consume(structuredClone(window))).toThrow("unused private");
+    expect(() => fixture().manager.consume(window)).toThrow("unused private");
+    const claimed = f.manager.consume(window);
+    expect(claimed.proposal).toEqual(f.proposal);
+    expect(claimed.record).toEqual(f.record);
+    expect(claimed.startedTickMs).toBe(100);
+    expect(claimed.deadlineTickMs).toBe(1100);
+    expect(() => f.manager.consume(window)).toThrow("unused private");
+    claimed.assertCurrent();
+    f.controller.abort(new Error("Original ready channel closed"));
+    expect(() => claimed.assertCurrent()).toThrow("Original ready channel closed");
+    expect(() => f.manager.consume(window)).toThrow("unused private");
+  });
+
+  it("burns an expired consumption chance without recovering it by restoring the test clock", () => {
+    const f = fixture(),
+      request = f.begin();
+    const window = f.manager.accept(request.exchange, f.response(request.ready));
+    f.tick(1100);
+    expect(() => f.manager.consume(window)).toThrow("deadline");
+    f.tick(101);
+    expect(() => f.manager.consume(window)).toThrow("unused private");
+  });
+
   it("includes the entire round trip and never recreates authority from copies, another manager or replay", () => {
     const f = fixture(),
       request = f.begin();

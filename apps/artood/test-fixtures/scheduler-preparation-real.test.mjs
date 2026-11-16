@@ -1,11 +1,13 @@
-// Actual production boundary + worker + SQLite. No provider, Git materialization,
-// process launch, live scheduler consumer or elapsed rollout acceptance.
+// Actual production boundary + worker + SQLite, plus one controlled real Git /
+// author closure case. No Provider, live scheduler consumer or rollout acceptance.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -17,6 +19,13 @@ import { join, relative, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { allocateWorkspaceRoot } from "@artoo/protocol";
+import { createProcessAdapter } from "../dist/process-adapter.js";
+import { provisionRunNamespace } from "../dist/owned/workspace-namespace.js";
+import {
+  prepareOwnedWorktree,
+  reserveOwnedWorktree,
+  materializeOwnedWorktree,
+} from "../dist/owned/worktree-reservation.js";
 import {
   openLocalJournal,
   provisionLocalJournal,
@@ -117,7 +126,8 @@ async function fixture(t, body) {
     nodeId: "computer_one",
   };
   const journals = [];
-  let closureUncertain = false;
+  let closureUncertain = false,
+    primaryFailure;
   const inspect = (sql, ...args) => {
     const database = new DatabaseSync(join(options.directory, "journal.sqlite"), {
       readOnly: true,
@@ -154,6 +164,9 @@ async function fixture(t, body) {
       open,
       inspect,
       edit,
+      retain: () => {
+        closureUncertain = true;
+      },
       request: (value) => ({
         expectedNamespace: options.expectedNamespace,
         runId: value.run_start.run_id,
@@ -167,19 +180,348 @@ async function fixture(t, body) {
         payload: value.run_start,
       }),
     });
-  } finally {
+  } catch (error) {
+    primaryFailure = { error };
+  }
+  try {
     const closures = await Promise.allSettled(journals.map((journal) => journal.close()));
-    closureUncertain = closures.some((result) => result.status === "rejected");
-    // Every test only prepares metadata; none calls a materializer or producer.
-    // Worker closure is still required before deleting its SQLite directory.
+    closureUncertain ||= closures.some((result) => result.status === "rejected");
+    // The physical case separately requires actual Git/author closure. All cases
+    // also require worker closure before deleting the private SQLite directory.
     if (closureUncertain) t.diagnostic(`Worker closure uncertain; retain ${root}`);
     assert.equal(closureUncertain, false, `Worker closure uncertain; retain ${root}`);
     const suffix = relative(realpathSync.native(tmpdir()), root);
     assert.ok(suffix && suffix !== ".." && !suffix.startsWith(`..${sep}`));
     assert.equal(realpathSync.native(root), root);
     rmSync(root, { recursive: true, force: true });
+  } catch (cleanup) {
+    if (primaryFailure)
+      throw new AggregateError([primaryFailure.error, cleanup], "Scheduler fixture failed and cleanup is uncertain", {
+        cause: primaryFailure.error,
+      });
+    throw cleanup;
   }
+  if (primaryFailure) throw primaryFailure.error;
 }
+
+async function readyGrant(journal, value, request, remaining = 5000) {
+  const prepared = await journal.prepareSchedulerStart(request);
+  assert.equal(prepared.kind, "prepared");
+  const controller = new AbortController(),
+    ready = journal.beginSchedulerReady(prepared.preparation, controller.signal);
+  const original = value.prepared_start,
+    now = Date.now();
+  const response = {
+    version: 1,
+    remaining_ms: remaining,
+    grant: {
+      ...ready.ready,
+      scope: "scheduler-start.once.v1",
+      grant_id: randomUUID(),
+      organization_id: original.organization_id,
+      project_id: original.project_id,
+      task_id: original.task_id,
+      actor_user_id: original.actor_user_id,
+      agent_instance_id: original.agent_instance_id,
+      computer_id: original.computer_id,
+      device_id: original.device_id,
+      session_id: original.session_id,
+      issued_at: new Date(now).toISOString(),
+      expires_at: new Date(now + remaining).toISOString(),
+    },
+  };
+  return { window: journal.acceptSchedulerStartGrant(ready.exchange, response), response, controller };
+}
+
+test(
+  "an admitted grant runs a controlled real author once and permits physical settlement after expiry",
+  native,
+  async (t) =>
+    fixture(t, async (f) => {
+      const repo = join(f.root, "repository"),
+        value = proposal(f.root),
+        marker = join(f.root, "author.json");
+      mkdirSync(repo);
+      mkdirSync(value.run_start.workspace_allocation.base_path);
+      const environment = {
+        ...process.env,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_TERMINAL_PROMPT: "0",
+      };
+      for (const key of Object.keys(environment))
+        if (
+          key.startsWith("GIT_") &&
+          !["GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_TERMINAL_PROMPT"].includes(key)
+        )
+          delete environment[key];
+      let physicalUncertain = false,
+        writer,
+        draining,
+        authorClosed = false;
+      const git = (args) => {
+        physicalUncertain = true;
+        const result = execFileSync(
+          "/usr/bin/git",
+          ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args],
+          { cwd: repo, env: environment, encoding: "utf8", timeout: 10000 },
+        );
+        physicalUncertain = false;
+        return result;
+      };
+      const assertClosed = (receipt) => {
+        assert.equal(receipt.kind, "confirmed_closed");
+        for (const field of ["childSpawned", "childExitObserved", "childStdioClosed", "groupAbsent"])
+          assert.equal(receipt.facts?.[field], true, field);
+      };
+      const script = join(f.root, "author.mjs");
+      writeFileSync(
+        script,
+        `import {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(marker)},JSON.stringify({pid:process.pid,cwd:process.cwd()}),{flag:'wx'}); setInterval(()=>{},1000);`,
+        { flag: "wx" },
+      );
+      const adapter = createProcessAdapter({
+        runtimeId: "codex",
+        command: [process.execPath, script],
+        allowedRoots: [f.root],
+      });
+      try {
+        git(["init", "--quiet", "--initial-branch=main"]);
+        git([
+          "-c",
+          "user.name=Artoo fixture",
+          "-c",
+          "user.email=fixture@artoo.local",
+          "commit",
+          "--quiet",
+          "--no-gpg-sign",
+          "--allow-empty",
+          "-m",
+          "baseline",
+        ]);
+        const sourceCommit = git(["rev-parse", "HEAD"]).trim();
+        await upgradeLocalJournalForSchedulerStartGrants(f.options);
+        const journal = await f.open(),
+          request = f.request(value);
+        const { window } = await readyGrant(journal, value, request);
+        const result = await journal.admitSchedulerStart(window);
+        assert.equal(result.kind, "fresh");
+        const guard = () => journal.assertSchedulerStartWindow(window),
+          start = result.payload;
+        await journal.advance(result.permit, "preparing");
+        const input = {
+          root: start.workspace.root,
+          branch: start.workspace.branch,
+          sourceRepo: repo,
+          sourceCommit,
+          allowedRoots: [f.root],
+        };
+        const options = { gitExecutable: "/usr/bin/git", signal: t.signal };
+        physicalUncertain = true;
+        await provisionRunNamespace(
+          {
+            ...input,
+            basePath: start.workspace_allocation.base_path,
+            agentInstanceId: start.agent_instance_id,
+            runId: start.run_id,
+          },
+          options,
+          guard,
+        );
+        const worktree = await materializeOwnedWorktree(
+          await reserveOwnedWorktree(await prepareOwnedWorktree(input, options, guard)),
+        );
+        physicalUncertain = false;
+        await journal.advance(result.permit, "launch_intent");
+        physicalUncertain = true;
+        writer = await journal.startOwnedProcess(result.permit, adapter, worktree, new AbortController().signal);
+        draining = (async () => {
+          for await (const event of adapter.streamEvents(writer.handle)) {
+            assert.ok(event.type);
+          }
+        })();
+        void draining.catch(() => {});
+        await journal.recordStarted(result.permit, adapter, writer.handle);
+        const until = performance.now() + 10000;
+        while (!existsSync(marker)) {
+          t.signal.throwIfAborted();
+          assert.ok(performance.now() < until, "Actual author marker was not written");
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        // The window limits startup only. Let the original five-second grant
+        // expire while the actual child runs, then use its genuine closure receipt.
+        await new Promise((resolve) => setTimeout(resolve, 5100));
+        assert.throws(guard, /deadline/);
+        const closure = await adapter.stopOwnedRun(writer.handle, writer.admission, "user_cancelled");
+        assertClosed(closure);
+        authorClosed = true;
+        await draining;
+        physicalUncertain = false;
+        const actual = JSON.parse(readFileSync(marker, "utf8"));
+        assert.equal(actual.cwd, worktree.root);
+        assert.throws(
+          () => process.kill(actual.pid, 0),
+          (error) => error.code === "ESRCH",
+        );
+        const settled = await journal.settleOwnedProcess(result.permit, writer.handle, closure, {
+          terminal: { type: "run.lifecycle", payload: { phase: "cancelled" } },
+          retentionOutcome: "cancelled",
+        });
+        assert.equal(settled.phase, "closed");
+        assert.equal(settled.receipt.kind, "process_exit_confirmed");
+        assert.equal(settled.schedulerStartGrant.grantId, result.run.schedulerStartGrant.grantId);
+        await assert.rejects(
+          journal.startOwnedProcess(result.permit, adapter, worktree, new AbortController().signal),
+          /unused committed/,
+        );
+        t.diagnostic(
+          JSON.stringify({
+            scope: "controlled real Git/author/SQLite; no Provider or network scheduler",
+            grant_id: settled.schedulerStartGrant.grantId,
+            physical_exit_confirmed: true,
+          }),
+        );
+      } finally {
+        try {
+          if (writer && !authorClosed) {
+            assertClosed(await adapter.stopOwnedRun(writer.handle, writer.admission, "user_cancelled"));
+            authorClosed = true;
+            await draining;
+            physicalUncertain = false;
+          }
+        } finally {
+          if (physicalUncertain) f.retain();
+        }
+      }
+    }),
+);
+
+test(
+  "v6 atomically admits one original grant and preserves historical admission without replay authority",
+  native,
+  async (t) =>
+    fixture(t, async (f) => {
+      await upgradeLocalJournalForSchedulerStartGrants(f.options);
+      const journal = await f.open(),
+        value = proposal(f.root),
+        request = f.request(value);
+      const { window, response, controller } = await readyGrant(journal, value, request);
+      await assert.rejects(journal.admitSchedulerStart(clone(window)), /unused private/);
+      const pending = journal.admitSchedulerStart(window);
+      await assert.rejects(journal.admitSchedulerStart(window), /unused private/);
+      const result = await pending;
+      assert.equal(result.kind, "fresh");
+      assert.equal(result.run.ownership, "local_claim");
+      assert.equal(
+        result.run.schedulerPreparation,
+        undefined,
+        "False-authority preparation metadata is never reinterpreted",
+      );
+      assert.equal(result.run.schedulerStartGrant.grantId, response.grant.grant_id);
+      assert.equal(JSON.stringify(result.permit), "{}");
+      const saved = f.inspect("SELECT * FROM scheduler_start_grants");
+      assert.equal(saved.length, 1);
+      assert.deepEqual(JSON.parse(saved[0].grant_json), response.grant);
+      assert.equal(saved[0].grant_digest, `sha256:${hash(saved[0].grant_json)}`);
+      assert.equal(saved[0].owner_incarnation, journal.incarnation);
+      assert.equal(f.inspect("SELECT owner_nonce IS NOT NULL AS claimed,revision FROM runs")[0].claimed, 1);
+      assert.equal(result.run.revision, 2);
+      assert.equal((await journal.admitStart(f.ordinary(value))).kind, "conflict");
+      assert.equal((await journal.prepareSchedulerStart(request)).kind, "pending");
+      assert.equal((await journal.advance(result.permit, "preparing")).phase, "preparing");
+      controller.abort(new Error("Original ready channel ended"));
+      await assert.rejects(journal.advance(result.permit, "launch_intent"), /Original ready channel ended/);
+      assert.equal((await journal.lookupRun(request)).phase, "preparing");
+      assert.equal(existsSync(value.run_start.workspace_allocation.base_path), false);
+      await journal.close();
+      assert.throws(() => f.edit("UPDATE scheduler_start_grants SET grant_id='rewritten'"), /immutable/);
+      assert.throws(() => f.edit("DELETE FROM scheduler_start_grants"), /immutable/);
+      const reopened = await f.open();
+      assert.equal((await reopened.lookupRun(request)).ownership, "unknown");
+      assert.equal((await reopened.prepareSchedulerStart(request)).kind, "unknown");
+      await assert.rejects(reopened.admitSchedulerStart(window), /unused private/);
+      assert.throws(() => reopened.advance(result.permit, "launch_intent"), /fresh journal permit/);
+    }),
+);
+
+test("grant insertion rolls back when the producer-claim write fails", native, async (t) =>
+  fixture(t, async (f) => {
+    await upgradeLocalJournalForSchedulerStartGrants(f.options);
+    const journal = await f.open(),
+      value = proposal(f.root),
+      request = f.request(value);
+    const { window } = await readyGrant(journal, value, request);
+    f.edit(
+      "CREATE TRIGGER controlled_claim_failure BEFORE UPDATE OF owner_nonce ON runs BEGIN SELECT RAISE(ABORT,'controlled producer claim failure'); END",
+    );
+    await assert.rejects(journal.admitSchedulerStart(window), /controlled producer claim failure/);
+    assert.deepEqual(f.inspect("SELECT * FROM scheduler_start_grants"), []);
+    assert.deepEqual(f.inspect("SELECT owner_nonce,owner_incarnation,revision FROM runs"), [
+      { owner_nonce: null, owner_incarnation: null, revision: 1 },
+    ]);
+    assert.equal(existsSync(value.run_start.workspace_allocation.base_path), false);
+  }),
+);
+
+test(
+  "channel loss during a committed admission withholds the permit and retains the durable claim",
+  native,
+  async (t) =>
+    fixture(t, async (f) => {
+      await upgradeLocalJournalForSchedulerStartGrants(f.options);
+      const journal = await f.open(),
+        value = proposal(f.root),
+        request = f.request(value);
+      const { window, controller } = await readyGrant(journal, value, request);
+      const admission = journal.admitSchedulerStart(window);
+      controller.abort(new Error("Controlled original channel loss"));
+      await assert.rejects(admission, /Controlled original channel loss/);
+      assert.equal(f.inspect("SELECT count(*) AS count FROM scheduler_start_grants")[0].count, 1);
+      assert.equal(f.inspect("SELECT owner_nonce IS NOT NULL AS claimed FROM runs")[0].claimed, 1);
+      await assert.rejects(journal.admitSchedulerStart(window), /unused private/);
+      await journal.close();
+      const reopened = await f.open();
+      assert.equal((await reopened.prepareSchedulerStart(request)).kind, "unknown");
+      assert.equal((await reopened.lookupRun(request)).ownership, "unknown");
+      assert.equal(existsSync(value.run_start.workspace_allocation.base_path), false);
+    }),
+);
+
+test("a held SQLite write lock cannot extend the original grant deadline", native, async (t) =>
+  fixture(t, async (f) => {
+    await upgradeLocalJournalForSchedulerStartGrants(f.options);
+    const journal = await f.open(),
+      value = proposal(f.root),
+      request = f.request(value);
+    const { window } = await readyGrant(journal, value, request, 100);
+    const blocker = new DatabaseSync(join(f.options.directory, "journal.sqlite"), { allowExtension: false });
+    let locked = true;
+    blocker.exec("BEGIN IMMEDIATE");
+    const release = setTimeout(() => {
+      blocker.exec("ROLLBACK");
+      locked = false;
+    }, 250);
+    try {
+      await assert.rejects(journal.admitSchedulerStart(window), /deadline/);
+    } finally {
+      clearTimeout(release);
+      if (locked) blocker.exec("ROLLBACK");
+      blocker.close();
+    }
+    assert.deepEqual(f.inspect("SELECT * FROM scheduler_start_grants"), []);
+    assert.deepEqual(f.inspect("SELECT owner_nonce,owner_incarnation FROM runs"), [
+      { owner_nonce: null, owner_incarnation: null },
+    ]);
+    assert.equal(
+      (await journal.lookupRun(request)).phase,
+      "admitted",
+      "Expected expiry must not fence other journal operations",
+    );
+    const ordinary = await journal.admitStart(f.ordinary(proposal(f.root, "ordinary-after-expiry")));
+    assert.equal(ordinary.kind, "fresh", "An unrelated ordinary admission remains available");
+    assert.equal(existsSync(value.run_start.workspace_allocation.base_path), false);
+  }),
+);
 
 test("unsupported local platforms reject provisioning without creating the directory", {
   skip: process.platform === "darwin",

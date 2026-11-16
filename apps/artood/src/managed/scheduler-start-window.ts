@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { performance } from "node:perf_hooks";
 import {
   SchedulerStartGrantResponseV1Schema,
   SchedulerStartProposalV1Schema,
   canonicalSchedulerStartProposalV1,
   type SchedulerStartProposalV1,
+  type SchedulerStartGrantV1,
 } from "@artoo/domain";
+import { schedulerStartTickMs } from "./scheduler-start-clock.js";
 import type {
   SchedulerPreparationPermit,
   SchedulerPreparationRecord,
@@ -26,13 +27,20 @@ interface Exchange {
   readonly started: number;
   used: boolean;
 }
+interface StartWindow {
+  readonly exchange: Exchange;
+  readonly grant: SchedulerStartGrantV1;
+  readonly deadline: number;
+  readonly assertCurrent: () => void;
+  used: boolean;
+}
 
 /** One manager per live journal facade. Objects from another manager/process
  * cannot acquire this facade's authority. This does not grant durable admission. */
-export function createSchedulerStartWindows(assertAvailable: () => void, tick = () => performance.now()) {
+export function createSchedulerStartWindows(assertAvailable: () => void, tick = schedulerStartTickMs) {
   const preparations = new WeakMap<SchedulerPreparationPermit, Prepared>();
   const exchanges = new WeakMap<SchedulerReadyExchange, Exchange>();
-  const windows = new WeakMap<SchedulerStartWindow, () => void>();
+  const windows = new WeakMap<SchedulerStartWindow, StartWindow>();
   return Object.freeze({
     prepare(raw: SchedulerStartProposalV1, record: SchedulerPreparationRecord): SchedulerPreparationPermit {
       assertAvailable();
@@ -61,7 +69,8 @@ export function createSchedulerStartWindows(assertAvailable: () => void, tick = 
       if (!(signal instanceof AbortSignal)) throw new Error("An actual scheduler channel AbortSignal is required");
       signal.throwIfAborted();
       const started = tick();
-      if (!Number.isFinite(started) || started < 0) throw new Error("Scheduler monotonic clock continuity is unknown");
+      if (!Number.isSafeInteger(started) || started < 0)
+        throw new Error("Scheduler monotonic clock continuity is unknown");
       const record = prepared.record;
       const exchange = Object.freeze({}) as SchedulerReadyExchange;
       const ready = Object.freeze({
@@ -103,6 +112,7 @@ export function createSchedulerStartWindows(assertAvailable: () => void, tick = 
       // Start before sending ready, so all request, database, commit and response
       // latency consumes the server's returned remaining lifetime conservatively.
       const deadline = state.started + response.remaining_ms;
+      if (!Number.isSafeInteger(deadline)) throw new Error("Scheduler monotonic clock continuity is unknown");
       let previous = state.started,
         invalid = false;
       const assertCurrent = () => {
@@ -111,7 +121,7 @@ export function createSchedulerStartWindows(assertAvailable: () => void, tick = 
           assertAvailable();
           state.signal.throwIfAborted();
           const now = tick();
-          if (!Number.isFinite(now) || now < previous || now >= deadline)
+          if (!Number.isSafeInteger(now) || now < previous || now >= deadline)
             throw new Error("Scheduler start deadline expired or monotonic continuity is unknown");
           previous = now;
         } catch (error) {
@@ -121,13 +131,29 @@ export function createSchedulerStartWindows(assertAvailable: () => void, tick = 
       };
       assertCurrent();
       const window = Object.freeze({}) as SchedulerStartWindow;
-      windows.set(window, assertCurrent);
+      windows.set(window, { exchange: state, grant, deadline, assertCurrent, used: false });
       return window;
     },
     assertCurrent(window: SchedulerStartWindow): void {
-      const check = windows.get(window);
-      if (!check) throw new Error("This live journal's private scheduler start window is required");
-      check();
+      const state = windows.get(window);
+      if (!state) throw new Error("This live journal's private scheduler start window is required");
+      state.assertCurrent();
+    },
+    /** Private facade bridge. Claim before any await; failures, lost replies and
+     * concurrent calls never restore the chance to admit this window. */
+    consume(window: SchedulerStartWindow) {
+      const state = windows.get(window);
+      if (!state || state.used) throw new Error("One unused private scheduler start window is required");
+      state.used = true;
+      state.assertCurrent();
+      return Object.freeze({
+        proposal: state.exchange.prepared.proposal,
+        record: state.exchange.prepared.record,
+        grant: state.grant,
+        startedTickMs: state.exchange.started,
+        deadlineTickMs: state.deadline,
+        assertCurrent: state.assertCurrent,
+      });
     },
   });
 }

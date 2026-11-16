@@ -12,7 +12,8 @@ import { snapshotOwnedResultRunAdmission } from "../owned-result-admission.js";
 import { OWNED_RESULT_FINALIZATION_MIGRATION_004 } from "./migrations/004-owned-result-finalization.js";
 import { SCHEDULER_PREPARATION_MIGRATION_005 } from "./migrations/005-scheduler-preparation.js";
 import { SCHEDULER_START_GRANTS_MIGRATION_006 } from "./migrations/006-scheduler-start-grants.js";
-import { snapshotSchedulerProposal } from "./scheduler-preparation.js";
+import { snapshotSchedulerProposal, snapshotSchedulerStartGrant } from "./scheduler-preparation.js";
+import { schedulerStartTickMs } from "./scheduler-start-clock.js";
 import {
   assertBoundary,
   beginProvision,
@@ -33,6 +34,7 @@ import type {
   JournalLocation,
   JournalRun,
   SchedulerPreparationRecord,
+  SchedulerStartGrantRecord,
   StoredEvent,
 } from "./journal-types.js";
 
@@ -51,6 +53,18 @@ interface SchedulerPreparationRow {
   node_attempt_id: string;
   proposal_json: string;
   proposal_digest: string;
+  owner_incarnation: string;
+}
+interface SchedulerStartGrantRow {
+  namespace: string;
+  run_id: string;
+  request_id: string;
+  node_attempt_id: string;
+  ready_id: string;
+  grant_id: string;
+  proposal_digest: string;
+  grant_json: string;
+  grant_digest: string;
   owner_incarnation: string;
 }
 interface RunRow {
@@ -245,13 +259,16 @@ function assertMetadata(): void {
   }
   schemaVersion ??= actualVersion as 3 | 4 | 5 | 6;
 }
-function transaction<T>(operation: () => T): T {
+class SchedulerStartExpired extends Error {}
+
+function transaction<T>(operation: () => T, beforeCommit?: () => void): T {
   assertBoundary(boundary!);
   assertMetadata();
   let committed = false;
   try {
     database!.exec("BEGIN IMMEDIATE");
     const value = operation();
+    beforeCommit?.();
     database!.exec("COMMIT");
     committed = true;
     assertBoundary(boundary!);
@@ -261,7 +278,13 @@ function transaction<T>(operation: () => T): T {
     if (!committed) {
       try {
         database!.exec("ROLLBACK");
-      } catch {
+      } catch (rollback) {
+        // Policy expiry is recoverable only after an observed successful
+        // rollback. An uncertain rollback must still fence this worker.
+        if (error instanceof SchedulerStartExpired)
+          throw new AggregateError([error, rollback], "Scheduler admission expired and rollback is unconfirmed", {
+            cause: error,
+          });
         /* No successful commit is inferred. */
       }
     }
@@ -280,7 +303,7 @@ function schedulerPreparation(runId: string): SchedulerPreparationRow | undefine
       )
     : undefined;
 }
-function preparationView(value: RunRow, saved: SchedulerPreparationRow): SchedulerPreparationRecord {
+function preparationSnapshot(value: RunRow, saved: SchedulerPreparationRow) {
   const snapshot = snapshotSchedulerProposal(JSON.parse(saved.proposal_json));
   if (
     snapshot.canonical !== saved.proposal_json ||
@@ -291,13 +314,19 @@ function preparationView(value: RunRow, saved: SchedulerPreparationRow): Schedul
     snapshot.proposal.prepared_start.request_id !== saved.request_id ||
     snapshot.launch.payload.run_id !== value.run_id ||
     value.mode !== "per-run" ||
-    value.owner_nonce !== null ||
-    value.owner_incarnation !== null ||
+    saved.namespace !== marker.namespace ||
+    saved.run_id !== value.run_id ||
     value.owned_result_admission_json ||
     !/^[a-f0-9-]{36}$/u.test(saved.node_attempt_id)
   ) {
-    throw new Error("Scheduler preparation differs from its unstarted, unowned launch");
+    throw new Error("Scheduler preparation differs from its immutable launch");
   }
+  return snapshot;
+}
+function preparationView(value: RunRow, saved: SchedulerPreparationRow): SchedulerPreparationRecord {
+  const snapshot = preparationSnapshot(value, saved);
+  if (value.owner_nonce !== null || value.owner_incarnation !== null)
+    throw new Error("Scheduler preparation differs from its unstarted, unowned launch");
   return {
     version: 1,
     namespace: marker.namespace,
@@ -308,6 +337,62 @@ function preparationView(value: RunRow, saved: SchedulerPreparationRow): Schedul
     nodeAttemptId: saved.node_attempt_id,
     proposalDigest: saved.proposal_digest,
     executionAuthorized: false,
+  };
+}
+function startGrantView(value: RunRow, prepared: SchedulerPreparationRow): SchedulerStartGrantRecord | undefined {
+  const saved =
+    schemaVersion === 6
+      ? row<SchedulerStartGrantRow>(
+          "SELECT * FROM scheduler_start_grants WHERE namespace=? AND run_id=?",
+          marker.namespace,
+          value.run_id,
+        )
+      : undefined;
+  if (!saved) return;
+  const snapshot = preparationSnapshot(value, prepared);
+  const {
+    grant,
+    canonical,
+    digest: grantDigest,
+  } = snapshotSchedulerStartGrant(JSON.parse(saved.grant_json), snapshot, {
+    namespace: marker.namespace,
+    nodeAttemptId: prepared.node_attempt_id,
+  });
+  if (
+    canonical !== saved.grant_json ||
+    grantDigest !== saved.grant_digest ||
+    saved.request_id !== grant.request_id ||
+    saved.node_attempt_id !== grant.node_attempt_id ||
+    saved.grant_id !== grant.grant_id ||
+    saved.ready_id !== grant.ready_id ||
+    saved.proposal_digest !== snapshot.digest ||
+    saved.owner_incarnation !== prepared.owner_incarnation ||
+    saved.owner_incarnation !== value.owner_incarnation ||
+    !value.owner_nonce ||
+    !/^[a-f0-9-]{36}$/u.test(value.owner_nonce) ||
+    value.revision < 2
+  )
+    throw new Error("Scheduler grant differs from its durable producer binding");
+  return {
+    version: 1,
+    grantId: grant.grant_id,
+    readyId: grant.ready_id,
+    nodeAttemptId: grant.node_attempt_id,
+    proposalDigest: snapshot.digest,
+    grantDigest,
+  };
+}
+let lastSchedulerStartTick: number | undefined;
+function startWindowCheck(input: Record<string, unknown>): () => void {
+  const started = number(input["startedTickMs"]),
+    deadline = number(input["deadlineTickMs"]);
+  if (deadline <= started || deadline - started > 5000) throw new Error("Invalid private scheduler start deadline");
+  return () => {
+    const now = schedulerStartTickMs();
+    if (now < started || (lastSchedulerStartTick !== undefined && now < lastSchedulerStartTick))
+      throw new Error("Scheduler monotonic continuity is unknown");
+    lastSchedulerStartTick = now;
+    if (now >= deadline) throw new SchedulerStartExpired("Scheduler start deadline expired");
   };
 }
 function receipt(receiptId: string | null): DurableReceipt | null {
@@ -328,6 +413,7 @@ function receipt(receiptId: string | null): DurableReceipt | null {
 function view(value: RunRow): JournalRun {
   const admission = readOwnedResultAdmission(value);
   const preparation = schedulerPreparation(value.run_id);
+  const startGrant = preparation && startGrantView(value, preparation);
   const recorded = receipt(value.receipt_id);
   if (value.phase === "closed" && (!recorded || recorded.kind === "accepted"))
     throw new Error("Closed journal row lacks its durable fence receipt");
@@ -363,7 +449,11 @@ function view(value: RunRow): JournalRun {
     mode: value.mode,
     launchKey: value.launch_key,
     ...(admission ? { ownedResultAdmissionDigest: admission.digest } : {}),
-    ...(preparation ? { schedulerPreparation: preparationView(value, preparation) } : {}),
+    ...(startGrant
+      ? { schedulerStartGrant: startGrant }
+      : preparation
+        ? { schedulerPreparation: preparationView(value, preparation) }
+        : {}),
     revision: value.revision,
     phase: value.phase,
     stopRequested: value.stop_requested === 1,
@@ -1095,6 +1185,69 @@ function execute(op: string, input: Record<string, unknown>): unknown {
       );
       return { kind: "prepared", run: view(run(runId)!) };
     });
+  if (op === "scheduler_admit") {
+    if (schemaVersion !== 6) throw new Error("Scheduler grant admission requires an explicit offline journal upgrade");
+    const assertCurrent = startWindowCheck(input);
+    try {
+      assertCurrent();
+      return transaction(() => {
+        // BEGIN IMMEDIATE can wait. Its wait consumes the original ready budget.
+        assertCurrent();
+        const runId = string(input["runId"]),
+          value = run(runId),
+          saved = schedulerPreparation(runId);
+        if (!value || !saved) throw new Error("Scheduler grant requires its original durable preparation");
+        const snapshot = preparationSnapshot(value, saved);
+        const start = snapshotSchedulerStartGrant(JSON.parse(string(input["grantJson"])), snapshot, {
+          namespace: marker.namespace,
+          nodeAttemptId: saved.node_attempt_id,
+        });
+        if (start.canonical !== input["grantJson"] || start.digest !== input["grantDigest"])
+          throw new Error("Scheduler grant serialization changed");
+        const record = view(value);
+        if (value.stop_requested || value.phase === "closed") return { kind: "fenced", run: record };
+        if (record.schedulerStartGrant) {
+          if (record.schedulerStartGrant.grantDigest !== start.digest) return { kind: "conflict", run: record };
+          return { kind: value.owner_incarnation === incarnation ? "pending" : "unknown", run: record };
+        }
+        if (saved.owner_incarnation !== incarnation) return { kind: "unknown", run: record };
+        if (
+          value.phase !== "admitted" ||
+          value.owner_nonce !== null ||
+          value.owner_incarnation !== null ||
+          value.receipt_id !== null ||
+          value.next_sequence !== 0
+        )
+          throw new Error("Scheduler preparation already has producer history");
+        const nonce = string(input["nonce"]);
+        if (!/^[a-f0-9-]{36}$/u.test(nonce)) throw new Error("Invalid private scheduler producer identity");
+        write(
+          "INSERT INTO scheduler_start_grants (namespace,run_id,request_id,node_attempt_id,ready_id,grant_id,proposal_digest,grant_json,grant_digest,owner_incarnation) VALUES (?,?,?,?,?,?,?,?,?,?)",
+          marker.namespace,
+          runId,
+          start.grant.request_id,
+          start.grant.node_attempt_id,
+          start.grant.ready_id,
+          start.grant.grant_id,
+          snapshot.digest,
+          start.canonical,
+          start.digest,
+          incarnation,
+        );
+        write(
+          "UPDATE runs SET owner_nonce=?,owner_incarnation=?,revision=revision+1 WHERE namespace=? AND run_id=?",
+          nonce,
+          incarnation,
+          marker.namespace,
+          runId,
+        );
+        return { kind: "fresh", run: view(run(runId)!) };
+      }, assertCurrent);
+    } catch (error) {
+      if (error instanceof SchedulerStartExpired) return { kind: "expired" };
+      throw error;
+    }
+  }
   if (op === "admit")
     return transaction(() => {
       const runId = string(input["runId"]),
