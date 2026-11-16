@@ -1478,6 +1478,42 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
       run_id: winner.run.id,
       execution_authorized: false,
     });
+    const proposals = requireBuilt("../../../../apps/server/dist/services/scheduler-start-proposal-service.js") as {
+      prepareSchedulerStartProposal(ctx: object, input: object): Promise<{ proposal_digest: string }>;
+    };
+    type StartGrant = { grant: { grant_id: string; expires_at: string }; remaining_ms: number };
+    const grants = requireBuilt("../../../../apps/server/dist/services/scheduler-start-grant-service.js") as {
+      grantSchedulerStart(ctx: object, input: object, ready: object): Promise<StartGrant>;
+    };
+    contexts[1]!.clock = contexts[0]!.clock;
+    const proposal = await proposals.prepareSchedulerStartProposal(contexts[0]!, first);
+    const ready = {
+      version: 1,
+      request_id: first.requestId,
+      run_id: winner.run.id,
+      proposal_digest: proposal.proposal_digest,
+      journal_namespace: randomUUID(),
+      node_attempt_id: randomUUID(),
+      ready_id: randomUUID(),
+    };
+    const grantResults = await Promise.allSettled(contexts.map((ctx) => grants.grantSchedulerStart(ctx, first, ready)));
+    const granted = grantResults.filter(
+      (result): result is PromiseFulfilledResult<StartGrant> => result.status === "fulfilled",
+    );
+    expect(granted.length).toBeGreaterThan(0);
+    for (const result of grantResults)
+      if (result.status === "rejected") expect(result.reason).toMatchObject({ httpStatus: 409 });
+    const grant = granted[0]!.value;
+    expect(grant.remaining_ms).toBe(5000);
+    for (const ctx of contexts) expect(await grants.grantSchedulerStart(ctx, first, ready)).toEqual(grant);
+    await expect(
+      grants.grantSchedulerStart(contexts[0]!, first, { ...ready, node_attempt_id: randomUUID() }),
+    ).rejects.toMatchObject({ httpStatus: 409, message: expect.stringContaining("another node attempt") });
+    expect((await observer!.query("SELECT count(*)::int AS n FROM scheduler_start_grants")).rows).toEqual([{ n: 1 }]);
+    expect(
+      (await observer!.query("SELECT count(*)::int AS n FROM event_log WHERE type='scheduler.start_grant.created'"))
+        .rows,
+    ).toEqual([{ n: 1 }]);
     const executionEvidence = (
       await observer!.query("SELECT context_pack_id,scheduler_decision_id FROM runs WHERE id=$1", [winner.run.id])
     ).rows[0]!;
@@ -1495,6 +1531,10 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
         expect(held.rows).toHaveLength(1);
         await expect(prestart.revalidateSchedulerPreparedStart(contexts[0]!, first)).rejects.toMatchObject({
           message: expect.stringContaining("execution is changing"),
+          httpStatus: 409,
+          details: { reason: "scheduler_prepared_execution_busy" },
+        });
+        await expect(grants.grantSchedulerStart(contexts[0]!, first, ready)).rejects.toMatchObject({
           httpStatus: 409,
           details: { reason: "scheduler_prepared_execution_busy" },
         });
@@ -1539,6 +1579,23 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
     expect((await observer!.query("SELECT count(*)::int AS n FROM scheduler_prepared_starts")).rows).toEqual([
       { n: 1 },
     ]);
+    await observer!.query("BEGIN");
+    waiting = undefined;
+    try {
+      await observer!.query("SELECT id FROM computers WHERE id='computer_local_mock' FOR UPDATE");
+      waiting = grants.grantSchedulerStart(contexts[1]!, first, ready).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await observeDelegationBlock(Number(backendIds[1]), observerId, "computers", "scheduling_grant_expiry");
+      credentialNow += 5000;
+      await observer!.query("COMMIT");
+      expect(await waiting).toMatchObject({ httpStatus: 409, message: expect.stringContaining("expired") });
+    } finally {
+      await observer!.query("ROLLBACK");
+      if (waiting) await waiting;
+    }
+    expect((await observer!.query("SELECT count(*)::int AS n FROM scheduler_start_grants")).rows).toEqual([{ n: 1 }]);
     expect(
       (
         await observer!.query("SELECT state,consumed_run_id FROM scheduler_execution_requests WHERE id=$1", [

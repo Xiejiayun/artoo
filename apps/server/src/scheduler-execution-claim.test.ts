@@ -11,6 +11,7 @@ import {
   schedulerDecisions,
   schedulerExecutionRequests,
   schedulerPreparedStarts,
+  schedulerStartGrants,
   tasks,
 } from "@artoo/db";
 import { createInProcessChannel } from "@artoo/testkit";
@@ -38,6 +39,8 @@ import {
   prepareSchedulerStartProposalInTransaction,
 } from "./services/scheduler-start-proposal-service.js";
 import { scheduleTask } from "./services/scheduler.js";
+import { grantSchedulerStart, grantSchedulerStartInTransaction } from "./services/scheduler-start-grant-service.js";
+import { randomUUID } from "node:crypto";
 import { buildTestServer, type TestServer } from "./test-support.js";
 
 const COMPUTER = "computer_local_mock",
@@ -211,6 +214,7 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
       decisions: await server.db.db.select().from(schedulerDecisions),
       requests: await server.db.db.select().from(schedulerExecutionRequests),
       prepared: await server.db.db.select().from(schedulerPreparedStarts),
+      grants: await server.db.db.select().from(schedulerStartGrants),
       leases: await server.db.db.select().from(fileLeases),
       events: await server.db.db.select().from(eventLog),
     };
@@ -643,6 +647,152 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
     expect(await snapshot()).toEqual(before);
   });
 
+  async function readyStart() {
+    await setup();
+    const input = await stage(true, true);
+    await claim(input);
+    const proposal = await prepareSchedulerStartProposal(server.ctx, input);
+    return {
+      input,
+      ready: {
+        version: 1 as const,
+        request_id: input.requestId,
+        run_id: proposal.proposal.prepared_start.run_id,
+        proposal_digest: proposal.proposal_digest,
+        journal_namespace: randomUUID(),
+        node_attempt_id: randomUUID(),
+        ready_id: randomUUID(),
+      },
+    };
+  }
+
+  it("persists one bounded grant and returns the same authorization on response loss without extending its deadline", async () => {
+    const { input, ready } = await readyStart();
+    let time = Date.parse(server.ctx.clock.nowIso());
+    server.ctx.clock = { now: () => new Date(time), nowIso: () => new Date(time).toISOString() };
+    const before = await snapshot();
+    const first = await grantSchedulerStart(server.ctx, input, ready);
+    expect(first.remaining_ms).toBe(5000);
+    expect(first.grant).toMatchObject({
+      ...ready,
+      actor_user_id: "user_owner",
+      device_id: session.deviceId,
+      computer_id: COMPUTER,
+      session_id: session.sessionId,
+      scope: "scheduler-start.once.v1",
+    });
+    expect(Date.parse(first.grant.expires_at) - Date.parse(first.grant.issued_at)).toBe(5000);
+    expect(Object.isFrozen(first.grant)).toBe(true);
+    expect(JSON.stringify(first)).not.toContain(session.tokenLookup);
+    const saved = await snapshot();
+    expect(saved.grants).toHaveLength(1);
+    expect(saved.events.filter((event) => event.type === "scheduler.start_grant.created")).toHaveLength(1);
+    const { grants: _newGrants, events: _newEvents, ...other } = saved;
+    const { grants: _oldGrants, events: _oldEvents, ...oldOther } = before;
+    expect(other).toEqual(oldOther);
+    expect(await prepareSchedulerStartProposal(server.ctx, input)).toMatchObject({
+      proposal_digest: ready.proposal_digest,
+    });
+    time += 1234;
+    // A replacement server context represents no in-memory authorization cache.
+    expect(await grantSchedulerStart({ ...server.ctx }, input, ready)).toEqual({ ...first, remaining_ms: 3766 });
+    expect(await snapshot()).toEqual(saved);
+    time += 3766;
+    await expect(grantSchedulerStart(server.ctx, input, ready)).rejects.toThrow("expired");
+    expect(await snapshot()).toEqual(saved);
+    expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
+  });
+
+  it("caps new and replayed remaining lifetime at the original current credential expiry", async () => {
+    const { input, ready } = await readyStart();
+    const time = Date.parse(server.ctx.clock.nowIso());
+    server.ctx.clock = { now: () => new Date(time), nowIso: () => new Date(time).toISOString() };
+    await server.db.db.update(deviceTokens).set({ expiresAt: new Date(time + 1200).toISOString() });
+    const first = await grantSchedulerStart(server.ctx, input, ready);
+    expect(first.remaining_ms).toBe(1200);
+    expect(first.grant.expires_at).toBe(new Date(time + 1200).toISOString());
+    await server.db.db.update(deviceTokens).set({ expiresAt: new Date(time + 500).toISOString() });
+    expect(await grantSchedulerStart(server.ctx, input, ready)).toEqual({ ...first, remaining_ms: 500 });
+    await server.db.db.update(deviceTokens).set({ expiresAt: new Date(time + 20_000).toISOString() });
+    expect(await grantSchedulerStart(server.ctx, input, ready)).toEqual(first);
+  });
+
+  it("rejects mode, binding and attempt changes without creating or replacing grant history", async () => {
+    const { input, ready } = await readyStart();
+    const before = await snapshot();
+    for (const invalid of [
+      { ...ready, request_id: "other" },
+      { ...ready, run_id: "other" },
+      { ...ready, proposal_digest: `sha256:${"b".repeat(64)}` },
+      { ...ready, version: 2 as never },
+      { ...ready, node_attempt_id: "not-a-uuid" },
+      { ...ready, execution_authorized: true },
+    ])
+      await expect(grantSchedulerStart(server.ctx, input, invalid)).rejects.toThrow();
+    expect(await snapshot()).toEqual(before);
+    await grantSchedulerStart(server.ctx, input, ready);
+    const saved = await snapshot();
+    for (const changed of [
+      { ...ready, journal_namespace: randomUUID() },
+      { ...ready, node_attempt_id: randomUUID() },
+      { ...ready, ready_id: randomUUID() },
+    ])
+      await expect(grantSchedulerStart(server.ctx, input, changed)).rejects.toThrow("another node attempt");
+    expect(await snapshot()).toEqual(saved);
+    await expect(grantSchedulerStartInTransaction(server.ctx, server.db.db, input, ready)).rejects.toThrow(
+      "transaction",
+    );
+    await expect(
+      server.db.db.transaction((tx) => grantSchedulerStartInTransaction(server.ctx, tx, input, ready), {
+        isolationLevel: "repeatable read",
+      }),
+    ).rejects.toThrow("read committed");
+    flags("daemon_claim");
+    await expect(grantSchedulerStart(server.ctx, input, ready)).rejects.toThrow("disabled");
+    expect(await snapshot()).toEqual(saved);
+  });
+
+  it.each(["deadline", "credential", "session", "capability", "audit"] as const)(
+    "rolls grant and audit back when %s changes during awaited grant persistence",
+    async (changed) => {
+      const { input, ready } = await readyStart();
+      let time = Date.parse(server.ctx.clock.nowIso());
+      server.ctx.clock = { now: () => new Date(time), nowIso: () => new Date(time).toISOString() };
+      if (changed === "credential")
+        await server.db.db.update(deviceTokens).set({ expiresAt: new Date(time + 1000).toISOString() });
+      const before = await snapshot(),
+        generate = server.ctx.idGen.generate.bind(server.ctx.idGen);
+      server.ctx.idGen = {
+        generate(prefix) {
+          if (changed === "deadline") time += 5000;
+          else if (changed === "credential") time += 1000;
+          else if (changed === "session")
+            server.ctx.getPairedNodeSession = () => ({ ...session, sessionId: "replacement" });
+          else if (changed === "capability") server.ctx.supportsExecutionFeature = () => false;
+          return changed === "audit" ? before.events[0]!.id : generate(prefix);
+        },
+      };
+      await expect(grantSchedulerStart(server.ctx, input, ready)).rejects.toThrow();
+      expect(await snapshot()).toEqual(before);
+      expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses grant replay after credential withdrawal and after a backwards server clock", async () => {
+    const { input, ready } = await readyStart();
+    const time = Date.parse(server.ctx.clock.nowIso());
+    server.ctx.clock = { now: () => new Date(time), nowIso: () => new Date(time).toISOString() };
+    await grantSchedulerStart(server.ctx, input, ready);
+    const before = await snapshot();
+    server.ctx.clock = { now: () => new Date(time - 1), nowIso: () => new Date(time - 1).toISOString() };
+    await expect(grantSchedulerStart(server.ctx, input, ready)).rejects.toThrow("clock continuity");
+    expect(await snapshot()).toEqual(before);
+    server.ctx.clock = { now: () => new Date(time), nowIso: () => new Date(time).toISOString() };
+    await server.db.db.update(deviceTokens).set({ status: "revoked", revokedAt: server.ctx.clock.nowIso() });
+    await expect(grantSchedulerStart(server.ctx, input, ready)).rejects.toThrow("credential");
+    expect(await snapshot()).toEqual(before);
+  });
+
   it("revalidates an exact single-slot prepared reservation without freeing capacity or granting another execution", async () => {
     await setup();
     const [instance] = await server.db.db.select().from(agentInstances).where(eq(agentInstances.id, INSTANCE));
@@ -788,11 +938,23 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
     const input = await stage();
     await claim(input);
     expect((await revalidateSchedulerPreparedStart(server.ctx, input)).execution_authorized).toBe(false);
+    const proposal = await prepareSchedulerStartProposal(server.ctx, input);
+    const ready = {
+      version: 1 as const,
+      request_id: input.requestId,
+      run_id: proposal.proposal.prepared_start.run_id,
+      proposal_digest: proposal.proposal_digest,
+      journal_namespace: randomUUID(),
+      node_attempt_id: randomUUID(),
+      ready_id: randomUUID(),
+    };
+    await grantSchedulerStart(server.ctx, input, ready);
     await revokeAiDataSharingConsent(server.ctx);
     for (const consent of ["withdrawn", "replaced"]) {
       if (consent === "replaced") await grantAiDataSharingConsent(server.ctx, server.ctx.aiDataSharingPolicy.version);
       const before = await snapshot();
       await expect(revalidateSchedulerPreparedStart(server.ctx, input)).rejects.toThrow("Review and allow");
+      await expect(grantSchedulerStart(server.ctx, input, ready)).rejects.toThrow("Review and allow");
       expect(await snapshot()).toEqual(before);
     }
     expect(server.ctx.onRunQueued).not.toHaveBeenCalled();

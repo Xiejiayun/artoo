@@ -1,5 +1,6 @@
 import { PgliteDbClient } from "@artoo/storage";
-import { SchedulerPreparedStartSnapshotV1Schema } from "@artoo/domain";
+import { SchedulerPreparedStartSnapshotV1Schema, SchedulerStartGrantV1Schema } from "@artoo/domain";
+import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { expect, it } from "vitest";
 import { loadMigrationStatements } from "./migrations.js";
@@ -117,6 +118,75 @@ it("adds prepared-start history without inventing snapshots for consumed request
         cause: { code: "P0001", message: "Prepared scheduling start history is immutable" },
       },
     );
+    const grants = await loadMigrationStatements("0073_scheduler_start_grants.sql");
+    expect(grants.slice(0, after.length)).toEqual(after);
+    expect(grants.length - after.length).toBe(3);
+    await expect(restored.migrate([...grants, "SELECT 1/0"])).rejects.toThrow();
+    expect((await restored.db.execute(sql`SELECT to_regclass('public.scheduler_start_grants') AS name`)).rows).toEqual([
+      { name: null },
+    ]);
+    await restored.migrate(grants);
+    await restored.migrate(grants);
+    expect((await restored.db.execute(sql`SELECT * FROM scheduler_prepared_starts`)).rows).toEqual(saved);
+    expect((await restored.db.execute(sql`SELECT * FROM scheduler_start_grants`)).rows).toEqual([]);
+    const {
+      request_snapshot_digest: _requestDigest,
+      assigned: _assigned,
+      prepared_run_digest: _runDigest,
+      execution_authorized: _authority,
+      ...binding
+    } = snapshot;
+    const grant = SchedulerStartGrantV1Schema.parse({
+      ...binding,
+      scope: "scheduler-start.once.v1",
+      journal_namespace: randomUUID(),
+      node_attempt_id: randomUUID(),
+      ready_id: randomUUID(),
+      grant_id: randomUUID(),
+      proposal_digest: digest,
+      issued_at: "2026-06-13T00:00:01.000Z",
+      expires_at: "2026-06-13T00:00:06.000Z",
+    });
+    const insertGrant = (value: typeof grant) =>
+      restored!.db.execute(sql`INSERT INTO scheduler_start_grants
+      (request_id,run_id,organization_id,journal_namespace,node_attempt_id,grant_id,snapshot,snapshot_digest,issued_at,expires_at)
+      VALUES ('prepared-request','prepared-run',${value.organization_id},${value.journal_namespace},${value.node_attempt_id},${value.grant_id},
+      ${JSON.stringify(value)}::jsonb,${digest},${value.issued_at},${value.expires_at})`);
+    for (const [key, value] of Object.entries({
+      version: 2,
+      scope: "other",
+      request_id: "other",
+      run_id: "other",
+      organization_id: "other",
+      project_id: "other",
+      task_id: "other",
+      actor_user_id: "other",
+      agent_instance_id: "other",
+      computer_id: "other",
+      device_id: "other",
+      session_id: "other",
+      issued_at: "2026-06-12T00:00:00.000Z",
+      expires_at: "2026-06-13T00:00:06.001Z",
+    }))
+      await expect(insertGrant({ ...grant, [key]: value })).rejects.toThrow();
+    await restored.db.execute(sql`UPDATE runs SET status='starting' WHERE id='prepared-run'`);
+    await expect(insertGrant(grant)).rejects.toThrow();
+    await restored.db.execute(sql`UPDATE runs SET status='queued' WHERE id='prepared-run'`);
+    await insertGrant(grant);
+    await expect(insertGrant({ ...grant, node_attempt_id: randomUUID(), grant_id: randomUUID() })).rejects.toThrow();
+    const savedGrants = (await restored.db.execute(sql`SELECT * FROM scheduler_start_grants`)).rows;
+    const grantArchive = await restored.backup();
+    await restored.close();
+    restored = await PgliteDbClient.create({ archive: grantArchive });
+    await restored.migrate(grants);
+    expect((await restored.db.execute(sql`SELECT * FROM scheduler_start_grants`)).rows).toEqual(savedGrants);
+    for (const edit of [
+      sql`UPDATE scheduler_start_grants SET expires_at=now()`,
+      sql`DELETE FROM scheduler_start_grants`,
+    ])
+      await expect(restored.db.execute(edit)).rejects.toMatchObject({
+        cause: { code: "P0001", message: "Scheduler start grant history is immutable" },
+      });
   } finally {
     await restored?.close();
     await db.close();

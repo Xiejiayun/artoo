@@ -44,13 +44,14 @@ export async function revalidateSchedulerPreparedStartInTransaction(
 }
 
 /** Internal database-only completion under the same fences. Keep credential
- * identity private and check it after ALL awaited completion work. The callback
+ * identity private and check it after ALL awaited completion work. Only its
+ * non-secret expiry is supplied to bound a grant's lifetime. The callback
  * must not send transport frames or start physical work before commit. */
 export async function withRevalidatedSchedulerPreparedStart<T>(
   ctx: ServerContext,
   tx: DrizzleDb,
   input: SchedulerExecutionClaimInput,
-  complete: (prepared: SchedulerPreparedStartSnapshotV1) => Promise<T>,
+  complete: (prepared: SchedulerPreparedStartSnapshotV1, credentialExpiresAt: string | null) => Promise<T>,
 ): Promise<T> {
   // Reuse configuration/capacity/Task/user/device/token lock order and all
   // startup scopes. Replay never consumes another permission or creates work.
@@ -144,7 +145,7 @@ export async function withRevalidatedSchedulerPreparedStart<T>(
   });
   if (ranking.selected_agent_instance_id !== prepared.agent_instance_id)
     throw AppError.conflict("Prepared scheduling start no longer meets current scheduling policy");
-  const result = await complete(prepared);
+  const result = await complete(prepared, claim.credential.expiresAt);
   assertSchedulerClaimCurrent(ctx, claim.session, claim.credential);
   return result;
 }
