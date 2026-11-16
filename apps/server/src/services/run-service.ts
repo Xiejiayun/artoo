@@ -16,6 +16,9 @@ import {
   runEventIngest,
   runs,
   runUsage,
+  schedulerRunCredentials,
+  schedulerExecutionLeases,
+  schedulerStartGrants,
   tasks,
 } from "@artoo/db";
 import {
@@ -40,7 +43,7 @@ import {
   type TaskStatus,
 } from "@artoo/domain";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import type { RunEventMessage } from "@artoo/protocol";
+import { schedulerRunEventMessageSchema, type RunEventMessage, type SchedulerRunEventMessage } from "@artoo/protocol";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -53,6 +56,7 @@ import { releaseRunLeases } from "./lease-service.js";
 import { qualifyRunEventMessage } from "./run-event-receipt.js";
 import { transitionRun, transitionTask } from "./transition-service.js";
 import { assertOrdinaryRunControl } from "./scheduler-run-control.js";
+import { authorizeSchedulerRunEvent } from "./scheduler-run-service.js";
 import { unconfirmedDisconnectRunIds } from "./execution-state.js";
 import { previewForActiveSynthesis } from "./discussion-plan.js";
 import {
@@ -247,11 +251,24 @@ export async function ingestWireRunEvent(
   return { ...result, receiptBodyIdentity: qualified.bodyIdentity };
 }
 
+/** Private paired-node lane. The original complete inner frame owns its receipt;
+ * scheduler credentials never enter the event stream or adapter payload. */
+export async function ingestSchedulerWireRunEvent(ctx: ServerContext, raw: unknown): Promise<WireIngestResult> {
+  const parsed = schedulerRunEventMessageSchema.safeParse(raw);
+  if (!parsed.success) throw AppError.validation("Invalid scheduler lifecycle envelope");
+  const qualified = qualifyRunEventMessage(parsed.data.frame);
+  const env = mapRunEvent(qualified.message);
+  if (!env) throw AppError.validation("Unsupported scheduler lifecycle event");
+  const result = await ingestRunEventInternal(ctx, env, qualified.bodyIdentity, undefined, { ...parsed.data, frame: qualified.message });
+  return { ...result, receiptBodyIdentity: qualified.bodyIdentity };
+}
+
 async function ingestRunEventInternal(
   ctx: ServerContext,
   env: IngestEnvelope,
   wireIdentity: string | null,
   ownedResultSession?: OwnedResultSession,
+  schedulerMessage?: SchedulerRunEventMessage,
 ): Promise<IngestResult> {
   if (!Number.isInteger(env.sequence) || env.sequence < 0 || env.sequence > 2147483647) {
     throw AppError.validation("run event sequence must fit a nonnegative int32");
@@ -270,6 +287,11 @@ async function ingestRunEventInternal(
   // hook failure can never break the already-committed run ingest.
   let budgetGoalId: string | null = null;
   const result = await ctx.db.transaction(async (tx) => {
+    // Detect committed replay before authorization. Only an exact qualified
+    // receipt may use the revoked terminal credential's replay-only path.
+    const [prior] = schedulerMessage ? await tx.select({ body: runEventIngest.bodyIdentity }).from(runEventIngest).where(and(eq(runEventIngest.nodeId, env.nodeId), eq(runEventIngest.runId, env.runId), eq(runEventIngest.sequence, env.sequence))) : [];
+    if (schedulerMessage && prior && prior.body !== wireIdentity) throw AppError.conflict("run event receipt body mismatch");
+    const assertScheduler = schedulerMessage ? await authorizeSchedulerRunEvent(ctx, tx, schedulerMessage, prior !== undefined) : undefined;
     const runQuery = tx
       .select()
       .from(runs)
@@ -281,7 +303,7 @@ async function ingestRunEventInternal(
     if (wireIdentity !== null && env.nodeId !== run.computerId) {
       throw AppError.permissionDenied("run is not owned by this node");
     }
-    await assertOrdinaryRunControl(ctx, tx, run.id);
+    if (!schedulerMessage) await assertOrdinaryRunControl(ctx, tx, run.id);
     const taskRow = (await tx.select().from(tasks).where(eq(tasks.id, run.taskId)))[0];
     if (taskRow === undefined) {
       throw new Error("ingestRunEvent: task missing for run");
@@ -356,6 +378,7 @@ async function ingestRunEventInternal(
         }
       }
       assertOwnedSession();
+      await assertScheduler?.();
       return {
         deduped: true,
         runStatus: run.status as RunStatus,
@@ -882,6 +905,7 @@ async function ingestRunEventInternal(
     const finalRun = (await tx.select().from(runs).where(eq(runs.id, env.runId)))[0];
     const finalTask = (await tx.select().from(tasks).where(eq(tasks.id, run.taskId)))[0];
     assertOwnedSession();
+    await assertScheduler?.();
     return {
       deduped: false,
       runStatus: (finalRun?.status ?? run.status) as RunStatus,
@@ -982,6 +1006,13 @@ export async function failRunDaemonDisconnect(
     // Gone, moved to another computer, or already terminal/other → idempotent no-op.
     if (run === undefined || run.computerId !== computerId) return { failed: false };
     if (processExitConfirmed) await assertOrdinaryRunControl(ctx, tx, runId);
+    // A scoped scheduler owner must report genuine closure. Disconnect timers
+    // cannot terminalize it and thereby revoke the only closure-reporting lane.
+    const [scopedOwner] = await tx.select({ id: schedulerRunCredentials.id }).from(schedulerRunCredentials)
+      .innerJoin(schedulerExecutionLeases, eq(schedulerExecutionLeases.id, schedulerRunCredentials.leaseId))
+      .innerJoin(schedulerStartGrants, eq(schedulerStartGrants.requestId, schedulerExecutionLeases.requestId))
+      .where(and(eq(schedulerExecutionLeases.organizationId, ctx.organizationId), eq(schedulerStartGrants.runId, runId))).limit(1);
+    if (scopedOwner) return { failed: false };
     const status = run.status as RunStatus;
     if (status === "failed" && run.failureReason === REASON && processExitConfirmed) {
       await releaseRunLeases(ctx, tx, runId);

@@ -1,5 +1,6 @@
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import { requestSchedulerRunStop } from "./services/scheduler-run-service.js";
 
 import {
   AgentHistoryEventsQuerySchema,
@@ -362,6 +363,8 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   app.post("/api/v1/runs/:id/cancel", async (req) => {
     const { id } = req.params as { id: string };
     const requestCtx = rc(req);
+    const schedulerStop = await requestSchedulerRunStop(requestCtx, id);
+    if (schedulerStop) return { run: await runService.getRun(requestCtx, id), ...schedulerStop };
     return {
       run: await runService.cancelRun(requestCtx, id, async () => {
         const run = await runService.getRun(requestCtx, id);
