@@ -1,6 +1,7 @@
 import { useProject } from "../app/useProject.js";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Download, History } from "lucide-react";
 
 import { useApi } from "../app/ApiContext.js";
@@ -12,6 +13,7 @@ import { ActionError } from "./ActionError.js";
 import { taskUpdatedLabel } from "./taskPresentation.js";
 import { useTaskContext } from "../app/useTaskContext.js";
 import { useProjectControlView } from "../app/useProjectControlView.js";
+import { useGoalContext } from "../app/useGoalContext.js";
 import { ControlTaskFacts } from "./ControlTaskFacts.js";
 import { TaskExecutionConsole } from "./TaskExecutionConsole.js";
 import "../ui/work-insights.css";
@@ -24,6 +26,8 @@ import "../ui/work-insights.css";
 export function RunsAuditPage(): React.ReactNode {
   const api = useApi();
   const toast = useToast();
+  const [params] = useSearchParams();
+  const goals = useGoalContext(false, params.has("goal"));
   const { taskId: selectedTaskId, selectTask: setSelectedTaskId, contextError, contextLoading, retryContext } = useTaskContext();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
@@ -53,7 +57,7 @@ export function RunsAuditPage(): React.ReactNode {
   const bundle = useQuery({
     queryKey: selectedTaskId === null ? ["auditBundle", "none"] : queryKeys.auditBundle(selectedTaskId),
     queryFn: () => api.getTaskAuditBundle(selectedTaskId as string),
-    enabled: selectedTaskId !== null,
+    enabled: selectedTaskId !== null && !contextLoading && !contextError && !goals.contextLoading && !goals.contextError && (!goals.requested || !!goals.goal),
   });
 
   if (bootstrap.isLoading) {
@@ -79,12 +83,20 @@ export function RunsAuditPage(): React.ReactNode {
   const taskList = [...loaded.values()];
   const matching = taskList.filter(
     (task) =>
+      (!goals.requested || (!!goals.goal && task.goal_id === goals.goal.id)) &&
       task.title.toLowerCase().includes(search.trim().toLowerCase()) &&
       (filter === "all" ||
         (filter === "attention"
           ? ["blocked", "awaiting_approval", "review"].includes(task.status)
           : ["done", "cancelled"].includes(task.status))),
   );
+  const evidenceTask = bundle.data?.bundle.task;
+  // The control projection also links independently owned review tasks to their
+  // originating Goal. That observation supplies scope, never review authority.
+  const evidenceGoalId = evidenceTask?.goal_id ?? (control.isError ? undefined : observations.get(evidenceTask?.id ?? "")?.task.goal_id);
+  const evidenceInScope = !!evidenceTask && evidenceTask.id === selectedTaskId && evidenceTask.project_id === projectId
+    && evidenceTask.organization_id === bootstrap.data?.organization.id
+    && (!goals.requested || (!!goals.goal && evidenceGoalId === goals.goal.id));
 
   return (
     <div className="runs-audit insights-page">
@@ -96,15 +108,17 @@ export function RunsAuditPage(): React.ReactNode {
           <h1 className="t-h1">Runs &amp; Audit</h1>
           <p>Follow each task from assignment to results, decisions, and recorded evidence.</p>
         </div>
-        {selectedTaskId && (
+        {selectedTaskId && evidenceInScope && (
           <Button iconLeft={Download} loading={download.isPending} onClick={() => download.mutate()}>
             Export task evidence
           </Button>
         )}
       </header>
-      <ActionError error={tasks.error ?? download.error ?? contextError} />
+      <ActionError error={tasks.error ?? download.error ?? contextError ?? goals.contextError ?? (goals.requested ? goals.goals.error : null)} />
       {contextError && <Button onClick={retryContext}>Retry linked task</Button>}
-      {contextLoading && <p role="status">Opening linked task…</p>}
+      {goals.contextError && <Button onClick={goals.retryContext}>Retry linked goal</Button>}
+      {(contextLoading || goals.contextLoading) && <p role="status">Opening linked execution context…</p>}
+      {goals.requested && <div className="action-row"><p>Goal: {goals.goal?.title ?? "Resolving shared goal…"}</p><Button size="sm" onClick={() => goals.selectGoal(null)}>Show all project goals</Button></div>}
       {control.isError && <p role="status">Execution observations unavailable. <Button size="sm" onClick={() => void control.refetch()}>Retry observations</Button></p>}
       <div className="runs-audit-body">
         <nav className="audit-task-picker" aria-label="Tasks">
@@ -122,7 +136,7 @@ export function RunsAuditPage(): React.ReactNode {
             </Select>
           </div>
           <p className="insights-help">
-            {matching.length} loaded {matching.length === 1 ? "task" : "tasks"}{control.view ? ` · ${control.view.summary.total_tasks} in project` : ""}
+            {matching.length} loaded {matching.length === 1 ? "task" : "tasks"}{goals.requested ? " in selected goal" : ""}{control.view ? ` · ${control.view.summary.total_tasks} in project` : ""}
           </p>
           {tasks.isLoading && <p role="status">Loading tasks…</p>}
           {tasks.isError && (
@@ -181,7 +195,10 @@ export function RunsAuditPage(): React.ReactNode {
               action={<Button onClick={() => void bundle.refetch()}>Retry evidence</Button>}
             />
           ) : null}
-          {bundle.data !== undefined ? (
+          {bundle.data !== undefined && !contextLoading && !contextError && !goals.contextLoading && !goals.contextError && !evidenceInScope && (
+            <EmptyState title="This task is outside the current execution scope" description="Choose a task in this project's selected goal, or show all project goals." />
+          )}
+          {bundle.data !== undefined && evidenceInScope && !contextLoading && !contextError && !goals.contextLoading && !goals.contextError ? (
             <><TaskExecutionConsole key={bundle.data.bundle.task.id} bundle={bundle.data.bundle} bootstrap={bootstrap.data} /><section aria-label="Audit bundle"><details className="cowork-audit-detail" open><summary>Full task audit & evidence</summary><AuditBundleView bundle={bundle.data.bundle} bootstrap={bootstrap.data} /></details></section></>
           ) : null}
         </section>
