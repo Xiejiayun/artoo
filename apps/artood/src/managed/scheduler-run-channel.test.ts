@@ -28,7 +28,7 @@ function fixture() {
   };
   const acquire = async () => { const pending = client.acquire(grant); await Promise.resolve(); channel.receive(reply()); return pending; };
   const frame: RunEventMessage = { kind: "run.event", node_id: session.nodeId, run_id: grant.run_id, sequence: 0,
-    event: { type: "run.lifecycle", payload: { phase: "running" } } };
+    event: { type: "run.lifecycle", payload: { phase: "started" } } };
   return { session, grant, lease, credential, sent, channel, client, reply, acquire, frame };
 }
 it("keeps event credentials private and wraps the unchanged inner durable frame only at exposure", async () => {
