@@ -1056,3 +1056,34 @@ that gate nor unified acceptance is reported as passed by this layout change.
 Local verification of the layout change passed typecheck, workspace build and
 all four channel browser cases, including cross-client reload and interrupted
 transport reconciliation. Full-suite and broader browser results are separate.
+
+The subsequent full Web workflow run on the layout source passed all 57 cases
+in 12.7 minutes, including the actual Windows browser parent/helper shutdown
+case. This is controlled local browser evidence, not live Provider acceptance.
+The concurrent Windows Vitest run still reproduced storage and entrypoint
+deadlines; a full-suite pass is not established by the browser result.
+
+### Startup loading and failure ownership
+
+The public `main.ts` entry captures its environment and checks port, authentication,
+pairing and listen scope before importing the application runtime. Remaining
+configuration, including audit signing, still validates before database creation.
+The runtime loads application modules concurrently with database creation, joins
+both results and closes an opened database if application loading fails. Paired
+startup/cleanup failures retain both causes. Database migrations, durability,
+request identity and the ordinary shutdown owner remain unchanged.
+
+Two local observations of the earlier entry import alone took 15.9 and 22.0
+seconds. The light entry import took 0.51 seconds, and the unchanged missing-pepper
+CLI case passed. The ordinary 30-second readiness case still failed. A separately
+instrumented actual disk-backed startup completed readiness at about 45 seconds
+(database creation about 17 seconds and migration about 20 seconds), then closed
+the server/database and removed only its verified temporary directory. These
+are individual host observations with concurrent tests, not a performance
+baseline, a new startup SLA or evidence that readiness acceptance passed.
+No readiness deadline, fixture drain or durability setting was changed.
+The final loading source passed staged checks, typecheck, workspace build, all
+four controlled module-loading failure cases and all three remote-DB lifecycle
+cases. Audit configuration passed 16 of 17 cases; its real disk-backed startup
+case reached listening at 38.5 seconds and exceeded the unchanged 30-second test
+budget. That failure remains open and is not counted as a pass.
