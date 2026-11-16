@@ -14,6 +14,14 @@ Run, its exact stored ContextPack, original user AI-sharing authorization, the
 project-scoped dependency, and the source task's latest accepted completed Run.
 The artifact's id, source Run, type and checksum must match the frozen reference.
 
+An ordinary paired node can opt in with `dependency_inputs: { version: 1 }` in
+its hello. The server announces `node.dependency-inputs.session.v1` on that exact
+authenticated socket after registration, containing only version, node id and
+the server-owned session UUID. A reconnect gets a new identity; old, unpaired
+and non-opted-in sockets receive no announcement. This is separate from
+publication and managed execution negotiation and grants neither capability.
+The HTTP route still checks the paired bearer and all Run/source permissions.
+
 For scheduler Runs, pre-ready input download is allowed only for the original
 consumed device/session while the Run is queued and no lease has ever been
 issued. This read confers no physical launch authority and does not consume or

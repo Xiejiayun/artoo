@@ -1,6 +1,7 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { dependencyInputsRegistrationSchema } from "@artoo/protocol";
 
 import { and, eq } from "drizzle-orm";
 
@@ -140,6 +141,7 @@ export interface NodeBinding {
   getProductSourceRouting?(): ProductSourceRoutingV1 | undefined;
   announceSourceRecoverySession?(): Promise<void>;
   announceApplicationPublicationSession?(): Promise<void>;
+  announceDependencyInputsSession?(): Promise<void>;
   getApplicationPublicationCapabilities?(
     profileId: string,
     projectId: string,
@@ -234,9 +236,11 @@ export function attachNodeBinding(
   },
   productSourceRouting?: ProductSourceRoutingV1,
   applicationPublicationProfiles: readonly ApplicationPublicationProfileAdvertisementV1[] = [],
+  dependencyInputs?: { version: 1 },
 ): NodeBinding {
   // Copy the accepted hello snapshot so later caller mutation cannot change it.
   const executionFeatureSet = new Set(executionFeatures);
+  const dependencyInputReads = dependencyInputsRegistrationSchema.optional().parse(dependencyInputs) !== undefined;
   const pairedSession = importedReviewOptions
     ? Object.freeze({ ...importedReviewOptions.identity, sessionId: importedReviewOptions.sessionId })
     : undefined;
@@ -1896,6 +1900,20 @@ export function attachNodeBinding(
     getPairedNodeSession() {
       if (closed || !isCurrentBinding() || !pairedSession) return undefined;
       return { ...pairedSession };
+    },
+    async announceDependencyInputsSession() {
+      if (closed || !isCurrentBinding() || !pairedSession || !dependencyInputReads) return;
+      // Announce only on the original authenticated socket. The UUID is a
+      // continuity fence; every HTTP read still verifies the paired token,
+      // current session, original Run authorization and pinned source artifact.
+      await transport.send({
+        kind: "command",
+        id: `dependency-inputs:${pairedSession.sessionId}`,
+        idempotency_key: `dependency-inputs:${pairedSession.sessionId}`,
+        type: "node.dependency-inputs.session.v1",
+        payload: { version: 1, node_id: computerId, session_id: pairedSession.sessionId },
+      });
+      if (closed || !isCurrentBinding()) throw AppError.conflict("Dependency input session announcement lost its original binding");
     },
     getApplicationPublicationCapabilities(profileId, projectId) {
       if (
