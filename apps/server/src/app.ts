@@ -1,5 +1,7 @@
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import { requestSchedulerRunStop } from "./services/scheduler-run-service.js";
+import { registerTeamResourceRoutes } from "./team-resource-routes.js";
 
 import {
   AgentHistoryEventsQuerySchema,
@@ -233,6 +235,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     taskService.bootstrap(rc(req), (id) => nodeRegistry.get(id) !== undefined),
   );
   registerProjectRoutes(app, ctx);
+  registerTeamResourceRoutes(app, ctx);
   registerSchedulerModelRoutes(app, ctx);
   registerResourceRoutes(app, ctx, (computerId, deviceIds) => {
     for (const id of deviceIds) deviceConnections.closeForDevice(id, 1008, "computer deleted");
@@ -362,6 +365,8 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   app.post("/api/v1/runs/:id/cancel", async (req) => {
     const { id } = req.params as { id: string };
     const requestCtx = rc(req);
+    const schedulerStop = await requestSchedulerRunStop(requestCtx, id);
+    if (schedulerStop) return { run: await runService.getRun(requestCtx, id), ...schedulerStop };
     return {
       run: await runService.cancelRun(requestCtx, id, async () => {
         const run = await runService.getRun(requestCtx, id);

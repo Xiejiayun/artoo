@@ -20,6 +20,7 @@ import { requireAdministrator } from "../auth/request-auth.js";
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
+import { z } from "zod";
 
 export type SchedulerPolicyKind = "project" | "agent" | "computer";
 
@@ -86,11 +87,28 @@ export async function getSchedulerPolicy(ctx: ServerContext, kind: SchedulerPoli
 }
 
 export async function putSchedulerPolicy(ctx: ServerContext, kind: SchedulerPolicyKind, id: string, input: unknown) {
+  // Existing v1 clients keep their body. New editors use explicit compare/save
+  // so concurrent policy forms cannot silently replace each other's changes.
+  let expectedRevision: number | undefined;
+  if (input !== null && typeof input === "object" && ("policy" in input || "expected_revision" in input)) {
+    const edit = z.object({ version: z.literal(1), expected_revision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER - 1), policy: z.unknown() }).strict().safeParse(input);
+    if (!edit.success) throw AppError.validation("Invalid policy edit with expected_revision");
+    expectedRevision = edit.data.expected_revision;
+    input = edit.data.policy;
+  }
   return ctx.db.transaction(async (tx) => {
     await requireAdministrator(ctx, tx);
     await lockSchedulerConfiguration(ctx, tx);
     await lockSchedulerCapacity(ctx, tx);
     await requireTarget(ctx, tx, kind, id);
+    if (expectedRevision !== undefined) {
+      const current = kind === "project"
+        ? await tx.select({ revision: schedulerProjectPolicies.revision }).from(schedulerProjectPolicies).where(and(eq(schedulerProjectPolicies.projectId, id), eq(schedulerProjectPolicies.organizationId, ctx.organizationId))).for("update")
+        : kind === "agent"
+          ? await tx.select({ revision: schedulerAgentPolicies.revision }).from(schedulerAgentPolicies).where(and(eq(schedulerAgentPolicies.agentId, id), eq(schedulerAgentPolicies.organizationId, ctx.organizationId))).for("update")
+          : await tx.select({ revision: schedulerComputerPolicies.revision }).from(schedulerComputerPolicies).where(and(eq(schedulerComputerPolicies.computerId, id), eq(schedulerComputerPolicies.organizationId, ctx.organizationId))).for("update");
+      if ((current[0]?.revision ?? 0) !== expectedRevision) throw AppError.conflict("Scheduling policy changed; reload before saving");
+    }
     const common = {
       organizationId: ctx.organizationId,
       updatedByUserId: ctx.actorUserId,
@@ -109,6 +127,7 @@ export async function putSchedulerPolicy(ctx: ServerContext, kind: SchedulerPoli
           setWhere: and(
             eq(schedulerProjectPolicies.organizationId, ctx.organizationId),
             lt(schedulerProjectPolicies.revision, Number.MAX_SAFE_INTEGER),
+            expectedRevision === undefined ? undefined : eq(schedulerProjectPolicies.revision, expectedRevision),
           ),
         })
         .returning();
@@ -126,6 +145,7 @@ export async function putSchedulerPolicy(ctx: ServerContext, kind: SchedulerPoli
           setWhere: and(
             eq(schedulerAgentPolicies.organizationId, ctx.organizationId),
             lt(schedulerAgentPolicies.revision, Number.MAX_SAFE_INTEGER),
+            expectedRevision === undefined ? undefined : eq(schedulerAgentPolicies.revision, expectedRevision),
           ),
         })
         .returning();
@@ -141,6 +161,7 @@ export async function putSchedulerPolicy(ctx: ServerContext, kind: SchedulerPoli
           setWhere: and(
             eq(schedulerComputerPolicies.organizationId, ctx.organizationId),
             lt(schedulerComputerPolicies.revision, Number.MAX_SAFE_INTEGER),
+            expectedRevision === undefined ? undefined : eq(schedulerComputerPolicies.revision, expectedRevision),
           ),
         })
         .returning();

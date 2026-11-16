@@ -15,6 +15,8 @@ import {
   schedulerStartGrants,
   schedulerExecutionLeases,
   schedulerAttemptCredentials,
+  schedulerRunCredentials,
+  schedulerRunStopIntents,
   tasks,
 } from "@artoo/db";
 import { createInProcessChannel } from "@artoo/testkit";
@@ -63,7 +65,10 @@ import {
   failRunDaemonDisconnect,
   ingestRunEvent,
   ingestWireRunEvent,
+  ingestSchedulerWireRunEvent,
 } from "./services/run-service.js";
+import { acquireSchedulerRunCredential, requestSchedulerRunStop, schedulerRunStatus } from "./services/scheduler-run-service.js";
+import { getProjectControlView } from "./services/control-view-service.js";
 import { buildTestServer, type TestServer, type BuildTestServerOptions } from "./test-support.js";
 import { mkdtemp, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -75,7 +80,7 @@ const session = {
   computerId: COMPUTER,
   deviceId: "claim-node",
   tokenLookup: "controlled-fixture-lookup",
-  sessionId: "session-one",
+  sessionId: randomUUID(),
 };
 const switches: SchedulerRolloutFlag[] = [
   "execution_requests",
@@ -1008,6 +1013,63 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
       },
     };
   }
+
+  it("commits scheduler lifecycle and durable Stop only through the separate scoped authority", async () => {
+    const f = await attemptCredential();
+    const acquired = await acquireSchedulerRunCredential(server.ctx, f.input, f.grant);
+    if (acquired.status !== "issued") throw new Error("Expected lifecycle credential");
+    const frame = (sequence: number, phase: "started" | "cancelled") => ({
+      kind: "scheduler.run.event.v1", node_id: COMPUTER, session_id: f.input.sessionId,
+      binding: f.lease.binding, credential: acquired.credential,
+      frame: { kind: "run.event", node_id: COMPUTER, run_id: f.grant.run_id, sequence, event: { type: "run.lifecycle", payload: { phase } } },
+    });
+    await expect(ingestSchedulerWireRunEvent(server.ctx, { ...frame(0, "started"), credential: f.credential })).rejects.toThrow();
+    const started = await ingestSchedulerWireRunEvent(server.ctx, frame(0, "started"));
+    expect(started).toMatchObject({ runStatus: "running", taskStatus: "running", deduped: false });
+    const beforeStop = await snapshot();
+    expect(await requestSchedulerRunStop(server.ctx, f.grant.run_id)).toEqual({ stop_requested: true });
+    expect(await requestSchedulerRunStop(server.ctx, f.grant.run_id)).toEqual({ stop_requested: true });
+    const waiting = await snapshot();
+    expect(waiting.runs).toEqual(beforeStop.runs);
+    expect(waiting.leases).toEqual(beforeStop.leases);
+    expect(await server.db.db.select().from(schedulerRunStopIntents)).toHaveLength(1);
+    expect(await schedulerRunStatus(server.ctx, f.input, f.lease.binding, acquired.credential)).toMatchObject({ stop_requested: true });
+    const publicView = await getProjectControlView(server.ctx, f.lease.binding.project_id, { limit: 100 });
+    expect(publicView.tasks.find((entry) => entry.task.id === f.input.taskId)).toMatchObject({
+      latest_run: { id: f.grant.run_id, status: "running" },
+      execution_lease: { id: f.lease.binding.lease_id, stop_requested: true, closed_at: null },
+    });
+    expect(JSON.stringify(publicView)).not.toContain(acquired.credential.secret);
+    expect(await failRunDaemonDisconnect(server.ctx, f.grant.run_id, COMPUTER, false)).toEqual({ failed: false });
+    expect((await snapshot()).runs).toEqual(waiting.runs);
+    const terminal = frame(1, "cancelled");
+    expect(await ingestSchedulerWireRunEvent(server.ctx, terminal)).toMatchObject({ runStatus: "cancelled", deduped: false });
+    expect((await server.db.db.select().from(schedulerRunCredentials))[0]!.revokedAt).not.toBeNull();
+    expect((await snapshot()).leases.every((lease) => lease.releasedAt !== null)).toBe(true);
+    expect(await ingestSchedulerWireRunEvent(server.ctx, terminal)).toMatchObject({ runStatus: "cancelled", deduped: true });
+    await expect(ingestSchedulerWireRunEvent(server.ctx, frame(2, "cancelled"))).rejects.toThrow();
+    await expect(ingestSchedulerWireRunEvent(server.ctx, { ...terminal, frame: { ...terminal.frame, event: { type: "run.lifecycle", payload: { phase: "failed" } } } })).rejects.toThrow("body mismatch");
+    const serialized = JSON.stringify({ ...await snapshot(), credentials: await server.db.db.select().from(schedulerRunCredentials) });
+    expect(serialized).not.toContain(acquired.credential.secret);
+  });
+
+  it.each(["expiry", "session"] as const)("rolls scoped lifecycle and qualified receipt back on final %s fencing", async (changed) => {
+    const f = await attemptCredential(), acquired = await acquireSchedulerRunCredential(server.ctx, f.input, f.grant);
+    if (acquired.status !== "issued") throw new Error("Expected lifecycle credential");
+    const before = await snapshot(), generate = server.ctx.idGen.generate.bind(server.ctx.idGen);
+    server.ctx.idGen = { generate(prefix) {
+      if (changed === "expiry") f.advance(30_000);
+      else server.ctx.getPairedNodeSession = () => ({ ...session, sessionId: randomUUID() });
+      return generate(prefix);
+    } };
+    await expect(ingestSchedulerWireRunEvent(server.ctx, {
+      kind: "scheduler.run.event.v1", node_id: COMPUTER, session_id: f.input.sessionId,
+      binding: f.lease.binding, credential: acquired.credential,
+      frame: { kind: "run.event", node_id: COMPUTER, run_id: f.grant.run_id, sequence: 0, event: { type: "run.lifecycle", payload: { phase: "started" } } },
+    })).rejects.toThrow();
+    expect(await snapshot()).toEqual(before);
+    expect(await server.db.db.select().from(runEventIngest)).toHaveLength(0);
+  });
 
   it("issues one hash-only credential, retains it on replay and renews both expiries after the start window", async () => {
     const { input, grant, credential, lease, advance } = await attemptCredential();

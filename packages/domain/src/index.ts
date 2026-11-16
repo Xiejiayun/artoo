@@ -114,4 +114,6 @@ export * from "./scheduler-start-grant.js";
 export * from "./scheduler-execution-lease.js";
 export * from "./scheduler-attempt-credential.js";
 export * from "./task-delegation.js";
+export * from "./scheduler-run.js";
 export * from "./control-view.js";
+export * from "./team-resources.js";

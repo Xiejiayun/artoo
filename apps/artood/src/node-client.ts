@@ -5,6 +5,7 @@ import { dirname, basename, join } from "node:path";
 import { ManagedDelivery, boundedOperation, abortableOperation, DeliveryCancelled,
   type ManagedJournalOptions, type ManagedSession } from "./managed/managed-delivery.js";
 import type { FreshLaunchPermit, JournalRun, TerminalSettlement } from "./managed/journal-types.js";
+import { prepareSchedulerPhysicalOwner, type SchedulerOwnedAdmission, type SchedulerOwnerChannels } from "./managed/scheduler-owner.js";
 import { PRODUCT_SOURCE_TRANSFER_FEATURE_V1, PRODUCT_SOURCE_TRANSFER_FEATURE_V2, PRODUCT_SOURCE_TRANSFER_MEASUREMENT_V2_FEATURE_V1,
   PRODUCT_SOURCE_OPERATIONS_FEATURE_V1, IMPORTED_PRODUCT_REVIEW_FEATURE_V1, IMPORTED_DESIGN_CONTINUATION_FEATURE_V1,
   IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1,
@@ -88,6 +89,7 @@ import type { createProductSourceSemanticClient } from "./product-source-semanti
 import type { ReleaseCapabilityReader } from "./release-capability-authority.js";
 import { readBrowserEvidence, type BrowserEvidenceGrant } from "./browser-evidence.js";
 import { provisionRunNamespace } from "./owned/workspace-namespace.js";
+import { withRepositoryOperation } from "./owned/repository-operation-lane.js";
 import { prepareOwnedWorktree, reserveOwnedWorktree, materializeOwnedWorktree,
   type MaterializedWorktree, type OwnedReservation } from "./owned/worktree-reservation.js";
 import type { ArtifactUploader } from "./artifact-upload.js";
@@ -138,6 +140,8 @@ export interface NodeClientOptions {
   uploadArtifact?: ArtifactUploader;
   /** Trusted local managed delivery. It never falls back to transport replay. */
   managedJournal?: ManagedJournalOptions;
+  /** Trusted local scheduler opt-in. A run.start command cannot install it. */
+  scheduler?: { open(): SchedulerOwnerChannels };
   /** Administrator-owned ordinary-workspace verifiers; never read from task content. */
   verificationProfiles?: readonly VerificationProfile[];
   releaseProfiles?: readonly ReleaseProfile[];
@@ -182,6 +186,7 @@ export interface NodeClient {
   invalidatePendingStartupReplay?(): void;
   failManagedConnection(cause: Error): Promise<void>;
   requestManagedRunStop(runId: string): Promise<void>;
+  startSchedulerRequest(input: { taskId: string; requestId: string; runId: string }): Promise<void>;
 }
 
 import {
@@ -433,6 +438,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   // a cancellation tombstone that must never acquire an identity or a writer.
   const launchBindings = new Map<string, AllocationReplayIdentity | undefined>();
   const physicalStarts = new Map<string, PhysicalStartRecord>();
+  const schedulerStarts = new Map<string, { taskId: string; requestId: string; controller: AbortController; session: ManagedSession; work: Promise<void> }>();
+  let schedulerAdmissionLane: Promise<unknown> = Promise.resolve();
   const mixedLegacyStarts = new Map<string, MixedLegacyStartRecord>();
   const mixedStopIntents = new Set<string>();
   const closedDeliveries = new Map<string, ManagedDelivery>();
@@ -503,7 +510,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     // Owned results keep the original cancellation signal through capture,
     // verification and journal settlement. Startup readiness does not end
     // that lifetime; compactPhysical releases it after closed delivery.
-    if (!record.ownedResult) record.controller = undefined;
+    if (!record.ownedResult && !record.schedulerRequestId) record.controller = undefined;
   }
 
   function settleMixedLegacy(record: MixedLegacyStartRecord, outcome: PhysicalStartupOutcome): void {
@@ -574,6 +581,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       record.closureReceipt = undefined;
       record.controller = undefined;
       record.ownedResult = undefined;
+      record.scheduler?.forget(); record.scheduler = undefined;
       // Keep identity and the original startup outcome. No ContextPack, worktree
       // inventory, error chain, child/queue or resolved-handle promise is retained.
     }
@@ -606,6 +614,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       if (receipt?.kind !== "confirmed_closed") throw new Error("Owned process/guardian cleanup is uncertain; recovery state is retained");
       record.closureReceipt = value;
       record.confirmedClosed = true;
+      record.scheduler?.closed();
       compactPhysical(record);
     })();
     execution.stopPending = operation;
@@ -623,7 +632,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
 
   async function executePhysicalStart(command: Pick<RunStartCommand, "id" | "idempotency_key">, binding: AllocationStartBinding,
-    record: PhysicalStartRecord, controller: AbortController): Promise<void> {
+    record: PhysicalStartRecord, controller: AbortController, schedulerAdmission?: SchedulerOwnedAdmission): Promise<void> {
     const payload = binding.payload;
     let materialized: MaterializedWorktree | undefined;
     let reservation: OwnedReservation | undefined;
@@ -662,12 +671,24 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
           options.managedJournal.channel.assertCurrentSession(record.startupSession); controller.signal.throwIfAborted();
         }
         const admissionRequest = { expectedNamespace: journal.namespace, runId: payload.run_id, idempotencyKey: command.idempotency_key };
-        const admitted = ownedResult ? await journal.admitOwnedResultStart!({ ...admissionRequest, admission: ownedResult.prepared! })
-          : await journal.admitStart({ ...admissionRequest, payload });
+        const admitted = schedulerAdmission?.admitted ?? (ownedResult ? await journal.admitOwnedResultStart!({ ...admissionRequest, admission: ownedResult.prepared! })
+          : await journal.admitStart({ ...admissionRequest, payload }));
         if (admitted.kind !== "fresh") throw new Error(`Durable managed start is ${admitted.kind}; no new execution authority`);
         options.managedJournal.mixed?.bindRun(payload.run_id, "managed");
         record.managed = { permit: admitted.permit, settled: false, deliveryPending: true,
           delivery: new ManagedDelivery(journal, admitted.permit, nodeId, payload.run_id, options.managedJournal.channel) };
+        record.scheduler?.monitor(() => {
+          record.userStopRequested = true;
+          controller.abort(new DeliveryCancelled("Scheduler Stop requested"));
+          record.managed?.delivery.cancelUnexposed(new DeliveryCancelled("Scheduler Stop requested"));
+          track(requestManagedRunStop(payload.run_id));
+        }, (error) => {
+          controller.abort(error);
+          if (record.managed) { record.managed.failure ??= errorMessage(error).slice(0, 500); record.managed.delivery.cancelUnexposed(error); }
+          // All cancellation and closure still use this physical owner's
+          // captured producer/stop/settlement path.
+          track(record.ready.then(async () => { if (record.execution) await stopPhysical(record); }));
+        });
         await journal.advance(admitted.permit, "preparing");
       } else admission = createOwnedRunAdmission({ launchKey: binding.key, runId: payload.run_id, taskId: payload.task_id,
         agentInstanceId: payload.agent_instance_id, runtime: payload.runtime,
@@ -675,21 +696,25 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       const input = Object.freeze({ root: payload.workspace.root, basePath: payload.workspace_allocation!.base_path,
         agentInstanceId: payload.agent_instance_id, runId: payload.run_id, sourceRepo: baseRepo, allowedRoots });
       controller.signal.throwIfAborted();
+      record.scheduler?.assertStartCurrent();
       physicalWorkEntered = true;
       if (record.ownedResult) {
         record.recovery.phase = "materializing_result_input";
         materialized = await materializeOwnedResultRun(record.ownedResult.prepared!, controller.signal);
         record.ownedResult.worktree = materialized;
       } else {
+      await withRepositoryOperation({ sourceRepo: baseRepo, options: gitOptions, assertStartCurrent: record.scheduler?.assertStartCurrent }, async () => {
       record.recovery.phase = "namespace";
-      await provisionRunNamespace(input, gitOptions);
+      await provisionRunNamespace(input, gitOptions, record.scheduler?.assertStartCurrent);
       record.recovery.phase = "preparing";
-      const prepared = await prepareOwnedWorktree({ ...input, branch: payload.workspace.branch! }, gitOptions);
+      const prepared = await prepareOwnedWorktree({ ...input, branch: payload.workspace.branch! }, gitOptions, record.scheduler?.assertStartCurrent);
       record.recovery.phase = "reserving";
       reservation = await reserveOwnedWorktree(prepared);
       record.recovery.phase = "materializing";
       materialized = await materializeOwnedWorktree(reservation);
+      });
       }
+      if (!materialized) throw new Error("Owned workspace materialization did not return its genuine handle");
       record.recovery.phase = "adapter_startup";
       adapterInvoked = true;
       let handle: AgentInstanceHandle;
@@ -697,6 +722,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         const journal = options.managedJournal!.journal;
         options.managedJournal!.channel.assertCurrentSession(record.startupSession);
         controller.signal.throwIfAborted();
+        record.scheduler?.assertStartCurrent();
         await journal.advance(record.managed.permit, "launch_intent");
         const started = await journal.startOwnedProcess(record.managed.permit, adapter, materialized, controller.signal);
         handle = started.handle; admission = started.admission;
@@ -740,14 +766,14 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         } else if (materialized) {
           try {
             const closed = await options.managedJournal!.journal.settleOwnedStartupFailure(managed.permit, materialized, error);
-            managed.run = closed; managed.settled = true; record.confirmedClosed = true;
+            managed.run = closed; managed.settled = true; record.confirmedClosed = true; record.scheduler?.closed();
             managed.delivery.useClosed(closed);
           } catch { /* not_spawned or storage uncertainty never fabricates a physical settlement. */ }
         }
         settlePhysical(record, { kind: record.confirmedClosed ? "rejected" : "uncertain", code: rejectionCode, message: managed.failure });
         if (managed.settled) track(drainManagedRecord(record));
         if (!record.execution && !managed.settled) record.managed = undefined;
-        compactPhysical(record); await acknowledgePhysicalStart(command.id, record.outcome!); return;
+        compactPhysical(record); if (!record.schedulerRequestId) await acknowledgePhysicalStart(command.id, record.outcome!); return;
       }
       const receipt = adapterInvoked && materialized && admission
         ? getOwnedStartupReceipt(error, admission, materialized) : undefined;
@@ -764,7 +790,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       const message = `${errorMessage(error)}\nOwned attempt retained: ${JSON.stringify(record.recovery)}`;
       settlePhysical(record, { kind, code: rejectionCode, message });
       compactPhysical(record);
-      await acknowledgePhysicalStart(command.id, record.outcome!);
+      if (!record.schedulerRequestId) await acknowledgePhysicalStart(command.id, record.outcome!);
     } finally {
       // Even an unexpected local proof/classification exception must release
       // matching duplicates and stop/resume waiters without claiming success.
@@ -777,20 +803,79 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
 
   function beginPhysicalStart(command: Pick<RunStartCommand, "id" | "idempotency_key">, binding: AllocationStartBinding,
-    ownedResult?: { request: OwnedResultRunAdmissionV1; digest: string; selection: ReturnType<typeof selectOwnedResultProfile> }): Promise<void> {
+    ownedResult?: { request: OwnedResultRunAdmissionV1; digest: string; selection: ReturnType<typeof selectOwnedResultProfile> },
+    scheduler?: { admission: SchedulerOwnedAdmission; controller: AbortController; session: ManagedSession }): Promise<void> {
     let resolveReady!: (outcome: PhysicalStartupOutcome) => void;
-    const controller = new AbortController();
+    const controller = scheduler?.controller ?? new AbortController();
     const record: PhysicalStartRecord = { identity: Object.freeze({ key: binding.key }),
       ...(ownedResult ? { ownedResultDigest: ownedResult.digest, ownedResult: { request: ownedResult.request, selection: ownedResult.selection } } : {}),
+      ...(scheduler ? { schedulerRequestId: scheduler.admission.owner.requestId, scheduler: scheduler.admission.owner } : {}),
       ready: new Promise<PhysicalStartupOutcome>((resolve) => { resolveReady = resolve; }),
-      controller, confirmedClosed: false, startupSession: options.managedJournal?.channel.assertCurrentSession(),
+      controller, confirmedClosed: false, startupSession: scheduler?.session ?? options.managedJournal?.channel.assertCurrentSession(),
       recovery: { runId: binding.payload.run_id, taskId: binding.payload.task_id,
         root: binding.payload.workspace.root, branch: binding.payload.workspace.branch!, phase: "admitted" } };
     record.resolveReady = resolveReady;
     // Install the strict identity and separately settled outcome before I/O.
     physicalStarts.set(binding.payload.run_id, record);
     launchBindings.set(binding.payload.run_id, record.identity);
-    return executePhysicalStart(command, binding, record, controller);
+    return executePhysicalStart(command, binding, record, controller, scheduler?.admission);
+  }
+
+  function startSchedulerRequest(raw: { taskId: string; requestId: string; runId: string }): Promise<void> {
+    try {
+      const { taskId, requestId, runId } = raw;
+      if (!options.scheduler || !options.managedJournal || healthStopped || sourceRuntime
+        || options.managedJournal.mixed?.allowNewAllocations === false)
+        throw new Error("Scheduler execution requires the trusted local managed opt-in");
+      const previous = schedulerStarts.get(runId);
+      if (previous) {
+        if (previous.taskId !== taskId || previous.requestId !== requestId) throw new Error("Scheduler Run request identity changed");
+        return previous.work;
+      }
+      if (launchBindings.has(runId) || physicalStarts.has(runId) || starting.has(runId) || runs.has(runId) || finished.has(runId))
+        throw new Error("Run already belongs to an existing execution owner");
+      const controller = new AbortController(), channels = options.scheduler.open(), session = channels.start.session;
+      options.managedJournal.channel.assertCurrentSession(session);
+      // The scheduler proposal lane is generation-bound and single-flight.
+      // Reserve identity synchronously, then serialize the private proposal
+      // exchange only; physical startups, streams and renewal stay concurrent.
+      const prepared = schedulerAdmissionLane.then(async () => {
+        controller.signal.throwIfAborted();
+        return prepareSchedulerPhysicalOwner({ journal: options.managedJournal!.journal, channels, taskId, requestId, runId, signal: controller.signal });
+      });
+      schedulerAdmissionLane = prepared.catch(() => {});
+      const work = prepared.then(async (admission) => {
+        try {
+          const payload = admission.admitted.payload;
+          if (payload.run_id !== runId || payload.task_id !== taskId) throw new Error("Scheduler payload differs from original request");
+          const binding = allocationStartBinding(payload, process.platform, transport.acknowledgesRunEvents);
+          if (!binding) throw new Error("Scheduler execution requires an explicit per-run workspace");
+          releaseExecutor.assertWorkspaceBoundary(payload);
+          if (releasingWorkspaces.has(payload.workspace.root)) throw new Error("Workspace has a product publication in progress");
+          const adapter = resolveAdapter(payload.runtime);
+          assertVerificationWorkspaceBoundary(payload, verificationProfiles, adapter !== undefined && isOwnedRunAdapter(adapter));
+          const context = payload.context_pack.payload;
+          if (context && ["product_research_revision", "imported_recovery_validation", "imported_recovery_validation_review_subject", "imported_validation",
+            "imported_validation_review_subject", "imported_review_subject", "transferred_product_input", "imported_design_review_subject", "imported_execution",
+            "imported_execution_review_subject", "imported_execution_repair", "run_verification", "app_publication"].some((key) => key in context))
+            throw new Error("Scheduler execution cannot replace a protected source or verification owner");
+          admission.owner.assertStartCurrent();
+          await beginPhysicalStart({ id: requestId, idempotency_key: `${runId}:scheduler-start:v1` }, binding, undefined, { admission, controller, session });
+          const outcome = await physicalStarts.get(runId)!.ready;
+          if (outcome.kind !== "started") throw new Error(outcome.message);
+        } catch (error) {
+          // Once installed, the real owner keeps credentials through its
+          // actual closure and delivery. A pre-install failure cannot start.
+          if (!physicalStarts.has(runId)) admission.owner.forget();
+          throw error;
+        }
+      });
+      schedulerStarts.set(runId, { taskId, requestId, controller, session, work });
+      starting.set(runId, work);
+      void work.finally(() => { if (starting.get(runId) === work) starting.delete(runId); }).catch(() => {});
+      track(work);
+      return work;
+    } catch (error) { return Promise.reject(error); }
   }
 
   function beginMixedLegacyStart(command: RunStartCommand, snapshot: { key: string; payload: RunStartPayload }): Promise<void> {
@@ -838,6 +923,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
 
   async function onRunStartOwnedResult(command: RunStartOwnedResultCommand): Promise<void> {
     try {
+      if (schedulerStarts.has(command.payload.run_start.run_id)) throw new Error("Scheduler request cannot be replayed as owned-result start");
       // Detach the entire versioned admission before any await or duplicate ACK.
       const snapshot = snapshotOwnedResultRunAdmission(command.payload), payload = snapshot.request.run_start, runId = payload.run_id;
       if (payload.context_pack.payload?.product_research_revision) throw new Error("Research revision requires its original source-node execution path");
@@ -938,6 +1024,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     const launchCommand = binding || legacy || verifiedSnapshot ? { ...command, payload: (binding ?? legacy ?? verifiedSnapshot)!.payload } : command;
     const replayIdentity = binding || verifiedSnapshot ? Object.freeze({ key: (binding ?? verifiedSnapshot)!.key }) : undefined;
     const runId = launchCommand.payload.run_id;
+    if (schedulerStarts.has(runId)) { await ackRejected(command.id, "process_start_failed", "Scheduler request cannot be replayed as ordinary run.start"); return; }
     if (planningToolRuns.get(runId)?.unsafe) {
       await ackRejected(command.id, "process_start_failed", "Windows planning closure remains unconfirmed"); return;
     }
@@ -1266,7 +1353,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       await drainManagedRecord(physical); delivered = true;
     };
     try {
-      await abortableOperation(boundedOperation(ackAccepted(delivery.commandId), 10000), managed.delivery.signal);
+      if (!physical.schedulerRequestId) await abortableOperation(boundedOperation(ackAccepted(delivery.commandId), 10000), managed.delivery.signal);
       const iterator = physical.execution!.streamEvents(handle)[Symbol.asyncIterator]();
       for (;;) {
         // A separate cancellation signal wakes even a silent producer. Do not
@@ -2055,7 +2142,11 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         ...(importedValidations && roles.importedValidation ? [IMPORTED_VALIDATION_FEATURE_V1] : [])]);
     },
     requestManagedRunStop,
+    startSchedulerRequest,
     invalidateManagedStartupSession(session, cause): void {
+      for (const scheduler of schedulerStarts.values()) {
+        if (!session || scheduler.session === session) scheduler.controller.abort(cause);
+      }
       for (const physical of physicalStarts.values()) {
         if (physical.controller && physical.startupSession && (!session || physical.startupSession === session)) physical.controller.abort(cause);
       }
@@ -2118,6 +2209,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       sourceOperations?.invalidate();importedReviews?.invalidate();importedDesigns?.invalidate();importedDesignReviews?.invalidate();importedExecutions?.invalidate();importedExecutionReviews?.invalidate();importedValidations?.invalidate();
       releaseExecutor.requestStop();
       if (cancelRunning) {
+        for (const scheduler of schedulerStarts.values()) scheduler.controller.abort(new DeliveryCancelled("Node shutdown requested"));
         for (const planning of planningToolRuns.values()) planning.controller.abort();
         for (const verification of verificationRuns.values()) verification.controller.abort();
         for (const [runId, ordinary] of mixedLegacyStarts) {

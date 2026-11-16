@@ -9,6 +9,7 @@ import { readWindowsNativeFailure } from "./owned/windows-process-diagnostic.js"
 import type { MaterializedWorktree } from "./owned/worktree-reservation.js";
 import type { OwnedResultFinalizationV1, PreparedOwnedResultRun, selectOwnedResultProfile } from "./owned-worktree-verification.js";
 import type { OwnedRunAdmission, OwnedRunRuntimeAdapter } from "./process-adapter.js";
+import type { SchedulerPhysicalOwner } from "./managed/scheduler-owner.js";
 
 export type PhysicalStartupOutcome = Readonly<
   | { kind: "started" }
@@ -29,6 +30,9 @@ export interface PhysicalExecution {
 
 export interface PhysicalStartRecord {
   readonly identity: AllocationReplayIdentity;
+  /** Permanent replay-mode fence; private credential closures are compacted separately. */
+  readonly schedulerRequestId?: string;
+  scheduler?: SchedulerPhysicalOwner;
   /** Retained after compaction so a legacy duplicate cannot downgrade this mode. */
   readonly ownedResultDigest?: string;
   ownedResult?: {

@@ -1,4 +1,4 @@
-import { agentInstances, agentRuntimes, agents, computers, devices, runs, skillInstalls, tasks } from "@artoo/db";
+import { agentInstances, agentRuntimes, agents, computers, computerAdmissions, projectSquads, devices, runs, skillInstalls, tasks } from "@artoo/db";
 import {
   SkillManifestSchema,
   deriveResourceLifecycle,
@@ -14,7 +14,7 @@ import {
   type SkillInstallState,
 } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
-import { and, eq, isNull, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -340,6 +340,10 @@ async function scheduleTaskWithReservation(
       throw AppError.conflict("Only an unused imported design can revalidate its exact reserved run");
   }
   const enabledSkillInstalls = await loadEnabledSkillInstallStates(tx, ctx, opts.projectId);
+  const [squad] = await tx.select().from(projectSquads).where(and(eq(projectSquads.projectId, opts.projectId), eq(projectSquads.organizationId, ctx.organizationId)));
+  // Drain changes future admission only. Existing exact reservations keep their
+  // original lifecycle and can finish without losing a process owner.
+  const retainingReservation = !!(preparedRunId || opts.cleanValidationRunId || opts.cleanValidationReviewId || opts.recoveryValidationRunId || opts.recoveryValidationReviewId || opts.importedValidationRunId || opts.importedValidationReviewId || opts.importedDesignRunId || opts.importedDesignReviewId || opts.importedExecutionRunId || opts.importedExecutionReviewId || opts.importedExecutionRepairRunId);
   const rows = await tx
     .select({
       instanceId: agentInstances.id,
@@ -351,6 +355,7 @@ async function scheduleTaskWithReservation(
       instanceStatus: agentInstances.status,
       instanceConfig: agentInstances.config,
       computerStatus: computers.status,
+      admissionState: computerAdmissions.state,
       computerLastHeartbeatAt: computers.lastHeartbeatAt,
       computerCreatedAt: computers.createdAt,
       agentCaps: agents.capabilities,
@@ -366,6 +371,7 @@ async function scheduleTaskWithReservation(
       and(eq(agentInstances.computerId, computers.id), eq(computers.organizationId, ctx.organizationId)),
     )
     .innerJoin(agents, and(eq(agentInstances.agentId, agents.id), eq(agents.organizationId, ctx.organizationId)))
+    .leftJoin(computerAdmissions, and(eq(computerAdmissions.computerId, computers.id), eq(computerAdmissions.organizationId, ctx.organizationId)))
     .leftJoin(
       agentRuntimes,
       and(
@@ -377,7 +383,7 @@ async function scheduleTaskWithReservation(
     .where(
       and(
         eq(agentInstances.organizationId, ctx.organizationId),
-        eq(agentInstances.projectId, opts.projectId),
+        squad ? and(inArray(agentInstances.agentId, squad.agentIds), or(eq(agentInstances.projectId, opts.projectId), isNull(agentInstances.projectId))) : eq(agentInstances.projectId, opts.projectId),
         isNull(agentInstances.deletedAt),
         isNull(computers.deletedAt),
         isNull(agents.deletedAt),
@@ -456,6 +462,7 @@ async function scheduleTaskWithReservation(
       (r) =>
         isInstanceAdminAvailable(r.instanceStatus) &&
         r.computerStatus === "online" &&
+        (retainingReservation || r.admissionState !== "draining") &&
         hasSpareCapacity(
           activeRunsByInstance.get(r.instanceId) ?? 0,
           concurrencyLimitFromConfig(r.instanceConfig as Record<string, unknown> | null),
