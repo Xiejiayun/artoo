@@ -6,14 +6,17 @@ test("agent identities and instance filters stay compact and usable", async ({ p
     const response = await route.fetch();
     const data = await response.json();
     const agent = data.agents[0];
-    data.agents.push({ ...agent, id: "layout-builder", display_name: "Web Builder" }, { ...agent, id: "layout-reviewer", display_name: "Web Reviewer with a long reusable identity name" });
+    data.agents.push(
+      { ...agent, id: "layout-builder", display_name: "Web Builder" },
+      { ...agent, id: "layout-reviewer", display_name: "Web Reviewer with a long reusable identity name" },
+    );
     await route.fulfill({ response, json: data });
   });
   await page.goto("/agents");
   const library = page.getByRole("region", { name: "Agent library", exact: true });
   const card = library.locator(".agent-library__card").filter({ hasText: "Mock Coder" });
   await expect(library.locator(".agent-library__card")).toHaveCount(3);
-  const details = card.locator("details");
+  const details = card.locator("details.agent-library__details");
   await expect(details).not.toHaveAttribute("open");
   await expect(card.getByRole("link", { name: "Create instance", exact: true })).toBeVisible();
   await expect(card.getByRole("button", { name: "Delete agent", exact: true })).toBeHidden();
