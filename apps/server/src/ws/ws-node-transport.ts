@@ -40,6 +40,9 @@ import {
   commandAckSchema,
   schedulerStartProposalRequestSchema,
   schedulerStartReadyMessageSchema,
+  schedulerRunAcquireMessageSchema,
+  schedulerRunStatusMessageSchema,
+  schedulerRunEventMessageSchema,
   schedulerLeaseAcquireMessageSchema,
   schedulerLeaseRenewMessageSchema,
   nodeHeartbeatSchema,
@@ -89,7 +92,8 @@ export function createServerNodeTransport(socket: RawServerSocket): NodeTranspor
         message.type === "node.session.ready" ||
         message.type === "node.session.pong" ||
         message.type === "scheduler.start.response.v1" ||
-        message.type === "scheduler.lease.response.v1"
+        message.type === "scheduler.lease.response.v1" ||
+        message.type === "scheduler.run.response.v1"
       ) {
         // This proves only local write completion. A peer's matching probe is
         // still required; local completion is never a run-event receipt.
@@ -155,6 +159,12 @@ export function parseNodeToServer(data: unknown): NodeToServerMessage | null {
   }
   const kind = (raw as { kind: unknown }).kind;
   switch (kind) {
+    case "scheduler.run.acquire.v1":
+      return ok(schedulerRunAcquireMessageSchema.safeParse(raw));
+    case "scheduler.run.status.v1":
+      return ok(schedulerRunStatusMessageSchema.safeParse(raw));
+    case "scheduler.run.event.v1":
+      return ok(schedulerRunEventMessageSchema.safeParse(raw));
     case "scheduler.lease.acquire.v1":
       return ok(schedulerLeaseAcquireMessageSchema.safeParse(raw));
     case "scheduler.lease.renew.v1":
