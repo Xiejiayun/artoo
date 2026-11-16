@@ -1,6 +1,6 @@
 # artood 一键接入指南
 
-`0.1.0-rc.6` 提供安装、配对、登记和后台启动的一条命令，并增加受保护的本地团队配置入口。标准安装来源是官方 npm 包 [`@jiayunxie/artood`](https://www.npmjs.com/package/@jiayunxie/artood)。支持 Windows x64、Linux x64/arm64；macOS 实现保留，但本次发布资格延期。Windows arm64 不支持。上线连接入口前，须确认页面指定的精确版本已发布到官方 registry 并通过安装验证；本文本身不表示发布或生产验收已经完成。
+`0.1.0-rc.9` 提供安装、配对、登记和后台启动的一条命令，并保留受保护的本地团队配置入口。标准安装来源是官方 npm 包 [`@jiayunxie/artood`](https://www.npmjs.com/package/@jiayunxie/artood)。支持 Windows x64、Linux x64/arm64；macOS 实现保留，但本次发布资格延期。Windows arm64 不支持。上线连接入口前，须确认页面指定的精确版本已发布到官方 registry 并通过安装验证；本文本身不表示发布或生产验收已经完成。
 
 ## 从 Web 连接电脑
 
@@ -11,7 +11,7 @@
 Windows PowerShell、Linux 和 macOS 终端使用相同命令，需要先安装 Node.js 24+ 和 npm 11+：
 
 ```sh
-npx -y @jiayunxie/artood@0.1.0-rc.6 connect --server https://artoo.example.com --code XXXX-XXXX
+npx -y @jiayunxie/artood@0.1.0-rc.9 connect --server https://artoo.example.com --code XXXX-XXXX
 ```
 
 请复制 Web 生成的实际地址和配对码。`npx -y` 从 npm 安装指定版本并运行 `connect`，不需要仓库或 .NET。本机网络或组织 npm feed 无法访问官方包，只能说明本机的访问限制；不要据此把所有用户的安装入口改成 GitHub tarball 或下载脚本。先检查本机 npm registry 设置及网络权限，保持 TLS 校验开启。
@@ -21,7 +21,7 @@ npx -y @jiayunxie/artood@0.1.0-rc.6 connect --server https://artoo.example.com -
 经常管理节点时，可选择一次全局安装，之后直接使用 `artood`：
 
 ```sh
-npm install --global @jiayunxie/artood@0.1.0-rc.6
+npm install --global @jiayunxie/artood@0.1.0-rc.9
 artood connect --server https://artoo.example.com --code XXXX-XXXX
 ```
 
