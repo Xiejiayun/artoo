@@ -1,6 +1,8 @@
 import {
   agentInstances,
   agents,
+  logicalAgentConfigurations,
+  projectSquads,
   approvals,
   assistantTurns,
   autonomousReviews,
@@ -252,6 +254,9 @@ async function collectSchedulerBindings(
     .from(approvals)
     .where(and(eq(approvals.organizationId, ctx.organizationId), eq(approvals.taskId, task.id)))
     .orderBy(asc(approvals.id));
+  const [agentConfiguration] = await tx.select().from(logicalAgentConfigurations).where(and(eq(logicalAgentConfigurations.agentId, agent.id), eq(logicalAgentConfigurations.organizationId, ctx.organizationId)));
+  const [squad] = await tx.select().from(projectSquads).where(and(eq(projectSquads.projectId, project.id), eq(projectSquads.organizationId, ctx.organizationId)));
+  if (squad && !squad.agentIds.includes(agent.id)) throw AppError.conflict("Agent is not a member of this project's configured Squad");
   return {
     task_input_version: await schedulerTaskVersion(ctx, tx, task.id, true),
     task_input_digest: auditDigestV1({ task, source: source ?? null, approvals: gates }),
@@ -264,6 +269,8 @@ async function collectSchedulerBindings(
     configuration_digest: auditDigestV1({
       project,
       agent: { id: agent.id, kind: agent.kind, capabilities: agent.capabilities },
+      ...(agentConfiguration ? { agent_configuration: agentConfiguration } : {}),
+      ...(squad ? { squad } : {}),
       instances,
       computers: hosts,
       models,
