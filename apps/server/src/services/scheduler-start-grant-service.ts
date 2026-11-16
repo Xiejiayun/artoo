@@ -15,6 +15,10 @@ import { buildEvent } from "../events.js";
 import type { SchedulerExecutionClaimInput } from "./scheduler-execution-claim-service.js";
 import { buildSchedulerStartProposalFromPrepared } from "./scheduler-start-proposal-service.js";
 import { withRevalidatedSchedulerPreparedStart } from "./scheduler-start-revalidation-service.js";
+import {
+  assertSchedulerExecutionLeaseForGrant,
+  recordSchedulerExecutionLease,
+} from "./scheduler-execution-lease-service.js";
 
 /** The negotiated paired channel authenticates the original consumed claim
  * independently. Nodes must enforce their private
@@ -105,6 +109,7 @@ export function grantSchedulerStartInTransaction(
         issuedAt: grant.issued_at,
         expiresAt: grant.expires_at,
       });
+      await recordSchedulerExecutionLease(ctx, tx, grant, credentialExpiresAt);
       await appendEvent(
         tx,
         buildEvent(ctx, {
@@ -127,6 +132,7 @@ export function grantSchedulerStartInTransaction(
         }),
       );
     }
+    await assertSchedulerExecutionLeaseForGrant(ctx, tx, grant);
     // Include all awaited writes in both expiry checks. Replays never move the
     // original deadline; final credential/session validation follows in owner.
     const now = Date.parse(ctx.clock.nowIso());

@@ -1090,6 +1090,47 @@ cannot release them. The future scoped lifecycle must supply the actual attempt
 and closure owner. This intentionally does not activate a public scheduler Stop
 path. Existing manual/ordinary Run controls retain their original behavior.
 
+### Execution ownership separate from the start window (Step 4 in progress)
+
+Additive migration `0074_scheduler_execution_leases.sql` stores one logical lease
+for each newly issued scheduler start grant. The existing fenced grant transaction
+creates both records and their replayable audit events atomically. Grant replay
+does not create another lease, advance an epoch or extend either deadline. Old
+grants are not backfilled. Their v1 transport contract remains unchanged.
+
+Each immutable binding names the original organization/project/Task/request/Run,
+user, instance, paired device/computer/session, grant, journal namespace and node
+attempt. Epochs advance under the original Task lock using separate durable lease
+history; shadow epochs and the legacy projection's zero epoch are not reinterpreted.
+SQL rejects identity rewrites, history deletion, nonconsecutive or unsafe epochs,
+multiple active leases for one Task, backwards observations and terminal revival.
+An initial lease lasts at most 30 seconds, capped by its paired credential expiry.
+These records do not acknowledge durable node admission or physical startup.
+
+The internal renewal kernel reuses read-committed configuration/capacity/Task/user/
+device fencing, original-user access and exact AI-sharing consent. It independently
+matches the entire immutable binding and current registry identity, checks the
+original active Task assignment and Run, then renews only before the prior expiry.
+Intervals are server-selected, 1 second to 5 minutes, bounded by the current paired
+credential. A shortened credential cannot silently preserve a longer authorization.
+Renewal does not require the five-second start grant to remain current. A replaced
+session cannot inherit this lease, and late renewal cannot revive it. Audit failure
+or loss of the original session/credential during persistence rolls the renewal
+back. SQL comparisons and returned UTC timestamps retain microsecond precision.
+
+The internal server-owned expiry/revocation kernel closes logical ownership and
+appends its event together. It changes no Task/Run state, file lease, capacity
+reservation, workspace or physical-exit fact. It can operate while the original
+node is unreachable. Closing a lease prevents subsequent renewal and start-grant
+replay, but does not withdraw a physical permit already delivered to its original
+node. Such a permit retains its own original bounded deadline and local guard.
+Automatic Stop, resource release and takeover still require their distinct owners.
+
+No live renewal transport, scoped attempt credential, fresh-session continuation,
+reaper, retry authorization or failover is installed by this slice. Ordinary Run
+controls remain fenced for consumed scheduler Runs. Controlled database tests
+do not establish a running Provider or complete the two-machine outage drill.
+
 ## Explicit delegation (independent Step 7)
 
 Existing `parent_task_id` also records conversation continuations and research
