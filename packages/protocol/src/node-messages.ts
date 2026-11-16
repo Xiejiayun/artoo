@@ -90,6 +90,7 @@ import {
   importedCleanValidationReviewReceiptSchema,
 } from "./imported-clean-validation-review.js";
 import { z } from "zod";
+import { SchedulerPermitUnusedV1Schema } from "@artoo/domain";
 import { schedulerStartRegistrationSchema, schedulerStartResponseCommandSchema } from "./scheduler-start.js";
 import { schedulerLeaseRegistrationSchema, schedulerLeaseResponseCommandSchema } from "./scheduler-lease.js";
 import { schedulerRunRegistrationSchema, schedulerRunResponseCommandSchema } from "./scheduler-run.js";
@@ -704,6 +705,7 @@ export const adapterRunEventBodySchema = z.discriminatedUnion("type", [
 /** Retention/verification evidence is node-owned, never adapter-supplied. */
 export const runEventBodySchema = z.discriminatedUnion("type", [
   ...adapterRunEventBodySchema.options,
+  z.object({ type: z.literal("scheduler.permit_unused"), payload: SchedulerPermitUnusedV1Schema }),
   z.object({ type: z.literal("run.workspace.retained"), payload: RunWorkspaceRetainedPayloadSchema }),
   z.object({ type: z.literal("run.verification"), payload: RunVerificationPayloadSchema }),
   z.object({ type: z.literal("run.product-source.export.v1"), payload: ProductSourceExportV1Schema }),
