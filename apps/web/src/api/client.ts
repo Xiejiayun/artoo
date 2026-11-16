@@ -4,6 +4,8 @@ import {
   ProjectControlViewV1Schema,
   LogicalAgentConfigurationRecordV1Schema,
   ProjectSquadV1Schema,
+  TaskAgentReviewV1Schema,
+  TaskAgentReviewViewV1Schema,
   ComputerAdmissionV1Schema,
   type Agent,
   type LogicalAgentConfigurationV1,
@@ -15,6 +17,10 @@ import {
   type ProjectControlViewOptions,
   type ProjectControlViewV1,
   type TaskDelegationTreeV1,
+  type TaskAgentReviewV1,
+  type TaskAgentReviewViewV1,
+  type CreateTaskAgentReviewRequestV1,
+  type ApplyTaskAgentReviewRequestV1,
 } from "@artoo/domain";
 import type { ContentReport, ContentRules, ModerationMember } from "./contentModeration.js";
 import type { SchedulingPolicyByKind, SchedulingPolicyKind, SchedulingPolicyResponse } from "./teamResources.js";
@@ -666,6 +672,24 @@ export class ApiClient {
       body,
       idempotencyKey,
     });
+  }
+
+  async listTaskAgentReviews(taskId: string): Promise<{ reviews: TaskAgentReviewViewV1[] }> {
+    const result = await this.request<{ reviews: unknown[] }>("GET", `/tasks/${encodeURIComponent(taskId)}/agent-reviews`);
+    const reviews = result.reviews.map((review) => TaskAgentReviewViewV1Schema.parse(review));
+    if (reviews.some((review) => review.source_task_id !== taskId)) throw new Error("Agent feedback belongs to another source task.");
+    return { reviews };
+  }
+
+  async createTaskAgentReview(taskId: string, body: CreateTaskAgentReviewRequestV1, idempotencyKey: string): Promise<{ review: TaskAgentReviewV1 }> {
+    const result = await this.request<{ review: unknown }>("POST", `/tasks/${encodeURIComponent(taskId)}/agent-reviews`, { body, idempotencyKey });
+    const review = TaskAgentReviewV1Schema.parse(result.review);
+    if (review.source_task_id !== taskId || review.source_run_id !== body.source_run_id || review.reviewer_agent_id !== body.reviewer_agent_id) throw new Error("Agent feedback does not match the requested source and reviewer.");
+    return { review };
+  }
+
+  requestTaskAgentReviewChanges(taskId: string, reviewId: string, body: ApplyTaskAgentReviewRequestV1, idempotencyKey: string): Promise<{ task: Task }> {
+    return this.request("POST", `/tasks/${encodeURIComponent(taskId)}/agent-reviews/${encodeURIComponent(reviewId)}/request-changes`, { body, idempotencyKey });
   }
 
   async listMessages(roomId: string, options: MessagePageOptions = {}): Promise<MessagesResponse> {

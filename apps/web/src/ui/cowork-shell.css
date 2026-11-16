@@ -210,6 +210,11 @@
 .cowork-review-task-heading .action-row a { color: var(--accent-text); font-size: 11px; }
 .cowork-review-task-heading code { overflow-wrap: anywhere; font-size: 9px; }
 .cowork-review-state { border-left: 2px solid var(--border-strong); padding-left: 12px; }
+.task-agent-reviews { min-width: 0; }
+.task-agent-reviews code { overflow-wrap: anywhere; word-break: break-word; }
+.task-agent-reviews pre { max-height: 24rem; overflow: auto; padding: 12px; background: var(--bg); white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.7 var(--font-mono); }
+.task-agent-reviews .cowork-feedback-artifact { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 6px; }
+.task-agent-reviews .cowork-feedback-artifact > code { grid-column: 2; font-size: 10px; }
 .cowork-artifact-preview { display: grid; gap: 10px; }
 .cowork-artifact-preview pre { max-height: 480px; overflow: auto; margin: 0; padding: 15px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text-primary); white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.7 var(--font-mono); }
 @media (max-width: 1060px) { .cowork-review-layout { grid-template-columns: minmax(0,1fr); } .cowork-review-note { flex-wrap: wrap; } .cowork-review-queue > ul { max-height: 360px; overflow: auto; } }

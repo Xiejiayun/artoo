@@ -31,6 +31,7 @@ import { AppError } from "../errors.js";
 import { assertExecutionApprovalGranted } from "./approval-service.js";
 import { readSchedulerQueueMetadata } from "./scheduler-queue-metadata-service.js";
 import { readTaskSourceInputs } from "./task-source-input-service.js";
+import { assertTaskAgentReviewAdmission, taskAgentReviewForTask } from "./task-agent-review-binding.js";
 
 // Only these request-audit records are metadata. All other Task events remain inputs.
 const metadataEvents = [
@@ -101,6 +102,11 @@ export async function captureSchedulerRequestBindings(
   request: { agent_id: string },
 ) {
   if (task.status !== "ready") throw AppError.invalidState("Only a ready task can stage a scheduling intent");
+  const opinion = await taskAgentReviewForTask(ctx, tx, task.id);
+  if (opinion) {
+    if (request.agent_id !== opinion.reviewerAgentId) throw AppError.permissionDenied("Only the explicitly chosen reviewer Agent may claim this opinion task");
+    await assertTaskAgentReviewAdmission(ctx, tx, opinion);
+  }
   await assertPlainTaskOwner(ctx, tx, task);
   await assertExecutionApprovalGranted(ctx, tx, task.id);
   return collectSchedulerBindings(ctx, tx, task, request);

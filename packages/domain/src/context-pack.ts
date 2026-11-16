@@ -7,6 +7,7 @@
  */
 import { z } from "zod";
 import { SourceInputsV1Schema } from "./enqueue-source.js";
+import { TaskAgentReviewSubjectV1Schema } from "./task-agent-review.js";
 import { ApplicationDeliveryV1Schema } from "./application-development.js";
 import {
   ApplicationPublicationGrantV1Schema,
@@ -43,6 +44,7 @@ import {
 } from "./clean-validation-context.js";
 
 export const ContextPackSchema = z.object({
+  agent_review_subject: TaskAgentReviewSubjectV1Schema.optional(),
   // Frozen descriptive guidance only; this carries no admission or verifier authority.
   agent_configuration: z.object({ version: z.literal(1), agent_id: z.string().min(1), revision: z.number().int().positive(), role: z.string(), description: z.string(), instructions: z.string() }).strict().optional(),
   source_inputs: SourceInputsV1Schema.optional(),

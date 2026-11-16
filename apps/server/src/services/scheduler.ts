@@ -29,6 +29,7 @@ import { goalImportedValidations, goalImportedValidationReviews } from "@artoo/d
 import { goalRecoveryValidations, goalRecoveryValidationReviews } from "@artoo/db";
 import { goalCleanValidations, goalCleanValidationReviews } from "@artoo/db";
 import { projectSquadInstanceMembership } from "./project-squad-membership.js";
+import { schedulerTaskAgentReview, taskAgentReviewWorkspaceIsolated } from "./task-agent-review-binding.js";
 
 export interface SchedulerCandidate {
   agent_instance_id: string;
@@ -142,6 +143,7 @@ export async function revalidateSchedulerPreparedCandidate(tx: DrizzleDb, ctx: S
     task.requiredCapabilities as Capability[],
     {
       mode: "manual",
+      shadowTaskId: prepared.task_id,
       projectId: prepared.project_id,
       branchBacked: true,
       agentInstanceId: prepared.agent_instance_id,
@@ -160,6 +162,8 @@ async function scheduleTaskWithReservation(
   opts: ScheduleOptions,
   preparedRunId?: string,
 ): Promise<SchedulerOutcome> {
+  const requestedOpinion = await schedulerTaskAgentReview(ctx, tx, opts.shadowTaskId, preparedRunId);
+  const [opinionSource] = requestedOpinion ? await tx.select().from(runs).where(and(eq(runs.id, requestedOpinion.sourceRunId), eq(runs.organizationId, ctx.organizationId))) : [];
   if (opts.cleanValidationRunId) {
     const [owner] = await tx
       .select()
@@ -350,6 +354,8 @@ async function scheduleTaskWithReservation(
       agentId: agentInstances.agentId,
       computerId: agentInstances.computerId,
       runtime: agentInstances.runtime,
+      workspaceRoot: agentInstances.workspaceRoot,
+      computerOs: computers.os,
       modelProfileId: agentInstances.modelProfileId,
       effortProfileId: agentInstances.effortProfileId,
       instanceStatus: agentInstances.status,
@@ -451,6 +457,10 @@ async function scheduleTaskWithReservation(
   }
 
   const eligible = rows
+    .filter(r => !requestedOpinion || r.agentId === requestedOpinion.reviewerAgentId
+      && !!opinionSource && ctx.supportsDependencyInputs?.(r.computerId) === true
+      && !!ctx.getPairedNodeSession?.(r.computerId)
+      && taskAgentReviewWorkspaceIsolated(opinionSource, r.computerId, r.workspaceRoot, r.computerOs))
     .filter(
       (r) =>
         deriveResourceLifecycle(r.computerLastHeartbeatAt, r.computerCreatedAt, now, false, expiryMs).state !==
