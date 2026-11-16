@@ -1,6 +1,6 @@
 import type { AdmissionResult, Journal, JournalRun } from "./journal-types.js";
 import type { SchedulerStartSession } from "./scheduler-start-channel.js";
-import type { SchedulerStartGrantV1 } from "@artoo/domain";
+import type { SchedulerStartGrantV1, RunStartPayload } from "@artoo/domain";
 
 export type SchedulerSessionAdmission =
   | (Extract<AdmissionResult, { kind: "fresh" }> & { readonly grant: SchedulerStartGrantV1; readonly assertStartCurrent: () => void })
@@ -20,10 +20,13 @@ export async function admitSchedulerStartFromSession(input: {
   requestId: string;
   runId: string;
   signal?: AbortSignal;
+  /** Local bounded input transfer, deliberately before the original ready clock. */
+  prepareInputs?: (payload: RunStartPayload, signal: AbortSignal) => Promise<void>;
 }): Promise<SchedulerSessionAdmission> {
   // Capture the original generation, identities and methods before the first
   // await. A reconnect or caller mutation cannot substitute later authority.
   const { journal, channel, taskId, requestId, runId } = input;
+  const prepareInputs = input.prepareInputs;
   const session = { ...channel.session };
   const signal = input.signal ? AbortSignal.any([channel.signal, input.signal]) : channel.signal;
   const namespace = journal.namespace;
@@ -59,6 +62,8 @@ export async function admitSchedulerStartFromSession(input: {
     original.session_id !== session.sessionId
   )
     throw new Error("Scheduler proposal differs from the original consumed request and session");
+  await prepareInputs?.(result.proposal.run_start, signal);
+  signal.throwIfAborted();
   const prepared = await prepare({
     expectedNamespace: namespace,
     runId,

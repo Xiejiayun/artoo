@@ -1,4 +1,4 @@
-import { agentInstances, agentRuntimes, agents, computers, computerAdmissions, projectSquads, devices, runs, skillInstalls, tasks } from "@artoo/db";
+import { agentInstances, agentRuntimes, agents, computers, computerAdmissions, devices, runs, skillInstalls, tasks } from "@artoo/db";
 import {
   SkillManifestSchema,
   deriveResourceLifecycle,
@@ -14,7 +14,7 @@ import {
   type SkillInstallState,
 } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
-import { and, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -28,6 +28,7 @@ import { goalImportedExecutionReviews, goalImportedExecutionRepairs } from "@art
 import { goalImportedValidations, goalImportedValidationReviews } from "@artoo/db";
 import { goalRecoveryValidations, goalRecoveryValidationReviews } from "@artoo/db";
 import { goalCleanValidations, goalCleanValidationReviews } from "@artoo/db";
+import { projectSquadInstanceMembership } from "./project-squad-membership.js";
 
 export interface SchedulerCandidate {
   agent_instance_id: string;
@@ -340,7 +341,6 @@ async function scheduleTaskWithReservation(
       throw AppError.conflict("Only an unused imported design can revalidate its exact reserved run");
   }
   const enabledSkillInstalls = await loadEnabledSkillInstallStates(tx, ctx, opts.projectId);
-  const [squad] = await tx.select().from(projectSquads).where(and(eq(projectSquads.projectId, opts.projectId), eq(projectSquads.organizationId, ctx.organizationId)));
   // Drain changes future admission only. Existing exact reservations keep their
   // original lifecycle and can finish without losing a process owner.
   const retainingReservation = !!(preparedRunId || opts.cleanValidationRunId || opts.cleanValidationReviewId || opts.recoveryValidationRunId || opts.recoveryValidationReviewId || opts.importedValidationRunId || opts.importedValidationReviewId || opts.importedDesignRunId || opts.importedDesignReviewId || opts.importedExecutionRunId || opts.importedExecutionReviewId || opts.importedExecutionRepairRunId);
@@ -382,9 +382,7 @@ async function scheduleTaskWithReservation(
     )
     .where(
       and(
-        eq(agentInstances.organizationId, ctx.organizationId),
-        squad ? and(inArray(agentInstances.agentId, squad.agentIds), or(eq(agentInstances.projectId, opts.projectId), isNull(agentInstances.projectId))) : eq(agentInstances.projectId, opts.projectId),
-        isNull(agentInstances.deletedAt),
+        projectSquadInstanceMembership(ctx.organizationId, opts.projectId),
         isNull(computers.deletedAt),
         isNull(agents.deletedAt),
       ),

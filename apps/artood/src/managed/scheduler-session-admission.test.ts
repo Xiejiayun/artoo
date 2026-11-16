@@ -180,6 +180,16 @@ afterEach(() => {
 });
 
 describe("generation-bound scheduler exchange to durable admission", () => {
+  it("joins dependency input preparation before opening the original short ready window", async () => {
+    const f = fixture();
+    await admitSchedulerStartFromSession({ ...f.input, prepareInputs: async (payload) => {
+      expect(payload.run_id).toBe("run");
+      expect(f.methods.beginSchedulerReady).not.toHaveBeenCalled();
+      f.order.push("dependency-inputs");
+    } });
+    expect(f.order).toEqual(["scheduler.start.propose.v1", "dependency-inputs", "prepare", "scheduler.start.ready.v1", "admit"]);
+  });
+
   it("joins fresh preparation and grant in order and carries the original guard", async () => {
     const f = fixture(),
       result = await admitSchedulerStartFromSession(f.input);

@@ -24,7 +24,7 @@ import {
   type StartDiscussionRequest,
 } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
@@ -33,6 +33,7 @@ import { mapPlan, proposePlanInTx } from "./plan-service.js";
 import { unconfirmedDisconnectRunIds } from "./execution-state.js";
 import { failRunDaemonDisconnect } from "./run-service.js";
 import { parseDiscussionPlan } from "./discussion-plan.js";
+import { projectSquadInstanceMembership } from "./project-squad-membership.js";
 export { parseDiscussionPlan } from "./discussion-plan.js";
 
 type Row = typeof discussions.$inferSelect;
@@ -187,9 +188,7 @@ export async function startDiscussion(ctx: ServerContext, goalId: string, reques
       .from(agentInstances)
       .where(
         and(
-          eq(agentInstances.organizationId, ctx.organizationId),
-          eq(agentInstances.projectId, goal.projectId),
-          isNull(agentInstances.deletedAt),
+          projectSquadInstanceMembership(ctx.organizationId, goal.projectId),
           inArray(
             agentInstances.id,
             input.participants.map((p) => p.agent_instance_id),
