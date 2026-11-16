@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { runEventBodySchema, type NodeRunEvent, type RunEventMessage } from "@artoo/protocol";
 import type { Journal, FreshLaunchPermit, JournalRun, ClosedRunDeliveryScope, ClosedRunDeliveryClaim, LiveDeliveryView } from "./journal-types.js";
+import { readSchedulerUnusedPermit } from "./scheduler-unused-permit.js";
 
 export interface ManagedSession {
   readonly namespace: string; readonly nodeId: string; readonly generation: number;
@@ -75,6 +76,19 @@ export class ManagedDelivery {
     }
     this.cancelUnexposed(new DeliveryCancelled("Live delivery transferred to physical closed scope"));
     this.scope = { expectedNamespace: this.journal.namespace, runId: this.runId, launchKey: run.launchKey, physicalReceiptId: run.receipt.id };
+    this.cancellation = new AbortController();
+  }
+  useUnusedSchedulerPermit(run: JournalRun): void {
+    if (run.namespace !== this.journal.namespace || run.runId !== this.runId || !run.launchKey || !run.receipt
+      || !readSchedulerUnusedPermit(run)) throw new Error("Managed unused delivery lacks the exact original unused scheduler permit");
+    if (this.scope) {
+      if (this.scope.settlementScope !== "scheduler-unused-permit.v1" || this.scope.physicalReceiptId !== run.receipt.id
+        || this.scope.launchKey !== run.launchKey) throw new Error("Managed unused scheduler scope changed");
+      return;
+    }
+    this.cancelUnexposed(new DeliveryCancelled("Unused scheduler permit transferred to closure-only delivery"));
+    this.scope = { expectedNamespace: this.journal.namespace, runId: this.runId, launchKey: run.launchKey,
+      physicalReceiptId: run.receipt.id, settlementScope: "scheduler-unused-permit.v1" };
     this.cancellation = new AbortController();
   }
   private async expose(claim: Claim): Promise<LiveDeliveryView | void> {

@@ -37,6 +37,7 @@ import type {
   JournalOptions,
   JournalRun,
   SchedulerPreparationResult,
+  SchedulerStartGrantRecord,
   StoredEvent,
   TerminalSettlement,
 } from "./journal-types.js";
@@ -336,6 +337,7 @@ interface PermitState {
   readonly mode: "per-run" | "legacy";
   readonly identity?: OwnedAdmissionIdentity;
   readonly assertLaunchCurrent?: () => void;
+  readonly schedulerGrant?: SchedulerStartGrantRecord;
   payload: RunStartPayload | undefined;
   ownedResultRequest?: OwnedResultRunAdmissionV1;
   ownedResultDigest?: string;
@@ -389,7 +391,10 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
     const runId = query(input);
     nonempty(input.launchKey, "launch key");
     nonempty(input.physicalReceiptId, "physical receipt ID");
-    return { runId, key: input.launchKey, physicalReceiptId: input.physicalReceiptId };
+    if (input.settlementScope !== undefined && input.settlementScope !== "scheduler-unused-permit.v1")
+      throw new Error("Unknown explicit closed delivery settlement scope");
+    return { runId, key: input.launchKey, physicalReceiptId: input.physicalReceiptId,
+      ...(input.settlementScope ? { settlementScope: input.settlementScope } : {}) };
   };
   const stateFor = (permit: FreshLaunchPermit): PermitState => {
     worker.assertAvailable();
@@ -519,6 +524,7 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
       ...(identity ? { identity } : {}),
       ...(ownedResult ? { ownedResultRequest: ownedResult.request, ownedResultDigest: ownedResult.digest } : {}),
       ...(assertLaunchCurrent ? { assertLaunchCurrent } : {}),
+      ...(run.schedulerStartGrant ? { schedulerGrant: run.schedulerStartGrant } : {}),
       revision: run.revision,
       phase: run.phase,
       tail: Promise.resolve(),
@@ -581,7 +587,7 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
       : {}),
     ...(ready.schemaVersion === 5 || ready.schemaVersion === 6 ? { schedulerPreparationVersion: 1 as const } : {}),
     ...(ready.schemaVersion === 6
-      ? { schedulerStartGrantStorageVersion: 1 as const, schedulerStartGrantAdmissionVersion: 1 as const }
+      ? { schedulerStartGrantStorageVersion: 1 as const, schedulerStartGrantAdmissionVersion: 1 as const, schedulerUnusedPermitVersion: 1 as const }
       : {}),
     async prepareSchedulerStart(request) {
       const runId = query(request);
@@ -657,6 +663,7 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
     },
     advance(permit, phase) {
       return serialize(permit, async (state) => {
+        if (state.startClaimed) throw new Error("Consumed producer bridge cannot advance preparation");
         state.assertLaunchCurrent?.();
         const result = await worker.call<{ kind: string; run: JournalRun }>("advance", {
           ...inputFor(state),
@@ -677,6 +684,20 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
       const result = await worker.call<{ kind: string; run: JournalRun }>("stop", { runId, key });
       if (result.kind === "conflict") throw new Error("Stop launch key differs from the durable owner");
       return result.run;
+    },
+    settleUnusedSchedulerPermit(permit) {
+      const state = stateFor(permit);
+      if (ready.schemaVersion !== 6 || !state.schedulerGrant || state.mode !== "per-run"
+        || state.startClaimed || state.recordedStarted || state.recordedClosed || state.admission || state.handle)
+        throw new Error("One original unused genuine scheduler producer permit is required");
+      // Irreversible before the first await. Concurrent bridge calls, storage
+      // failure and a lost receipt can never restore physical start authority.
+      state.startClaimed = true; state.payload = undefined;
+      return serialize(permit, async (current) => {
+        const run = await worker.call<JournalRun>("scheduler_permit_unused", inputFor(current));
+        update(current, run); current.recordedClosed = true;
+        return run;
+      });
     },
     async startOwnedProcess(permit, adapter, worktree, signal) {
       const state = stateFor(permit);
@@ -850,7 +871,7 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
           parsed.type === "run.lifecycle" && ["completed", "failed", "cancelled"].includes(parsed.payload.phase);
         if (parsed.type === "run.lifecycle" && parsed.payload.phase === "started" && !state.recordedStarted)
           throw new Error("Started events require our authenticated recorded producer handle");
-        if (terminal || parsed.type === "run.workspace.retained" || parsed.type === "run.owned-result.verification")
+        if (terminal || parsed.type === "run.workspace.retained" || parsed.type === "run.owned-result.verification" || parsed.type === "scheduler.permit_unused")
           throw new Error(
             "Evidence/terminal/retention events must be committed atomically through physical settlement",
           );

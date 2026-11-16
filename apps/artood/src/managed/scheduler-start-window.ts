@@ -34,6 +34,7 @@ interface StartWindow {
   readonly assertCurrent: () => void;
   used: boolean;
 }
+export class SchedulerStartWindowExpired extends Error {}
 
 /** One manager per live journal facade. Objects from another manager/process
  * cannot acquire this facade's authority. This does not grant durable admission. */
@@ -115,17 +116,21 @@ export function createSchedulerStartWindows(assertAvailable: () => void, tick = 
       if (!Number.isSafeInteger(deadline)) throw new Error("Scheduler monotonic clock continuity is unknown");
       let previous = state.started,
         invalid = false;
+      let invalidCause: unknown;
       const assertCurrent = () => {
-        if (invalid) throw new Error("Scheduler start window is permanently invalid");
+        if (invalid) throw invalidCause instanceof SchedulerStartWindowExpired
+          ? new SchedulerStartWindowExpired("Scheduler start window is permanently invalid", { cause: invalidCause })
+          : new Error("Scheduler start window is permanently invalid", { cause: invalidCause });
         try {
           assertAvailable();
           state.signal.throwIfAborted();
           const now = tick();
-          if (!Number.isSafeInteger(now) || now < previous || now >= deadline)
+          if (!Number.isSafeInteger(now) || now < previous)
             throw new Error("Scheduler start deadline expired or monotonic continuity is unknown");
+          if (now >= deadline) throw new SchedulerStartWindowExpired("Scheduler start deadline expired");
           previous = now;
         } catch (error) {
-          invalid = true;
+          invalid = true; invalidCause = error;
           throw error;
         }
       };
