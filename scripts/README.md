@@ -37,6 +37,9 @@
 CI 的 `preview.yml` 将完整 Vitest 分为两个 parallel 分片和一个串行 windows-process 分区，
 并在 shared 聚合实际文件覆盖；`shared-checks` 单独运行实际 Web/认证浏览器等检查。
 不能用任一子入口的成功代表全部发布门禁通过。
+暂停的 iOS 与 Mac desktop UI 套件仅在手动 `workflow_dispatch` 显式选择
+`apple_clients: true` 时运行，默认关闭；必需的 macOS `scheduler-journal`、
+shared 聚合和 Web/Windows 门禁仍随 PR 与 main push 完整运行。
 
 ## Apple 与桌面验收
 
