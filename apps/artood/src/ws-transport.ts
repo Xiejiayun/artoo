@@ -58,6 +58,8 @@ export interface WebSocketNodeTransport extends NodeSideTransport {
   currentSessionIdentity(): object | undefined;
   /** Server-announced device session bound to this exact socket; never carried across reconnects. */
   currentPublicationSession(): Readonly<{ id: string; identity: object }> | undefined;
+  /** Content-read identity only; it confers no publication or execution grant. */
+  currentDependencyInputSession(): Readonly<{ id: string; identity: object; signal: AbortSignal }> | undefined;
   /** Resolves once the socket is open and node.hello has been sent. */
   readonly ready: Promise<void>;
   /** Always present here (overrides the optional base close). */
@@ -84,6 +86,8 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
   let retries = 0;
   let counter = 0;
   let publicationSession: Readonly<{ id: string; identity: object }> | undefined;
+  let dependencyInputSession: Readonly<{ id: string; identity: object; signal: AbortSignal }> | undefined;
+  let dependencyInputController: AbortController | undefined;
   let resolveReady!: () => void;
   let rejectReady!: (reason: unknown) => void;
   const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
@@ -120,6 +124,10 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
     publicationSession = undefined;
     options.onPublicationSessionEnded?.();
   }
+  function revokeDependencyInputSession(): void {
+    dependencyInputController?.abort(new Error("Original dependency input connection ended"));
+    dependencyInputController = undefined; dependencyInputSession = undefined;
+  }
   function sendRaw(message: NodeToServerMessage): void {
     if (socket.readyState !== WS.OPEN) throw new Error('websocket is not open');
     socket.send(JSON.stringify(message));
@@ -135,6 +143,7 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
   function connect(): void {
     if (closed) return;
     revokePublicationSession();
+    revokeDependencyInputSession();
     socket = new WS(options.url);
     const thisSocket = socket;
     thisSocket.addEventListener('open', () => {
@@ -156,6 +165,20 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
       try { parsed = JSON.parse(typeof event.data === 'string' ? event.data : String(event.data)); } catch { return; }
       const result = commandSchema.safeParse(parsed);
       if (!result.success) return;
+      if (result.data.type === "node.dependency-inputs.session.v1") {
+        const session = result.data.payload;
+        if (options.hello.dependency_inputs?.version !== 1 || session.node_id !== options.hello.node_id || thisSocket.readyState !== WS.OPEN) return;
+        if (dependencyInputSession && dependencyInputSession.id !== session.session_id) {
+          revokeDependencyInputSession(); closed = true; clearHeartbeat();
+          failPending(new Error("dependency input session changed on its original connection"));
+          thisSocket.close(); options.onFatalDisconnect?.(); return;
+        }
+        if (!dependencyInputSession) {
+          dependencyInputController = new AbortController();
+          dependencyInputSession = Object.freeze({ id: session.session_id, identity: thisSocket, signal: dependencyInputController.signal });
+        }
+        return;
+      }
       if (result.data.type === 'application.publication.session.v1') {
         const session = result.data.payload;
         if (session.node_id !== options.hello.node_id || thisSocket.readyState !== WS.OPEN) return;
@@ -203,6 +226,7 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
       if (thisSocket !== socket) return;
       notifyDisconnected(thisSocket);
       revokePublicationSession();
+      revokeDependencyInputSession();
       clearHeartbeat();
       if (closed) return;
       if (!connectedOnce || event.code === 1008 || options.reconnect === false) {
@@ -227,6 +251,9 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
     currentSessionIdentity(): object | undefined { return !closed && socket.readyState === WS.OPEN ? socket : undefined; },
     currentPublicationSession() {
       return !closed && socket.readyState === WS.OPEN && publicationSession?.identity === socket ? publicationSession : undefined;
+    },
+    currentDependencyInputSession() {
+      return !closed && socket.readyState === WS.OPEN && dependencyInputSession?.identity === socket ? dependencyInputSession : undefined;
     },
     async send(message, delivery): Promise<void> {
       // Publication receipts retain their immutable body through ACK waits and
@@ -298,6 +325,7 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
       closed = true;
       notifyDisconnected(socket);
       revokePublicationSession();
+      revokeDependencyInputSession();
       clearHeartbeat();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       handlers.clear();

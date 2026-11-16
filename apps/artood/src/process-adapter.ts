@@ -1005,8 +1005,10 @@ export function createProcessAdapter(
     // Enforce the workspace allowlist before context writes or process launch.
     assertWorkspaceScope(config.workspaceRoot, options.allowedRoots);
     assertRealWorkspaceScope(config.workspaceRoot, options.allowedRoots);
-    const dependencyInputs = invocation ? takeDependencyArtifactInputs(config.runStart) : undefined;
+    const dependencyInputs = takeDependencyArtifactInputs(config.runStart);
     if (invocation) invocation.dependencyInputs = dependencyInputs;
+    let dependencyProcessAttempted = false;
+    try {
 
     const discussion = config.runStart.context_pack.payload?.policy.execution_mode === "discussion";
     const productTools =
@@ -1158,6 +1160,7 @@ export function createProcessAdapter(
       if (externalDiscussion) externalDiscussion.cleanupAllowed = false;
       if (windowsExecution) {
         assertWindowsNativeExecutionIdentity(windowsExecution, config);
+        dependencyProcessAttempted = true;
         child = nativeProcess = await startWindowsScopedProcess(
           windowsExecution.backend,
           {
@@ -1174,12 +1177,14 @@ export function createProcessAdapter(
           },
           isWindowsPlanningExecution(windowsExecution) ? "tool" : "author",
         );
-      } else
+      } else {
+        dependencyProcessAttempted = true;
         child = spawn(resolved[0]!, [...resolved.slice(1), ...args], {
           cwd: config.workspaceRoot,
           detached: process.platform !== "win32",
           windowsHide: true,
         });
+      }
     } catch (error) {
       if (windowsExecution) {
         if (externalDiscussion) externalDiscussion.cleanupAllowed = false;
@@ -1867,6 +1872,13 @@ export function createProcessAdapter(
       throw error;
     } finally {
       startupSignal?.removeEventListener("abort", onStartupAbort);
+    }
+    } catch (error) {
+      if (!dependencyProcessAttempted && dependencyInputs) {
+        try { dependencyInputs.close(); if (invocation) invocation.dependencyInputs = undefined; }
+        catch (cleanup) { throw new AggregateError([error, cleanup], "Process preparation and dependency input cleanup failed; evidence retained"); }
+      }
+      throw error;
     }
   }
 

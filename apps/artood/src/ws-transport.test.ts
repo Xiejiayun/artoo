@@ -136,6 +136,45 @@ class FakeClientWebSocket {
 }
 
 describe("createWebSocketTransport", () => {
+  it("keeps dependency content identity on the original ordinary socket and aborts it on loss", async () => {
+    const transport = createWebSocketTransport({ url: "ws://127.0.0.1/api/v1/node", hello: { ...hello, dependency_inputs: { version: 1 } },
+      reconnect: false, WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket });
+    const socket = fakeClientSockets.at(-1)!; socket.open(); await transport.ready;
+    const session = { kind: "command" as const, id: "inputs", idempotency_key: "inputs", type: "node.dependency-inputs.session.v1" as const,
+      payload: { version: 1 as const, node_id: hello.node_id, session_id: "550e8400-e29b-41d4-a716-446655440000" } };
+    try {
+      expect(transport.currentDependencyInputSession()).toBeUndefined();
+      socket.receive({ ...session, payload: { ...session.payload, node_id: "other-node" } });
+      expect(transport.currentDependencyInputSession()).toBeUndefined();
+      socket.receive(session);
+      const original = transport.currentDependencyInputSession()!;
+      expect(original.id).toBe(session.payload.session_id); expect(original.identity).toBe(socket);
+      expect(transport.currentPublicationSession()).toBeUndefined();
+      socket.receive(session); expect(transport.currentDependencyInputSession()).toBe(original);
+      socket.close(); expect(original.signal.aborted).toBe(true);
+      expect(transport.currentDependencyInputSession()).toBeUndefined();
+    } finally { await transport.close(); }
+  });
+
+  it("refuses unsolicited or conflicting dependency content session announcements", async () => {
+    for (const enabled of [false, true]) {
+      const transport = createWebSocketTransport({ url: "ws://127.0.0.1/api/v1/node", hello: { ...hello, ...(enabled ? { dependency_inputs: { version: 1 as const } } : {}) },
+        reconnect: false, WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket });
+      const socket = fakeClientSockets.at(-1)!; socket.open(); await transport.ready;
+      const session = { kind: "command" as const, id: "inputs", idempotency_key: "inputs", type: "node.dependency-inputs.session.v1" as const,
+        payload: { version: 1 as const, node_id: hello.node_id, session_id: "550e8400-e29b-41d4-a716-446655440000" } };
+      try {
+        socket.receive(session);
+        if (!enabled) expect(transport.currentDependencyInputSession()).toBeUndefined();
+        else {
+          const original = transport.currentDependencyInputSession()!;
+          socket.receive({ ...session, payload: { ...session.payload, session_id: "550e8400-e29b-41d4-a716-446655440001" } });
+          expect(original.signal.aborted).toBe(true); expect(transport.connected).toBe(false);
+        }
+      } finally { await transport.close(); }
+    }
+  });
+
   it("notifies ordinary current-socket loss once and preserves reconnect identity", async () => {
     let disconnected = 0;
     const transport = createWebSocketTransport({ url: "ws://fixture.invalid", hello, reconnectDelayMs: 1,

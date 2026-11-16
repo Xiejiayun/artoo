@@ -1,4 +1,4 @@
-import { posix } from "node:path";
+import { posix, win32 } from "node:path";
 import type { ArtoodNode } from "../node-runner.js";
 import { openLocalJournal } from "./journal.js";
 import type { Journal } from "./journal-types.js";
@@ -19,6 +19,14 @@ export type ManagedJournalPreparation = Omit<ManagedJournalBinding, "expectedNam
 
 const bindingKeys = ["version", "serverOrigin", "nodeId", "directory", "controllerScope", "expectedNamespace"] as const;
 const preparationKeys = ["version", "serverOrigin", "nodeId", "directory", "controllerScope"] as const;
+function canonicalJournalDirectory(directory: string): boolean {
+  if (directory.startsWith("/")) return directory !== "/" && posix.resolve(directory) === directory && !directory.includes("\\");
+  // Structural compatibility only. ACL, physical ancestry, volume durability,
+  // worker ownership and platform qualification remain at openLocalJournal.
+  if (!/^[A-Za-z]:\\/.test(directory) || directory === win32.parse(directory).root || win32.resolve(directory) !== directory) return false;
+  return directory.slice(3).split("\\").every((part) => part.length > 0 && !/[<>:"|?*/]/u.test(part) && !/[ .]$/u.test(part)
+    && !/^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/iu.test(part));
+}
 function bindingText(value: unknown, field: string): string {
   if (typeof value !== "string" || !value || value !== value.trim() || value.length > 512
     || !value.isWellFormed() || /[\u0000-\u001f\u007f]/u.test(value)) throw new Error(`Invalid managed journal ${field}`);
@@ -40,8 +48,8 @@ function savedFields(input: unknown, keys: readonly string[]): Record<string, un
 function profileFields(saved: Record<string, unknown>): ManagedJournalPreparation {
   const serverOrigin = bindingText(saved.serverOrigin, "server origin"), nodeId = bindingText(saved.nodeId, "node ID");
   const directory = bindingText(saved.directory, "directory"), controllerScope = bindingText(saved.controllerScope, "controller scope");
-  if (!posix.isAbsolute(directory) || directory === "/" || posix.resolve(directory) !== directory || directory.includes("\\")) {
-    throw new Error("Managed journal directory must be a canonical absolute macOS path");
+  if (!canonicalJournalDirectory(directory)) {
+    throw new Error("Managed journal directory must be a canonical absolute local path");
   }
   const origin = parsedUrl(serverOrigin, "server origin");
   if (origin.origin !== serverOrigin || origin.username || origin.password || origin.search || origin.hash
