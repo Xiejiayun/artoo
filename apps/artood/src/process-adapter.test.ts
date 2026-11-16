@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { AgentInstanceConfig, RunEvent } from "@artoo/protocol";
+import type { AgentInstanceConfig, AgentInstanceHandle, RunEvent } from "@artoo/protocol";
 import { WorkspaceScopeError } from "@artoo/protocol";
 import { describe, expect, it, vi } from "vitest";
 
@@ -14,6 +14,7 @@ import { productDevelopmentContext, CONFIGURED_STATIC_PUBLICATION_CLAIM, CONFIGU
   CONFIGURED_STATIC_PUBLICATION_STATEMENT_DIGEST, type ReleaseCapabilitiesV1 } from "@artoo/domain";
 import { bindWorkspaceToolVerifier, bindWorkspaceToolEvidenceReader, bindWorkspaceToolCapabilities, bindWorkspaceToolReleaseCapabilities } from "./workspace-tools.js";
 import { prepareStaticWebCapabilities } from "./web-acceptance.js";
+import { createDependencyArtifactInputLoader } from "./dependency-artifact-inputs.js";
 
 const fixture = fileURLToPath(new URL("../test-fixtures/mock-agent.mjs", import.meta.url));
 const structuredFixture = fileURLToPath(new URL("../test-fixtures/structured-agent.mjs", import.meta.url));
@@ -70,6 +71,37 @@ function isOutput(e: RunEvent): e is Extract<RunEvent, { type: "run.output" }> {
 const cmd = [process.execPath, fixture, "--workspace", "{{workspace_root}}", "--context", "{{context_pack_path}}"];
 
 describe("createProcessAdapter", () => {
+  it("ordinary physical execution reads exact cross-computer bytes and owns snapshot cleanup until real closure", async () => {
+    const ws = realpathSync.native(makeWorkspace()), config = makeConfig(ws), bytes = Buffer.from([0, 255, 13, 10]);
+    config.runId = config.runStart.run_id = `input-${Date.now()}`;
+    const checksum = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    config.runStart.context_pack.payload!.dependency_context = { version: 1, truncated: false, entries: [{
+      task_id: "upstream", title: "Upstream", dependency_type: "blocks", status: "done", acceptance_criteria: [],
+      run_id: "source", workspace_root: "/remote/computer", artifacts_truncated: false,
+      artifacts: [{ id: "binary", type: "file", run_id: "source", checksum, content_path: "https://untrusted.invalid/data" }],
+    }] };
+    const loader = createDependencyArtifactInputLoader("wss://paired.example/api/v1/node?token=private", "node");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(bytes, { headers: { "content-type": "application/octet-stream",
+      "x-artoo-checksum": checksum, "x-artoo-artifact-id": "binary", "x-artoo-source-run-id": "source" } })));
+    let adapter: ReturnType<typeof createProcessAdapter> | undefined, handle: AgentInstanceHandle | undefined;
+    try {
+      await loader(config.runStart, { nodeId: "node", sessionId: "550e8400-e29b-41d4-a716-446655440000" }, new AbortController().signal);
+      adapter = createProcessAdapter({ allowedRoots: [ws], command: [process.execPath, "-e",
+        "const f=require('node:fs'),c=f.readFileSync(process.argv[1],'utf8'),i=JSON.parse(c.slice(c.lastIndexOf('\\n[')+1));console.log('snapshot-bytes:'+f.readFileSync(i[0].path).toString('hex'))",
+        "{{context_pack_path}}"] });
+      handle = await adapter.start(config);
+      const events = await drain(adapter.streamEvents(handle));
+      expect(events.filter(isOutput).some(event => event.payload.text.includes(`snapshot-bytes:${bytes.toString("hex")}`))).toBe(true);
+      expect(events).toContainEqual({ type: "run.lifecycle", payload: { phase: "completed" } });
+      const context = readFileSync(join(ws, "context_pack.md"), "utf8");
+      const snapshots = JSON.parse(context.slice(context.lastIndexOf("\n[") + 1)) as Array<{ path: string }>;
+      expect(existsSync(snapshots[0]!.path)).toBe(false);
+    } finally {
+      if (adapter && handle) await adapter.stop(handle, "user_cancelled");
+      loader.close(); vi.unstubAllGlobals(); rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])("preserves every bound context field across compact UTF-8 MCP pages (peer=%s)", async (peer) => {
     const ws = realpathSync.native(makeWorkspace()), config = makeConfig(ws), payload = config.runStart.context_pack.payload!;
     const sha = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;

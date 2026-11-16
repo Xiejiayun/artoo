@@ -98,7 +98,8 @@ describe("paired-node frozen dependency artifact inputs", () => {
     const inputs = take(f.payload), [file] = files(inputs);
     controller.abort(); f.loader.close();
     expect(readFileSync(file!.path)).toEqual(f.bytes);
-    inputs.assertCurrent(); inputs.close(); expect(existsSync(file!.path)).toBe(false);
+    expect(() => inputs.assertCurrent()).toThrow();
+    inputs.close(); expect(existsSync(file!.path)).toBe(false);
   });
 
   it("rejects a response exceeding the aggregate bound", async () => {
@@ -116,5 +117,12 @@ describe("paired-node frozen dependency artifact inputs", () => {
     await expect(f.loader(f.payload, { ...f.session, nodeId: "other" }, new AbortController().signal)).rejects.toThrow("original paired node");
     expect(request).not.toHaveBeenCalled();
     expect(() => createDependencyArtifactInputLoader("ws://remote.example/node?token=secret", "node")).toThrow("TLS or loopback");
+  });
+  it("preserves descriptive legacy dependencies without inventing a source Run or reading content_path", async () => {
+    const f = fixture(), request = vi.fn(); vi.stubGlobal("fetch", request);
+    f.payload.context_pack.payload!.dependency_context!.entries[0]!.run_id = null;
+    await f.loader(f.payload, f.session, new AbortController().signal);
+    expect(request).not.toHaveBeenCalled();
+    expect(takeDependencyArtifactInputs(f.payload)).toBeUndefined();
   });
 });

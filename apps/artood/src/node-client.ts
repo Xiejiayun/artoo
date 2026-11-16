@@ -7,6 +7,7 @@ import { ManagedDelivery, boundedOperation, abortableOperation, DeliveryCancelle
 import type { FreshLaunchPermit, JournalRun, TerminalSettlement } from "./managed/journal-types.js";
 import { prepareSchedulerPhysicalOwner, type SchedulerOwnedAdmission, type SchedulerOwnerChannels } from "./managed/scheduler-owner.js";
 import { SchedulerStartWindowExpired } from "./managed/scheduler-start-window.js";
+import { hasTransferableDependencyInputs } from "./dependency-artifact-inputs.js";
 import { PRODUCT_SOURCE_TRANSFER_FEATURE_V1, PRODUCT_SOURCE_TRANSFER_FEATURE_V2, PRODUCT_SOURCE_TRANSFER_MEASUREMENT_V2_FEATURE_V1,
   PRODUCT_SOURCE_OPERATIONS_FEATURE_V1, IMPORTED_PRODUCT_REVIEW_FEATURE_V1, IMPORTED_DESIGN_CONTINUATION_FEATURE_V1,
   IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1,
@@ -143,6 +144,8 @@ export interface NodeClientOptions {
   managedJournal?: ManagedJournalOptions;
   /** Trusted local scheduler opt-in. A run.start command cannot install it. */
   scheduler?: { open(): SchedulerOwnerChannels; prepareInputs?: (payload: RunStartPayload, session: ManagedSession, signal: AbortSignal) => Promise<void> };
+  /** Existing ordinary startup's private input resource, never wire authority. */
+  prepareDependencyInputs?: (payload: RunStartPayload, signal: AbortSignal) => Promise<void>;
   /** Administrator-owned ordinary-workspace verifiers; never read from task content. */
   verificationProfiles?: readonly VerificationProfile[];
   releaseProfiles?: readonly ReleaseProfile[];
@@ -444,6 +447,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   const mixedLegacyStarts = new Map<string, MixedLegacyStartRecord>();
   const mixedStopIntents = new Set<string>();
   const closedDeliveries = new Map<string, ManagedDelivery>();
+  const dependencyInputPreparations = new Map<string, AbortController>();
   const inflight = new Set<Promise<void>>();
   let unsubscribe: Unsubscribe | undefined;
   const sourceStartReplay = createSourceStartReplay();
@@ -993,7 +997,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       if (releasingWorkspaces.has(command.payload.workspace.root)) throw new Error("Workspace has a product publication in progress");
       assertVerificationWorkspaceBoundary(command.payload, verificationProfiles, configuredAdapter !== undefined && isOwnedRunAdapter(configuredAdapter));
       if (command.payload.verification || (configuredAdapter && supportsWorkspaceReadOnlyTools(configuredAdapter)
-        && isAutonomousPlanningContext(command.payload))) {
+        && isAutonomousPlanningContext(command.payload)) || (options.prepareDependencyInputs && hasTransferableDependencyInputs(command.payload))) {
         verifiedSnapshot = snapshotMixedLegacyStart(command.payload);
       }
       const admitted = verifiedSnapshot?.payload ?? command.payload;
@@ -1196,7 +1200,17 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     }
 
     let handle: AgentInstanceHandle;
+    let inputPreparation: AbortController | undefined;
     try {
+      if (options.prepareDependencyInputs && hasTransferableDependencyInputs(payload)) {
+        if (!isOwnedRunAdapter(adapter)) throw new Error("Dependency inputs require the existing genuine process adapter");
+        inputPreparation = new AbortController(); dependencyInputPreparations.set(payload.run_id, inputPreparation);
+        const signals = [inputPreparation.signal, mixed?.controller?.signal,
+          verificationRuns.get(payload.run_id)?.controller.signal, planningToolRuns.get(payload.run_id)?.controller.signal]
+          .filter((signal): signal is AbortSignal => signal !== undefined);
+        await options.prepareDependencyInputs(payload, AbortSignal.any(signals));
+        inputPreparation.signal.throwIfAborted();
+      }
       if (mixed) { assertMixedLegacyStartup(payload.run_id, mixed); mixed.adapterInvoked = true; }
       const config = {
         runId: payload.run_id,
@@ -1335,6 +1349,11 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       })}` : "";
       await rejectStart("process_start_failed", `${errorMessage(err)}${recovery}`);
       return;
+    } finally {
+      if (dependencyInputPreparations.get(payload.run_id) === inputPreparation) dependencyInputPreparations.delete(payload.run_id);
+      // Only untaken snapshots are cleaned by abort. A real spawned producer
+      // keeps its input resource until its own actual closure continuation.
+      inputPreparation?.abort(new DeliveryCancelled("Original ordinary input preparation finished"));
     }
     runs.set(payload.run_id, { handle, adapter });
     const planning = planningToolRuns.get(payload.run_id);
@@ -1652,6 +1671,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
 
   async function onRunStop(command: RunStopCommand): Promise<void> {
     const runId = command.payload.run_id;
+    dependencyInputPreparations.get(runId)?.abort(new DeliveryCancelled("Stop requested during dependency input preparation"));
     if (schedulerStarts.has(runId) && !physicalStarts.get(runId)?.managed) {
       try { await requestManagedRunStop(runId); await ackAccepted(command.id); }
       catch (error) { await ackRejected(command.id, "process_start_failed", errorMessage(error)); }
@@ -2253,6 +2273,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       sourceOperations?.invalidate();importedReviews?.invalidate();importedDesigns?.invalidate();importedDesignReviews?.invalidate();importedExecutions?.invalidate();importedExecutionReviews?.invalidate();importedValidations?.invalidate();
       releaseExecutor.requestStop();
       if (cancelRunning) {
+        for (const preparation of dependencyInputPreparations.values()) preparation.abort(new DeliveryCancelled("Node shutdown requested"));
         for (const scheduler of schedulerStarts.values()) scheduler.controller.abort(new DeliveryCancelled("Node shutdown requested"));
         for (const planning of planningToolRuns.values()) planning.controller.abort();
         for (const verification of verificationRuns.values()) verification.controller.abort();
