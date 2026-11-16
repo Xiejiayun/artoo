@@ -92,23 +92,30 @@ export async function schedulerRunStatus(ctx: ServerContext, input: SchedulerExe
  * Terminal replay is restricted to an already committed exact qualified body. */
 export async function authorizeSchedulerRunEvent(ctx: ServerContext, tx: DrizzleDb, message: SchedulerRunEventMessage, duplicate: boolean) {
   const b = message.binding;
+  const unused = message.frame.event.type === "scheduler.permit_unused" ? message.frame.event.payload : undefined;
   requireRollout(ctx, b.project_id);
   if (message.node_id !== b.computer_id || message.session_id !== b.session_id || message.frame.node_id !== b.computer_id || message.frame.run_id !== b.run_id)
     throw AppError.permissionDenied("Scheduler lifecycle envelope does not match its original assignment");
+  if (unused && (unused.grant_id !== b.grant_id || unused.journal_namespace !== b.journal_namespace || unused.node_attempt_id !== b.node_attempt_id))
+    throw AppError.permissionDenied("Unused permit evidence differs from its original journal binding");
   const claim = await prepareSchedulerExecutionClaim(ctx, tx, { taskId: b.task_id, requestId: b.request_id, computerId: b.computer_id, sessionId: b.session_id });
   if (claim.kind !== "replay" || b.organization_id !== ctx.organizationId || b.project_id !== claim.row.projectId || b.task_id !== claim.row.taskId || b.request_id !== claim.row.id || b.run_id !== claim.result.run.id || b.actor_user_id !== claim.row.actorUserId || b.agent_instance_id !== claim.result.run.agent_instance_id || b.device_id !== claim.session.deviceId || b.session_id !== claim.session.sessionId)
     throw AppError.permissionDenied("Scheduler lifecycle requires its exact consumed assignment");
   const permission = checkSchedulerExecutionRequestSnapshot(claim.row);
-  await requireAiSharingAuthorization(claim.original, tx, { consentId: permission.ai_sharing.consent_id, policyVersion: permission.ai_sharing.policy_version });
+  // Closing a never-started permit discloses no Provider/task content. Revoked
+  // AI-sharing consent must not prevent this original owner from relinquishing it.
+  if (!unused) await requireAiSharingAuthorization(claim.original, tx, { consentId: permission.ai_sharing.consent_id, policyVersion: permission.ai_sharing.policy_version });
   const [run] = await tx.select().from(runs).where(and(eq(runs.id, b.run_id), eq(runs.organizationId, ctx.organizationId))).for("update", { noWait: true });
   if (!run || run.taskId !== b.task_id || run.computerId !== b.computer_id || run.agentInstanceId !== b.agent_instance_id || run.requestedByUserId !== b.actor_user_id || run.aiDataSharingConsentId !== permission.ai_sharing.consent_id || run.aiDataSharingPolicyVersion !== permission.ai_sharing.policy_version)
     throw AppError.permissionDenied("Scheduler lifecycle Run differs from its original assignment");
   const [lease] = await tx.select(returned).from(l).where(identity(ctx, b)).for("update", { noWait: true });
   if (!lease) throw AppError.conflict("Scheduler lifecycle epoch is stale");
-  await authenticate(tx, b, message.credential, duplicate);
+  await authenticate(tx, b, message.credential, duplicate || unused !== undefined);
   async function assertCurrent() {
     const now = ctx.clock.nowIso();
-    const [current] = await tx.select({ id: l.id }).from(l).where(and(identity(ctx, b), eq(l.state, "active"), sql`${l.observedAt}<=${now}::timestamptz AND ${l.expiresAt}>${now}::timestamptz`));
+    // The dedicated unused-permit event may only close its original assignment,
+    // even after logical expiry/revocation. No other write gains that exception.
+    const [current] = await tx.select({ id: l.id }).from(l).where(and(identity(ctx, b), sql`${l.observedAt}<=${now}::timestamptz`, unused ? undefined : and(eq(l.state, "active"), sql`${l.expiresAt}>${now}::timestamptz`)));
     if (!current) throw AppError.conflict("Scheduler lifecycle lease expired or was fenced");
     assertSchedulerClaimCurrent(ctx, claim.session, claim.credential);
   }
@@ -120,7 +127,8 @@ export async function authorizeSchedulerRunEvent(ctx: ServerContext, tx: Drizzle
   }
   return async () => {
     // The lifecycle write itself may revoke its credential on terminal state.
-    // It may never turn lease expiry or a replaced session into authority.
+    // Unused-permit closure does not renew or restore execution authority, and
+    // all lanes still reject a replaced original session or a newer epoch.
     if (!duplicate) await assertCurrent();
     else assertSchedulerClaimCurrent(ctx, claim.session, claim.credential);
   };
