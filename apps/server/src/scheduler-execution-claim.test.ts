@@ -27,6 +27,11 @@ import {
 } from "./services/scheduler-execution-request-service.js";
 import { currentTaskVersion } from "./services/sync-service.js";
 import { assertSchedulerPreparedStartUnchanged } from "./services/scheduler-prepared-start-service.js";
+import {
+  revalidateSchedulerPreparedStart,
+  revalidateSchedulerPreparedStartInTransaction,
+} from "./services/scheduler-start-revalidation-service.js";
+import { scheduleTask } from "./services/scheduler.js";
 import { buildTestServer, type TestServer } from "./test-support.js";
 
 const COMPUTER = "computer_local_mock",
@@ -526,5 +531,160 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
       await put(resource, policy);
     }
     expect(await server.db.db.select().from(runs)).toHaveLength(1);
+  });
+
+  it("revalidates an exact single-slot prepared reservation without freeing capacity or granting another execution", async () => {
+    await setup();
+    const [instance] = await server.db.db.select().from(agentInstances).where(eq(agentInstances.id, INSTANCE));
+    await server.db.db
+      .update(agentInstances)
+      .set({
+        config: {
+          ...(instance!.config as Record<string, unknown>),
+          concurrency_limit: 1,
+        },
+      })
+      .where(eq(agentInstances.id, INSTANCE));
+    for (const table of ["scheduler_project_policies", "scheduler_agent_policies", "scheduler_computer_policies"])
+      await server.db.db.execute(
+        sql.raw(`UPDATE ${table} SET policy=jsonb_set(policy,'{max_concurrent_runs}','1'::jsonb)`),
+      );
+    const input = await stage(true, true);
+    const pending = await snapshot();
+    await expect(revalidateSchedulerPreparedStart(server.ctx, input)).rejects.toThrow("already consumed");
+    expect(await snapshot()).toEqual(pending);
+    const result = await claim(input);
+    const before = await snapshot();
+    await expect(revalidateSchedulerPreparedStartInTransaction(server.ctx, server.db.db, input)).rejects.toThrow(
+      "transaction",
+    );
+    await expect(
+      server.db.db.transaction((tx) => revalidateSchedulerPreparedStartInTransaction(server.ctx, tx, input), {
+        isolationLevel: "repeatable read",
+      }),
+    ).rejects.toThrow("read committed");
+    const ordinary = () =>
+      scheduleTask(server.db.db, server.ctx, ["code.modify"], {
+        mode: "manual",
+        projectId: "proj_artoo",
+        branchBacked: true,
+        agentInstanceId: INSTANCE,
+      });
+    await expect(ordinary()).rejects.toThrow("eligible");
+    for (let count = 0; count < 2; count++) {
+      expect(await revalidateSchedulerPreparedStart(server.ctx, input)).toMatchObject({
+        version: 1,
+        request_id: input.requestId,
+        run_id: result.run.id,
+        agent_instance_id: INSTANCE,
+        computer_id: COMPUTER,
+        execution_authorized: false,
+      });
+      expect(await snapshot()).toEqual(before);
+    }
+    await expect(ordinary()).rejects.toThrow("eligible");
+    // Controlled overcommit injects another actual queued reservation. Neither
+    // per-instance eligibility nor any of the three quotas may subtract it.
+    await server.db.db.insert(runs).values({ ...before.runs[0]!, id: "run_other_reservation" });
+    const occupied = await snapshot();
+    await expect(revalidateSchedulerPreparedStart(server.ctx, input)).rejects.toThrow("eligible");
+    expect(await snapshot()).toEqual(occupied);
+    expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
+  });
+
+  it("rechecks prepared-start scopes, original access, current session, credential and runtime facts without writes", async () => {
+    await setup();
+    const input = await stage();
+    await claim(input);
+    const unchangedRevalidation = async (message: string) => {
+      const before = await snapshot();
+      await expect(revalidateSchedulerPreparedStart(server.ctx, input)).rejects.toThrow(message);
+      expect(await snapshot()).toEqual(before);
+    };
+    for (const flag of ["daemon_claim", "capacity_admission", "isolated_workspaces", "execution_requests"] as const) {
+      flags(flag);
+      await unchangedRevalidation("disabled");
+    }
+    flags();
+    const auth = server.ctx.authConfig;
+    server.ctx.authConfig = { ...auth, allowedEmails: ["another@example.com"] };
+    await unchangedRevalidation("active access");
+    server.ctx.authConfig = auth;
+    server.ctx.getPairedNodeSession = () => ({ ...session, sessionId: "replaced" });
+    await unchangedRevalidation("paired node session");
+    server.ctx.getPairedNodeSession = () => ({ ...session });
+    for (const [change, restore, message] of [
+      [
+        sql`UPDATE device_tokens SET expires_at=${server.ctx.clock.nowIso()}`,
+        sql`UPDATE device_tokens SET expires_at=NULL`,
+        "credential",
+      ],
+      [sql`UPDATE agent_runtimes SET status='missing'`, sql`UPDATE agent_runtimes SET status='available'`, "eligible"],
+      [
+        sql`UPDATE agent_instances SET status='disabled' WHERE id=${INSTANCE}`,
+        sql`UPDATE agent_instances SET status='idle' WHERE id=${INSTANCE}`,
+        "eligible",
+      ],
+      [
+        sql`UPDATE computers SET status='offline' WHERE id=${COMPUTER}`,
+        sql`UPDATE computers SET status='online' WHERE id=${COMPUTER}`,
+        "online",
+      ],
+      [
+        sql`UPDATE tasks SET title='Changed input' WHERE id=${input.taskId}`,
+        sql`UPDATE tasks SET title='One conditional execution' WHERE id=${input.taskId}`,
+        "inputs changed",
+      ],
+    ] as const) {
+      await server.db.db.execute(change);
+      await unchangedRevalidation(message);
+      await server.db.db.execute(restore);
+      expect((await revalidateSchedulerPreparedStart(server.ctx, input)).execution_authorized).toBe(false);
+    }
+    expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
+  });
+
+  it.each(["project", "agent", "computer"] as const)(
+    "keeps every other reservation in the prepared-start %s quota",
+    async (kind) => {
+      await setup();
+      const table = {
+        project: "scheduler_project_policies",
+        agent: "scheduler_agent_policies",
+        computer: "scheduler_computer_policies",
+      }[kind];
+      await server.db.db.execute(
+        sql.raw(`UPDATE ${table} SET policy=jsonb_set(policy,'{max_concurrent_runs}','1'::jsonb)`),
+      );
+      const input = await stage();
+      await claim(input);
+      expect((await revalidateSchedulerPreparedStart(server.ctx, input)).execution_authorized).toBe(false);
+      const [original] = await server.db.db.select().from(runs);
+      await server.db.db.insert(runs).values({ ...original!, id: "run_other_reservation" });
+      const before = await snapshot();
+      await expect(revalidateSchedulerPreparedStart(server.ctx, input)).rejects.toThrow("scheduling policy");
+      expect(await snapshot()).toEqual(before);
+      expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
+    },
+  );
+
+  it("requires the original exact consent again for a consumed prepared Run", async () => {
+    await setup();
+    server.ctx.aiDataSharingPolicy = buildAiDataSharingPolicy({
+      mode: "external",
+      providers: [{ id: "fixture", name: "Fixture", privacy_url: "https://example.com/privacy" }],
+    });
+    await grantAiDataSharingConsent(server.ctx, server.ctx.aiDataSharingPolicy.version);
+    const input = await stage();
+    await claim(input);
+    expect((await revalidateSchedulerPreparedStart(server.ctx, input)).execution_authorized).toBe(false);
+    await revokeAiDataSharingConsent(server.ctx);
+    for (const consent of ["withdrawn", "replaced"]) {
+      if (consent === "replaced") await grantAiDataSharingConsent(server.ctx, server.ctx.aiDataSharingPolicy.version);
+      const before = await snapshot();
+      await expect(revalidateSchedulerPreparedStart(server.ctx, input)).rejects.toThrow("Review and allow");
+      expect(await snapshot()).toEqual(before);
+    }
+    expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
   });
 });
