@@ -1,4 +1,4 @@
-import { appendEvent, artifacts, taskDependencies, tasks } from "@artoo/db";
+import { appendEvent, artifacts, runs, taskDependencies, tasks } from "@artoo/db";
 import {
   type CreateDependencyRequest,
   type DagEdge,
@@ -13,7 +13,7 @@ import {
   type TaskStatus,
   wouldCreateCycle,
 } from "@artoo/domain";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 
 import type { DrizzleDb } from "@artoo/storage";
 
@@ -302,7 +302,10 @@ async function loadStatusMap(
 }
 
 /**
- * The evidence kinds each prerequisite task has produced, keyed by task id.
+ * Evidence from each prerequisite's latest completed attempt, keyed by task id.
+ * Select latest before filtering status: an old successful attempt cannot supply
+ * a newer failed/empty attempt's missing delivery. Tasks with no Run retain the
+ * existing manually supplied, unbound artifact behavior.
  * "artifact" = at least one artifact row; "contract" = a `contract` artifact.
  */
 async function loadEvidenceMap(
@@ -314,11 +317,20 @@ async function loadEvidenceMap(
   if (prereqIds.length === 0) {
     return map;
   }
+  const latest = tx.selectDistinctOn([runs.taskId], { taskId: runs.taskId, id: runs.id, status: runs.status })
+    .from(runs)
+    .where(and(eq(runs.organizationId, ctx.organizationId), inArray(runs.taskId, [...prereqIds])))
+    .orderBy(runs.taskId, desc(runs.createdAt), desc(runs.id))
+    .as("dependency_latest_runs");
   const rows = await tx
     .select({ taskId: artifacts.taskId, type: artifacts.type })
     .from(artifacts)
+    .leftJoin(latest, eq(latest.taskId, artifacts.taskId))
     .where(
-      and(eq(artifacts.organizationId, ctx.organizationId), inArray(artifacts.taskId, [...prereqIds])),
+      and(eq(artifacts.organizationId, ctx.organizationId), inArray(artifacts.taskId, [...prereqIds]), or(
+        and(eq(latest.status, "completed"), eq(artifacts.runId, latest.id)),
+        and(isNull(latest.id), isNull(artifacts.runId)),
+      )),
     );
   for (const r of rows) {
     const set = map[r.taskId] ?? new Set<EvidenceKind>();
