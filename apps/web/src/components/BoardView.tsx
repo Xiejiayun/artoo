@@ -1,14 +1,14 @@
 import { useProject } from "../app/useProject.js";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 
 import type { TaskStatus } from "@artoo/domain";
 
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { useSubscription } from "../app/RealtimeContext.js";
-import { useSelection } from "../app/SelectionContext.js";
+import { useTaskContext } from "../app/useTaskContext.js";
 import { useGoalContext } from "../app/useGoalContext.js";
 import {
   Button,
@@ -20,15 +20,18 @@ import {
   Skeleton,
   StatusBadge,
 } from "../ui/index.js";
-import { ListChecks, Plus, UserRound } from "lucide-react";
+import { GitFork, LayoutGrid, ListChecks, Plus, UserRound } from "lucide-react";
 import { CreateTaskModal } from "./CreateTaskModal.js";
+import { TaskDrawer } from "./TaskDrawer.js";
+import { BoardDelegationView } from "./BoardDelegationView.js";
 import { PRIORITY_LABELS, taskAssigneeName } from "./taskPresentation.js";
 import "../ui/work-management.css";
 
 // GitHub Projects / Linear stage grouping; each card preserves its exact status.
 const COLUMNS: { key: string; statuses: TaskStatus[]; label: string; empty: string }[] = [
   { key: "backlog", statuses: ["backlog", "ready"], label: "Backlog", empty: "New and ready tasks appear here" },
-  { key: "running", statuses: ["assigned", "running"], label: "In progress", empty: "Assigned work appears here" },
+  { key: "assigned", statuses: ["assigned"], label: "Assigned", empty: "Assigned work is preparing to start" },
+  { key: "running", statuses: ["running"], label: "Running", empty: "Running tasks appear here" },
   {
     key: "blocked",
     statuses: ["awaiting_approval", "blocked"],
@@ -73,13 +76,14 @@ function BoardSkeleton(): React.ReactNode {
  */
 export function BoardView(): React.ReactNode {
   const api = useApi();
-  const navigate = useNavigate();
-  const { setSelectedTaskId } = useSelection();
+  const taskContext = useTaskContext();
   const [priority, setPriority] = useState<(typeof PRIORITIES)[number]>("all");
   const [search, setSearch] = useState("");
   const [creating, setCreating] = useState(false);
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [includeHistory, setIncludeHistory] = useState(false);
+  const [layout, setLayout] = useState<"lanes" | "tree">("lanes");
+  const [assignee, setAssignee] = useState("all");
   const {
     goals,
     items: goalOptions,
@@ -138,15 +142,15 @@ export function BoardView(): React.ReactNode {
   const visible = all.filter(
     (task) =>
       (priority === "all" || task.priority === priority) &&
+      (assignee === "all" || task.assignee_id === assignee) &&
       (!query || task.title.toLowerCase().includes(query)) &&
       (!attentionOnly || ["awaiting_approval", "blocked", "review"].includes(task.status)),
   );
-  const filtering = priority !== "all" || query !== "" || attentionOnly;
+  const filtering = priority !== "all" || query !== "" || attentionOnly || assignee !== "all";
   const needsAttention = all.filter((task) => ["awaiting_approval", "blocked", "review"].includes(task.status)).length;
 
   function openTask(taskId: string): void {
-    setSelectedTaskId(taskId);
-    navigate(goal ? `/?goal=${encodeURIComponent(goal.id)}` : "/");
+    taskContext.selectTask(taskId);
   }
 
   return (
@@ -162,6 +166,8 @@ export function BoardView(): React.ReactNode {
           <p>{goal ? goal.title : "Keep work moving, from the first brief to the final review."}</p>
         </div>
         <div className="action-row">
+          <div className="cowork-layout-picker" role="group" aria-label="Board layout"><Button size="sm" iconLeft={LayoutGrid} aria-pressed={layout === "lanes"} onClick={() => setLayout("lanes")}>Lanes</Button><Button size="sm" iconLeft={GitFork} aria-pressed={layout === "tree"} onClick={() => setLayout("tree")}>Delegation tree</Button></div>
+          <Link className="os-secondary-link" to={`/agents?project=${encodeURIComponent(projectId ?? "")}`}>Squad</Link>
           <Link className="os-secondary-link" to={goal ? `/?goal=${encodeURIComponent(goal.id)}` : "/"}>
             Task list
           </Link>
@@ -212,6 +218,7 @@ export function BoardView(): React.ReactNode {
             </option>
           ))}
         </Select>
+        <Select label="Assignee" value={assignee} onChange={(event) => setAssignee(event.target.value)}><option value="all">All assignees</option>{bootstrap.data?.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.display_name}</option>)}{bootstrap.data?.user && <option value={bootstrap.data.user.id}>{bootstrap.data.user.display_name}</option>}</Select>
         <Button
           size="sm"
           className="os-attention-filter"
@@ -231,6 +238,7 @@ export function BoardView(): React.ReactNode {
               setSearch("");
               setPriority("all");
               setAttentionOnly(false);
+              setAssignee("all");
             }}
           >
             Clear filters
@@ -298,6 +306,8 @@ export function BoardView(): React.ReactNode {
             description="Try a different title or priority to find the work you need."
           />
         </div>
+      ) : layout === "tree" ? (
+        <BoardDelegationView tasks={visible} projectId={projectId!} onSelectTask={openTask} />
       ) : (
         <div className="board-columns">
           {COLUMNS.map(({ key, statuses, label, empty }) => {
@@ -327,6 +337,7 @@ export function BoardView(): React.ReactNode {
                           <span className="board-card__title" title={task.title}>
                             {task.title}
                           </span>
+                          <span className="cowork-task-reference">{task.id}</span>
                           {task.description ? (
                             <span className="work-board-card__description" title={task.description}>
                               {task.description}
@@ -360,6 +371,9 @@ export function BoardView(): React.ReactNode {
       {creating && projectId ? (
         <CreateTaskModal projectId={projectId} onClose={() => setCreating(false)} onCreated={openTask} />
       ) : null}
+      {taskContext.requested && taskContext.contextLoading && <p role="status">Opening linked task…</p>}
+      {taskContext.contextError && <ErrorState title="Task unavailable" description={taskContext.contextError.message} action={<><Button onClick={taskContext.retryContext}>Retry linked task</Button><Button onClick={() => taskContext.selectTask(null)}>Close linked task</Button></>} />}
+      {taskContext.requested && taskContext.taskId && projectId && !taskContext.contextLoading && !taskContext.contextError && <TaskDrawer taskId={taskContext.taskId} projectId={projectId} onClose={() => taskContext.selectTask(null)} onSelectTask={openTask} />}
     </div>
   );
 }

@@ -15,6 +15,23 @@ afterEach(() => {
 });
 
 describe("ui feedback + badges (#68)", () => {
+  it("closes only the top dialog when an editor is opened above a drawer", async () => {
+    function Nested() {
+      const [drawer, setDrawer] = useState(true);
+      const [editor, setEditor] = useState(false);
+      return <Modal open={drawer} title="Task drawer" variant="drawer" onClose={() => setDrawer(false)}><button onClick={() => setEditor(true)}>Delegate</button><Modal open={editor} title="Create child" onClose={() => setEditor(false)}><input aria-label="Child title" /></Modal></Modal>;
+    }
+    render(<Nested />);
+    const trigger = screen.getByRole("button", { name: "Delegate" });
+    await userEvent.click(trigger);
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Create child" })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Task drawer" })).toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("keeps field focus across state updates and restores the dialog trigger on Escape", async () => {
     function FormDialog() {
       const [open, setOpen] = useState(false);

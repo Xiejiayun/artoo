@@ -98,3 +98,31 @@
   .cowork-task-rows a { padding-inline: 13px; }
 }
 @media (prefers-reduced-motion: reduce) { .app-nav { transition: none; } }
+
+/* Six display lanes retain every canonical task state and its real actions. */
+.work-board { padding: 26px 26px 20px; }
+.work-board .board-columns { display: flex; gap: 12px; align-items: stretch; overflow-x: auto; padding-bottom: 12px; }
+.work-board .board-column { flex: 1 0 220px; max-width: 330px; padding: 13px 10px; background: var(--surface-2); border: 0; border-radius: 12px; }
+.work-board .board-column__title { padding: 3px 4px 12px; font-size: 11px; }
+.work-board .board-card { border-radius: 9px; background: var(--surface); padding: 13px; }
+.work-board .board-card__title { font-size: 12px; line-height: 1.5; }
+.work-board .board-column[data-status="assigned"] .work-board__status-dot { background: var(--accent); }
+.work-board .board-column[data-status="running"] .work-board__status-dot { background: var(--info); }
+.cowork-task-reference { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-subtle); font: 9px var(--font-mono); }
+.cowork-layout-picker { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; }
+.cowork-layout-picker .ui-btn { border-color: transparent; background: transparent; }
+.cowork-layout-picker .ui-btn[aria-pressed="true"] { background: var(--surface-3); color: var(--text); }
+.cowork-delegation-view { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 22px; }
+.cowork-delegation-view > .ui-field { max-width: 420px; }
+.cowork-delegation-view p, .cowork-delegation-view small { font-size: 11px; color: var(--text-muted); }
+.cowork-delegation-view ul { list-style: none; margin: 15px 0; padding-left: 20px; border-left: 1px solid var(--border); }
+.cowork-delegation-view li > div { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.ui-modal-overlay[data-variant="drawer"] { padding: 0; justify-content: flex-end; align-items: stretch; }
+.ui-modal-overlay[data-variant="drawer"] > .ui-modal { display: flex; flex-direction: column; width: min(660px,100%); max-width: none; height: 100dvh; max-height: 100dvh; border-radius: 0; border-right: 0; margin: 0; }
+.ui-modal-overlay[data-variant="drawer"] .ui-modal__body { flex: 1; min-height: 0; overflow-y: auto; padding: 0; }
+.ui-modal-overlay[data-variant="drawer"] .work-task-detail { padding: 22px; }
+.cowork-drawer-tools { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--border); }
+.cowork-drawer-tools > div { display: flex; gap: 4px; }
+.cowork-drawer-tools .ui-btn[aria-pressed="true"] { color: var(--accent-text); background: var(--accent-soft); }
+.cowork-drawer-tools > a { color: var(--text-muted); font-size: 10px; }
+@media (max-width: 760px) { .work-board { padding: 20px 14px; } .work-board .board-column { flex-basis: min(250px,80vw); } }

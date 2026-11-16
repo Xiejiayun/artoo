@@ -21,6 +21,17 @@ function UpdatingRun() {
 }
 
 describe("run cancellation confirmation identity", () => {
+  it("keeps a requested scheduler stop visibly pending until physical closure", async () => {
+    const cancelRun = vi.fn<ApiClient["cancelRun"]>().mockResolvedValue(Object.assign({ run: first }, { stop_requested: true }));
+    renderWithProviders(<UpdatingRun />, { client: fakeApi({ cancelRun }) });
+    await userEvent.click(screen.getByRole("button", { name: "Stop run" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm stop" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Waiting for the node to confirm the process has closed");
+    expect(screen.getByRole("button", { name: "Stop run" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Second run started" }));
+    expect(screen.getByRole("button", { name: "Stop run" })).toBeEnabled();
+  });
+
   it.each([true, false])("requires a new confirmation after the active run changes, with an observed completion gap: %s", async (completionGap) => {
     const cancelRun = vi.fn<ApiClient["cancelRun"]>().mockResolvedValue({ run: { ...second, status: "cancelled" } });
     renderWithProviders(<UpdatingRun />, { client: fakeApi({ cancelRun }) });
