@@ -8,18 +8,19 @@ import { ThemeControl } from "./ThemeControl.js";
 import { CommandPalette } from "./CommandPalette.js";
 
 const TABS = [
-  { to: "/channels", label: "Thread", number: "01" },
-  { to: "/goals", label: "Plan", number: "02" },
-  { to: "/", label: "Workspace", number: "03" },
-  { to: "/board", label: "Board", number: "04" },
-  { to: "/release", label: "Release", number: "05" },
+  { to: "/board", label: "Board" },
+  { to: "/goals", label: "Plan" },
+  { to: "/runs", label: "Runs" },
+  { to: "/release", label: "Release" },
+  { to: "/channels", label: "Thread" },
+  { to: "/", label: "Workspace" },
 ];
 const TITLES: Record<string, string> = {
-  "/computers": "Machines & agents",
-  "/agents": "Agent library",
+  "/overview": "Overview",
+  "/computers": "Machines",
+  "/agents": "Agents",
   "/skills": "Skills",
   "/memory": "Memory",
-  "/runs": "Run history",
   "/settings": "Settings",
 };
 
@@ -66,9 +67,9 @@ export function ProductHeader({
       </button>
       <div className="os-breadcrumb">
         <FolderOpen size={16} aria-hidden="true" />
-        <span>{project?.name ?? "Workspace"}</span>
+        <span>{bootstrap.data?.organization.name ?? "Workspace"}</span>
         <ChevronRight size={13} aria-hidden="true" />
-        <strong>{title ?? TABS.find((tab) => tab.to === pathname)?.label.toLowerCase() ?? "Task detail"}</strong>
+        <strong>{title ?? project?.name ?? "Project"}</strong>
       </div>
       {!title && (
         <nav className="os-tabs" aria-label="Project views">
@@ -79,9 +80,6 @@ export function ProductHeader({
               end={tab.to === "/"}
               className={({ isActive }) => `os-tab${isActive ? " is-active" : ""}`}
             >
-              <span className="os-tab-number" aria-hidden="true">
-                {tab.number}
-              </span>
               {tab.label}
             </NavLink>
           ))}
