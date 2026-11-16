@@ -193,12 +193,15 @@ export function Tooltip({ label, children }: { label: string; children: ReactNod
 }
 
 /* -------------------------------------------------------------------- Modal */
-export function Modal({ open, onClose, title, children, footer }: {
+const activeModals: symbol[] = [];
+
+export function Modal({ open, onClose, title, children, footer, variant = "modal" }: {
   open: boolean;
   onClose: () => void;
   title?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
+  variant?: "modal" | "drawer";
 }): React.ReactNode {
   const panelRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
@@ -209,8 +212,14 @@ export function Modal({ open, onClose, title, children, footer }: {
       return;
     }
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const identity = Symbol("modal");
+    activeModals.push(identity);
     const onKey = (e: KeyboardEvent): void => {
+      // Only the top dialog owns keyboard focus when a create/delegation
+      // dialog is opened above a task drawer.
+      if (activeModals.at(-1) !== identity) return;
       if (e.key === "Escape") {
+        e.preventDefault();
         onCloseRef.current();
         return;
       }
@@ -222,6 +231,8 @@ export function Modal({ open, onClose, title, children, footer }: {
     panelRef.current?.focus();
     return () => {
       document.removeEventListener("keydown", onKey);
+      const index = activeModals.indexOf(identity);
+      if (index >= 0) activeModals.splice(index, 1);
       if (previousFocus?.isConnected) previousFocus.focus();
     };
   }, [open]);
@@ -229,7 +240,7 @@ export function Modal({ open, onClose, title, children, footer }: {
     return null;
   }
   return (
-    <div className="ui-modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="ui-modal-overlay" data-variant={variant} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div
         className="ui-modal"
         role="dialog"

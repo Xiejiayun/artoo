@@ -115,3 +115,4 @@ export * from "./scheduler-execution-lease.js";
 export * from "./scheduler-attempt-credential.js";
 export * from "./task-delegation.js";
 export * from "./scheduler-run.js";
+export * from "./control-view.js";

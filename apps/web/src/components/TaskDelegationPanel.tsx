@@ -18,13 +18,16 @@ export function TaskDelegationPanel({
   task,
   expanded,
   onExpandedChange,
+  onSelectTask,
 }: {
   task: Task;
   expanded: boolean;
   onExpandedChange: (value: boolean) => void;
+  onSelectTask?: (id: string) => void;
 }): React.ReactNode {
   const api = useApi();
   const { setSelectedTaskId } = useSelection();
+  const selectTask = onSelectTask ?? setSelectedTaskId;
   const [creatingParent, setCreatingParent] = useState<Pick<Task, "id" | "title"> | null>(null);
   const helpId = useId();
   const tree = useQuery({
@@ -57,7 +60,7 @@ export function TaskDelegationPanel({
             size="sm"
             variant="ghost"
             aria-current={node.task_id === task.id ? "true" : undefined}
-            onClick={() => setSelectedTaskId(node.task_id)}
+            onClick={() => selectTask(node.task_id)}
           >
             {node.title}
           </Button>
@@ -118,7 +121,7 @@ export function TaskDelegationPanel({
           projectId={task.project_id}
           delegationParent={creatingParent}
           onClose={() => setCreatingParent(null)}
-          onCreated={setSelectedTaskId}
+          onCreated={selectTask}
         />
       ) : null}
     </section>

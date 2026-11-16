@@ -20,6 +20,7 @@ import { type ClaimLimiter, DEFAULT_CLAIM_LIMIT, createClaimLimiter } from "./cl
 import { registerCollaborationRoutes } from "./collaboration-routes.js";
 import { type ArtifactStorageOptions, resolveArtifactStore } from "./content-addressed-blob.js";
 import { registerContentModerationRoutes } from "./content-moderation-routes.js";
+import { registerControlViewRoutes } from "./control-view-routes.js";
 import type { ServerContext } from "./context.js";
 import { registerDeviceRevocationRoutes, registerDeviceRoutes } from "./device-routes.js";
 import { registerDiscussionRoutes } from "./discussion-routes.js";
@@ -312,6 +313,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   registerDeviceRevocationRoutes(app, ctx, deviceConnections);
 
   registerTaskRoutes(app, ctx);
+  registerControlViewRoutes(app, ctx);
 
   // Dev-only: simulate a node/adapter executing a queued run end to end.
   if (options.enableDevRoutes === true)

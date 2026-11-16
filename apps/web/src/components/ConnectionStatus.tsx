@@ -41,7 +41,7 @@ type ConnectionState = ReturnType<typeof useConnectionStatus>;
 export function ConnectionStatusIndicator({ state }: { state: ConnectionState }): React.ReactNode {
   if (!state.healthy) return null;
   return <Tooltip label="Live updates connected"><span className="os-connection-indicator" role="status" aria-label="Live updates connected" tabIndex={0}>
-    <span className="os-status-dot" data-status="online" aria-hidden="true" />
+    <span className="os-status-dot" data-status="online" aria-hidden="true" /><span className="os-live-label">Live</span>
   </span></Tooltip>;
 }
 
