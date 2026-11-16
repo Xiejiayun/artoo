@@ -61,10 +61,12 @@ it("does not inherit old credentials or queued work after generation loss", asyn
   expect(() => f.channel.encode(f.frame)).toThrow("generation lost");
   await expect(f.client.acquire(f.grant)).rejects.toThrow("generation lost");
 });
-it("denies pre-existing Stop before installing any event writer", async () => {
+it("retains pre-existing Stop on the original authority for the physical owner to fence startup", async () => {
   const f = fixture(), pending = f.client.acquire(f.grant);
   await Promise.resolve();
   f.channel.receive(f.reply({ status: "issued", lease: f.lease, credential: f.credential, stop_requested: true }));
-  await expect(pending).rejects.toThrow("did not issue fresh");
-  expect(() => f.channel.encode(f.frame)).toThrow("no event authority");
+  const authority = await pending;
+  expect(authority.stopRequested).toBe(true);
+  expect(JSON.stringify(authority)).not.toContain(f.credential.secret);
+  authority.forget();
 });

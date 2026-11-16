@@ -6,6 +6,7 @@ import { DeliveryStopped, monotonicMs, type RunDeliveryMode } from "./managed-de
 import { isOwnedRunAdapter } from "../process-adapter.js";
 import { createRegistryHeartbeat } from "../heartbeat.js";
 import { readOwnedResultProfileDescriptors } from "../owned-worktree-verification.js";
+import { createSchedulerClaimLoop } from "./scheduler-claim-loop.js";
 
 export interface ManagedNodeRunnerOptions extends Omit<NodeClientOptions, "transport" | "managedJournal" | "nodeId" | "scheduler"> {
   url: string; hello: NodeHello; journal: Journal; WebSocketImpl?: typeof WebSocket;
@@ -38,10 +39,16 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
   }
   const adapters = options.registry ? options.registry.runtimes().map((entry) => options.registry!.resolve(entry.runtime)) : [options.adapter];
   if (!adapters.length || adapters.some((adapter) => !adapter || !isOwnedRunAdapter(adapter))) throw new Error("Managed allocation feature requires genuine owned process adapters");
+  if (options.scheduler && (options.mixed?.allowNewAllocations === false || options.journal.schedulerPreparationVersion !== 1
+    || options.journal.schedulerStartGrantStorageVersion !== 1 || options.journal.schedulerStartGrantAdmissionVersion !== 1
+    || !options.journal.prepareSchedulerStart || !options.journal.admitSchedulerStart))
+    throw new Error("Scheduler claims require an explicitly upgraded v6 journal and fresh allocations enabled");
   let lossDeadline: number | undefined, lossCause: Error | undefined, lossTimer: ReturnType<typeof setTimeout> | undefined;
   let failure: Error | undefined, failureWork: Promise<void> | undefined, failureClose: Promise<void> | undefined, stopWork: Promise<void> | undefined;
   let stoppingLossClose: Promise<void> | undefined;
   let starting: Promise<void> | undefined, stopping = false;
+  let claimLoop: ReturnType<typeof createSchedulerClaimLoop> | undefined;
+  const claimWork = new Set<Promise<void>>();
   let resolveFailure!: (error: Error) => void;
   const failed = new Promise<Error>((resolve) => { resolveFailure = resolve; });
   // Receipt negotiation is independent of fresh-allocation capability. A
@@ -56,12 +63,13 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
     execution_features: options.mixed?.allowNewAllocations === false ? [] : ["workspace-allocation.per-run-v1", ...(descriptors ? ["owned-result-run.v1" as const] : [])],
     ...(descriptors ? { owned_result_profiles: [...descriptors] } : {}) };
   const link = createManagedWebSocketTransport({ url: options.url, namespace: options.journal.namespace, hello,
-    ...(options.scheduler ? { schedulerStart: true, schedulerLease: true, schedulerRun: true } : {}),
+    ...(options.scheduler ? { schedulerStart: true, schedulerLease: true, schedulerRun: true, schedulerClaim: true } : {}),
     WebSocketImpl: options.WebSocketImpl,
     allowLegacyRuns: options.mixed !== undefined,
     heartbeat: options.heartbeat ?? (options.registry ? createRegistryHeartbeat({ nodeId: hello.node_id, registry: options.registry }) : undefined),
     heartbeatIntervalMs: options.heartbeatIntervalMs, reconnectDelayMs: options.reconnectDelayMs,
     onSessionLost(error, previous) {
+      claimLoop?.stop();
       client.invalidateManagedStartupSession(previous, error);
       if (stopping) {
         // lose() has not scheduled its reconnect yet. Close synchronously so a
@@ -77,10 +85,20 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
       lossCause = error; lossDeadline = monotonicMs() + 30000;
       lossTimer = setTimeout(expireLoss, 30000);
     },
-    onSessionUsable() {
+    onSessionUsable(session) {
       if (stopping || failure) return false;
       if (lossDeadline !== undefined && monotonicMs() >= lossDeadline) { expireLoss(); return false; }
       clearTimeout(lossTimer); lossTimer = undefined; lossDeadline = undefined; lossCause = undefined;
+      if (options.scheduler) {
+        claimLoop?.stop();
+        const loop = createSchedulerClaimLoop({ channel: link.openSchedulerClaimSession(),
+          assertCurrent: () => { link.channel.assertCurrentSession(session); },
+          start: (input) => client.startSchedulerRequest(input) });
+        claimLoop = loop; claimWork.add(loop.done);
+        void loop.done.catch((cause: unknown) => {
+          if (!stopping) fail(cause instanceof Error ? cause : new Error("Scheduler claim loop failed"));
+        }).finally(() => { claimWork.delete(loop.done); });
+      }
       return true;
     },
     onFatal: fail,
@@ -138,7 +156,7 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
     },
     stop() {
       if (stopWork) return stopWork;
-      stopping = true; clearTimeout(lossTimer);
+      stopping = true; clearTimeout(lossTimer); claimLoop?.stop();
       stopWork = (async () => {
         const errors: Error[] = [];
         const remember = (cause: unknown): void => {
@@ -158,6 +176,7 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
           // Closing releases remaining receipt waiters even when physical Stop
           // reported uncertainty. Join them before the caller closes SQLite.
           await join(() => link.close());
+          await join(async () => { await Promise.all([...claimWork]); });
           if (failureWork) await join(() => failureWork!);
           if (failureClose) await join(() => failureClose!);
           if (stoppingLossClose) await join(() => stoppingLossClose!);
