@@ -9,6 +9,7 @@ import type { RunOutputChunk } from "../app/runOutputs.js";
 import { Button, ErrorState, PriorityBadge, Skeleton, StatusBadge } from "../ui/index.js";
 import { ApprovalInbox } from "./ApprovalInbox.js";
 import { ArtifactReview } from "./ArtifactReview.js";
+import { TaskAgentReviews } from "./TaskAgentReviews.js";
 import { RunTimeline } from "./RunTimeline.js";
 import { RunUsageSummary } from "./RunUsageSummary.js";
 import { TaskActions } from "./TaskActions.js";
@@ -199,6 +200,7 @@ export function TaskDetailPanel({ taskId, onSelectTask }: { taskId: string; onSe
         reviews={snapshot.data.reviews}
         versionCursor={snapshot.data.version_cursor}
       />
+      <TaskAgentReviews key={`agent-feedback:${task.id}`} task={task} runs={runs} artifacts={artifacts} />
       <TaskDependencies key={task.id} task={task} />
     </div>
   );
