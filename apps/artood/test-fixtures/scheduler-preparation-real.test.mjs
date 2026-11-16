@@ -27,6 +27,9 @@ import {
 const native = { skip: process.platform !== "darwin", timeout: 60_000 };
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const clone = (value) => structuredClone(value);
+const hasMessage = (error, pattern) =>
+  pattern.test(error.message) ||
+  (error instanceof AggregateError && error.errors.some((cause) => hasMessage(cause, pattern)));
 function proposal(root, suffix = "one") {
   const runId = `run_${suffix}`,
     taskId = `task_${suffix}`,
@@ -447,4 +450,39 @@ test(
       assert.deepEqual(f.inspect("SELECT * FROM scheduler_preparations"), []);
       assert.equal(existsSync(value.run_start.workspace_allocation.base_path), false);
     }),
+);
+
+test("v3 migration rejects a retained unknown Run without changing any durable bytes", native, async (t) =>
+  fixture(t, async (f) => {
+    const journal = await f.open(),
+      value = proposal(f.root);
+    assert.equal((await journal.admitStart(f.ordinary(value))).kind, "fresh");
+    await journal.close();
+    const database = join(f.options.directory, "journal.sqlite"),
+      before = hash(readFileSync(database));
+    await assert.rejects(upgradeLocalJournalForSchedulerPreparation(f.options), (error) =>
+      hasMessage(error, /retained live\/unknown/),
+    );
+    assert.equal(f.inspect("PRAGMA user_version")[0].user_version, 3);
+    assert.equal(hash(readFileSync(database)), before);
+    const reopened = await f.open();
+    assert.equal(reopened.schedulerPreparationVersion, undefined);
+    assert.equal((await reopened.admitStart(f.ordinary(value))).kind, "unknown");
+  }),
+);
+
+test("incomplete extensions and future journal versions reject open without resetting history", native, async (t) =>
+  fixture(t, async (f) => {
+    await upgradeLocalJournalForSchedulerPreparation(f.options);
+    const database = join(f.options.directory, "journal.sqlite");
+    f.edit("PRAGMA user_version=6");
+    let before = hash(readFileSync(database));
+    await assert.rejects(openLocalJournal(f.options), (error) => hasMessage(error, /metadata continuity/));
+    assert.equal(hash(readFileSync(database)), before);
+    f.edit("PRAGMA user_version=5; DROP TRIGGER scheduler_preparations_immutable_update");
+    before = hash(readFileSync(database));
+    await assert.rejects(openLocalJournal(f.options), (error) => hasMessage(error, /extension is incomplete/));
+    assert.equal(hash(readFileSync(database)), before);
+    assert.equal(f.inspect("PRAGMA user_version")[0].user_version, 5);
+  }),
 );
