@@ -173,3 +173,17 @@
 .collaboration-panel fieldset { min-width: 0; }
 .collaboration-panel fieldset > label { display: flex; align-items: flex-start; gap: 8px; font-size: 11px; color: var(--text-muted); }
 @media (max-width: 1060px) { .cowork-planning-stages { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+
+.cowork-resource-form { padding-top: 12px; }
+.cowork-resource-form > p, .cowork-resource-form fieldset > p, .cowork-admission > p, .cowork-squad-settings > p { color: var(--text-muted); font-size: 11px; line-height: 1.65; }
+.cowork-resource-form fieldset { min-width: 0; border: 0; margin: 0; padding: 0; }
+.cowork-resource-form .cowork-capability-options { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; }
+.cowork-capability-options label, .cowork-squad-options label { display: flex; align-items: flex-start; gap: 9px; color: var(--text-secondary); font-size: 11px; }
+.cowork-squad-options { display: grid; gap: 12px; max-height: 350px; overflow: auto; }
+.cowork-squad-options label > span { display: grid; gap: 4px; }
+.cowork-squad-options small { color: var(--text-muted); }
+.cowork-squad-settings { padding: 20px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.cowork-squad-settings h3, .cowork-admission strong { margin: 0; font-size: 12px; }
+.cowork-admission { padding: 16px 0; border-bottom: 1px solid var(--border); }
+.cowork-policy { width: 100%; }
+.agent-library__card:has(.cowork-policy) { flex-wrap: wrap; }
