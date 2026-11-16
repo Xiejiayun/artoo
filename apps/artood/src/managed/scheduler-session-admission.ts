@@ -1,8 +1,9 @@
 import type { AdmissionResult, Journal, JournalRun } from "./journal-types.js";
 import type { SchedulerStartSession } from "./scheduler-start-channel.js";
+import type { SchedulerStartGrantV1 } from "@artoo/domain";
 
 export type SchedulerSessionAdmission =
-  | (Extract<AdmissionResult, { kind: "fresh" }> & { readonly assertStartCurrent: () => void })
+  | (Extract<AdmissionResult, { kind: "fresh" }> & { readonly grant: SchedulerStartGrantV1; readonly assertStartCurrent: () => void })
   | {
       readonly kind: "retained";
       readonly stage: "preparation" | "admission";
@@ -87,5 +88,5 @@ export async function admitSchedulerStartFromSession(input: {
     return Object.freeze({ kind: "retained", stage: "admission", status: admitted.kind, run: admitted.run });
   // This guard must follow Git namespace/reservation/materialization too. The
   // journal separately retains it on the genuine fresh producer permit.
-  return Object.freeze({ ...admitted, assertStartCurrent });
+  return Object.freeze({ ...admitted, grant: response.grant, assertStartCurrent });
 }
