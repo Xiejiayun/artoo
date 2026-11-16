@@ -66,6 +66,8 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - name: Verify deployment and recovery contracts
         run: node --test scripts/azure-release/*.test.mjs
+      - name: Verify the Web-pinned daemon is available from the official npm registry
+        run: node scripts/azure-release/daemon-registry.mjs
       - uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
