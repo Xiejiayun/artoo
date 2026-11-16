@@ -10,7 +10,8 @@ interface ControlledNode {
   instanceId: string;
   commands: Map<string, Start>;
   start: (run: Run) => Promise<Start>;
-  complete: (run: Run) => Promise<void>;
+  complete: (run: Run, answer?: string) => Promise<void>;
+  input: (run: Run, artifactId: string) => Promise<Buffer>;
   upload: (run: Run, filename: string, text: string) => Promise<{ id: string; uri: string; checksum: string }>;
   close: () => void;
 }
@@ -37,16 +38,25 @@ async function connectControlledNode(request: APIRequestContext, projectId: stri
   const commands = new Map<string, Start>();
   const running = new Set<string>();
   let heartbeatSequence = 0;
+  let dependencySession: string | undefined;
   const send = (value: unknown): void => socket.send(JSON.stringify(value));
   const heartbeat = (): void => send({ kind: "node.heartbeat", node_id: computerId, sequence: heartbeatSequence++,
     resources: { cpu_load: 0, memory_used_pct: 0, disk_free_gb: 10 },
-    runtimes: [{ runtime: "mock", status: "available", version: marker, capabilities: ["code.modify"] }], running_instances: [...running] });
+    runtimes: [{ runtime: "mock", status: "available", version: marker, capabilities: ["code.modify", "code.read"] }], running_instances: [...running] });
   let timer: ReturnType<typeof setInterval> | undefined;
   const close = (): void => { if (timer) clearInterval(timer); socket.close(); };
   cleanup.push(close);
   socket.addEventListener("message", (event) => {
     const command = JSON.parse(String(event.data)) as { kind?: string; type?: string; id: string; payload: unknown };
-    if (command.kind !== "command" || command.type !== "run.start") return;
+    if (command.kind !== "command") return;
+    if (command.type === "node.dependency-inputs.session.v1") {
+      const session = command.payload as { version: number; node_id: string; session_id: string };
+      expect(session.version).toBe(1);
+      expect(session.node_id).toBe(computerId);
+      dependencySession = session.session_id;
+      return;
+    }
+    if (command.type !== "run.start") return;
     const parsed = RunStartPayloadSchema.safeParse(command.payload);
     if (parsed.success) commands.set(parsed.data.run_id, { id: command.id, payload: parsed.data });
   });
@@ -57,7 +67,7 @@ async function connectControlledNode(request: APIRequestContext, projectId: stri
   });
   const workspace = `C:/controlled-${role}-${marker}`;
   send({ kind: "node.hello", node_id: computerId, protocol_version: "2026-06-11", artood_version: "controlled-collaboration-e2e",
-    machine: { hostname: name, os: "windows", arch: "x64" }, workspace_roots: { version: 1, paths: [workspace] } });
+    machine: { hostname: name, os: "windows", arch: "x64" }, workspace_roots: { version: 1, paths: [workspace] }, dependency_inputs: { version: 1 } });
   heartbeat();
   timer = setInterval(() => { if (socket.readyState === WebSocket.OPEN) heartbeat(); }, 5000);
   await expect.poll(async () => (await get<{ runtimes: { version: string }[] }>(request, `/computers/${computerId}/runtimes`)).runtimes.some((runtime) => runtime.version === marker)).toBe(true);
@@ -79,10 +89,21 @@ async function connectControlledNode(request: APIRequestContext, projectId: stri
       await expect.poll(async () => (await get<{ run: Run }>(request, `/runs/${run.id}`)).run.status).toBe("running");
       return command;
     },
-    complete: async (run) => {
-      send({ kind: "run.event", node_id: computerId, run_id: run.id, sequence: 1,
+    input: async (run, artifactId) => {
+      await expect.poll(() => dependencySession).toBeTruthy();
+      const response = await request.get(`/api/v1/node/runs/${run.id}/dependency-artifacts/${artifactId}/content`, {
+        headers: { authorization: `Bearer ${claim.node_token}`, "x-artoo-session-id": dependencySession! },
+      });
+      expect(response.ok(), await response.text()).toBe(true);
+      expect(response.headers()["x-artoo-artifact-id"]).toBe(artifactId);
+      return response.body();
+    },
+    complete: async (run, answer) => {
+      let sequence = 1;
+      if (answer !== undefined) send({ kind: "run.event", node_id: computerId, run_id: run.id, sequence: sequence++, event: { type: "run.answer", payload: { text: answer } } });
+      send({ kind: "run.event", node_id: computerId, run_id: run.id, sequence: sequence++,
         event: { type: "run.output", payload: { stream: "stdout", text: `Controlled mock execution ${run.id}\n` } } });
-      lifecycle(run, 2, "completed");
+      lifecycle(run, sequence, "completed");
       await expect.poll(async () => (await get<{ run: Run }>(request, `/runs/${run.id}`)).run.status).toBe("completed");
       running.delete(instanceId);
     },
@@ -103,10 +124,10 @@ async function openReview(page: Page, task: Task, projectId: string): Promise<vo
   await expect(page.getByRole("region", { name: "Selected review evidence" }).getByRole("heading", { name: task.title, exact: true })).toBeVisible();
 }
 
-test("controlled multi-node collaboration keeps parallel occupancy, latest inputs, human revisions and handoffs durable", async ({ page, request }) => {
+test("controlled multi-node collaboration keeps parallel work, Agent feedback, latest inputs and handoffs durable", async ({ page, request }) => {
   // Real browser, API, database, artifact bytes and WebSockets. The two paired
   // node fixtures emit mock execution events: no CLI, physical second machine,
-  // protected scheduler launch or independent Agent review is established here.
+  // protected scheduler launch or live-model assessment is established here.
   const marker = `${Date.now()}-${test.info().workerIndex}`;
   const project = (await post<{ project: { id: string } }>(request, "/projects", { name: `Collaboration ${marker}`, default_workspace: `C:/controlled-collaboration-${marker}` })).project;
   const cleanup: (() => void)[] = [];
@@ -140,24 +161,58 @@ test("controlled multi-node collaboration keeps parallel occupancy, latest input
     await author.complete(first);
     expect((await snapshot(request, upstream)).task.status).toBe("review");
     expect((await snapshot(request, downstream)).task.status).toBe("backlog");
+    await peer.complete(independent);
     await openReview(page, upstream, project.id);
     await expect.poll(() => browserSockets).toBeGreaterThan(0);
     const feedback = `Revise the shared interface before downstream use ${marker}`;
-    await page.getByLabel("Review comment", { exact: true }).fill(feedback);
-    await page.getByRole("button", { name: "Request changes", exact: true }).click();
+    const feedbackRegion = page.getByRole("region", { name: "Agent artifact feedback", exact: true });
+    await feedbackRegion.getByText("Request another Agent's feedback", { exact: true }).click();
+    const feedbackForm = feedbackRegion.getByRole("form", { name: "Request Agent artifact feedback", exact: true });
+    await feedbackForm.getByLabel("Feedback reviewer", { exact: true }).selectOption(peer.agentId);
+    await feedbackForm.getByRole("checkbox", { name: /source-v1\.txt/ }).check();
+    await feedbackForm.getByRole("button", { name: "Create Agent feedback task", exact: true }).click();
+    type FeedbackReview = { id: string; review_task_id: string; review_run_id: string | null; report: string | null };
+    const feedbackReviews = async () => (await get<{ reviews: FeedbackReview[] }>(request, `/tasks/${upstream.id}/agent-reviews`)).reviews;
+    await expect.poll(async () => (await feedbackReviews()).length).toBe(1);
+    const review = (await feedbackReviews())[0]!;
+    const reviewerTask = (await get<Snapshot>(request, `/tasks/${review.review_task_id}`)).task;
+    expect(reviewerTask.parent_task_id).toBeNull();
+    expect(reviewerTask.status).toBe("ready");
+    expect((await snapshot(request, reviewerTask)).runs).toHaveLength(0);
+    const wrongReviewer = await request.post(`/api/v1/tasks/${reviewerTask.id}/assign`, { data: { mode: "manual", agent_instance_id: author.instanceId } });
+    expect([403, 409]).toContain(wrongReviewer.status());
+    const reviewerRun = await assign(reviewerTask, peer);
+    const reviewerStart = await peer.start(reviewerRun);
+    const candidate = ContextPackSchema.parse(reviewerStart.payload.context_pack.payload).dependency_context?.entries.find((entry) => entry.task_id === upstream.id);
+    expect(candidate).toMatchObject({ dependency_type: "user_requested_review", status: "review", run_id: first.id });
+    expect(candidate!.artifacts.map((artifact) => artifact.id)).toEqual([oldArtifact.id]);
+    expect((await peer.input(reviewerRun, oldArtifact.id)).toString("utf8")).toBe(`Controlled first draft ${marker}\n`);
+    await peer.upload(reviewerRun, "peer-feedback.txt", feedback);
+    await peer.complete(reviewerRun, feedback);
+    await expect.poll(async () => (await feedbackReviews())[0]?.report).toBe(feedback);
+    // Another Agent's answer is durable feedback; it does not accept or return
+    // the author's task until the user chooses the existing review command.
+    expect((await snapshot(request, upstream)).task.status).toBe("review");
+    expect((await snapshot(request, downstream)).task.status).toBe("backlog");
+    await page.reload();
+    const recordedFeedback = page.getByRole("region", { name: "Agent artifact feedback", exact: true });
+    await expect(recordedFeedback.getByLabel("Recorded Agent feedback report", { exact: true })).toHaveText(feedback);
+    await recordedFeedback.getByRole("button", { name: "Send report back for changes", exact: true }).click();
     await expect.poll(async () => (await snapshot(request, upstream)).task.status).toBe("ready");
     const rejected = (await snapshot(request, upstream)).reviews.find((review) => review.outcome === "changes_requested");
-    expect(rejected).toMatchObject({ comment: feedback, artifact_ids: [oldArtifact.id] });
+    expect(rejected!.comment).toContain(feedback);
+    expect(rejected!.comment).toContain(review.id);
+    expect(rejected!.artifact_ids).toEqual([oldArtifact.id]);
     await page.reload();
     const reviewHistory = page.getByRole("region", { name: "Review history", exact: true });
-    await expect(reviewHistory.getByText(feedback, { exact: true })).toBeVisible();
+    await expect(reviewHistory).toContainText(feedback);
     expect((await request.post(`/api/v1/tasks/${downstream.id}/ready`)).status()).toBe(409);
 
     const retry = await assign(upstream, author);
     expect(retry.id).not.toBe(first.id);
     const retryStart = await author.start(retry);
     const retryContext = ContextPackSchema.parse(retryStart.payload.context_pack.payload);
-    expect(retryContext.review_feedback?.entries).toEqual(expect.arrayContaining([expect.objectContaining({ event_id: rejected!.event_id, comment: feedback, artifact_ids: [oldArtifact.id] })]));
+    expect(retryContext.review_feedback?.entries).toEqual(expect.arrayContaining([expect.objectContaining({ event_id: rejected!.event_id, comment: rejected!.comment, artifact_ids: [oldArtifact.id] })]));
     const latestText = `Controlled revised source ${marker}\n`;
     const latestArtifact = await author.upload(retry, "source-v2.txt", latestText);
     await author.complete(retry);
@@ -171,13 +226,12 @@ test("controlled multi-node collaboration keeps parallel occupancy, latest input
     await expect.poll(async () => (await snapshot(request, downstream)).task.status).toBe("ready");
     await page.reload();
     const persistedHistory = page.getByRole("region", { name: "Review history", exact: true });
-    await expect(persistedHistory.getByText(feedback, { exact: true })).toBeVisible();
+    await expect(persistedHistory).toContainText(feedback);
     await expect(persistedHistory.getByText("Accepted", { exact: true })).toBeVisible();
     const reviews = (await snapshot(request, upstream)).reviews;
     expect(reviews.map((review) => review.outcome)).toEqual(["changes_requested", "accepted"]);
     expect(reviews[1]!.artifact_ids).toEqual(expect.arrayContaining([oldArtifact.id, latestArtifact.id]));
 
-    await peer.complete(independent);
     const second = await assign(downstream, peer);
     const downstreamStart = await peer.start(second);
     const input = ContextPackSchema.parse(downstreamStart.payload.context_pack.payload).dependency_context?.entries.find((entry) => entry.task_id === upstream.id);
@@ -190,6 +244,7 @@ test("controlled multi-node collaboration keeps parallel occupancy, latest input
     expect(inputResponse.ok()).toBe(true);
     expect(await inputResponse.text()).toBe(latestText);
     expect(input!.artifacts[0]!.checksum).toBe(latestArtifact.checksum);
+    expect((await peer.input(second, latestArtifact.id)).toString("utf8")).toBe(latestText);
 
     await page.goto(`/board?project=${encodeURIComponent(project.id)}&task=${encodeURIComponent(downstream.id)}`);
     const drawer = page.getByRole("dialog", { name: "Task workspace" });
