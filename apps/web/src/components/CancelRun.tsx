@@ -7,15 +7,25 @@ import { queryKeys } from "../app/queryKeys.js";
 import { Button } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
 
-export function CancelRun({ runs, taskId, projectId }: { runs: Run[]; taskId: string; projectId: string }): React.ReactNode {
+export function CancelRun({
+  runs,
+  taskId,
+  projectId,
+}: {
+  runs: Run[];
+  taskId: string;
+  projectId: string;
+}): React.ReactNode {
   const api = useApi();
   const queryClient = useQueryClient();
-  const active = runs.find((run) => ["queued", "starting", "running", "awaiting_input", "paused", "cancelling"].includes(run.status));
+  const active = runs.find((run) => ["queued", "starting", "running", "awaiting_input", "paused"].includes(run.status));
   const [confirmedRunId, setConfirmedRunId] = useState<string | null>(null);
   const [stoppingRunId, setStoppingRunId] = useState<string | null>(null);
   // A task can finish one execution and start another while this control stays
   // mounted. A confirmation belongs only to the execution the user selected.
-  useEffect(() => { setConfirmedRunId(null); }, [active?.id]);
+  useEffect(() => {
+    setConfirmedRunId(null);
+  }, [active?.id]);
   const mutation = useMutation({
     mutationFn: (runId: string) => api.cancelRun(runId, newIdempotencyKey()),
     onSuccess: async (result, runId) => {
@@ -28,17 +38,34 @@ export function CancelRun({ runs, taskId, projectId }: { runs: Run[]; taskId: st
     },
   });
   if (!active) return null;
-  const stopping = active.status === "cancelling" || stoppingRunId === active.id;
-  return <section className="u-stack-sm" aria-label="Run control">
-    <ActionError error={mutation.error} />
-    {stopping && <p role="status">Stop requested. Waiting for the node to confirm the process has closed. Its capacity remains occupied until closure is confirmed.</p>}
-    {confirmedRunId === active.id ? <div className="u-stack-sm" role="group" aria-label="Confirm cancellation">
-      <p>Stop this run and cancel its task? Work already written to the workspace is retained.</p>
-      <p className="run-id">Run {confirmedRunId}</p>
-      <div className="action-row">
-        <Button variant="danger" loading={mutation.isPending} onClick={() => mutation.mutate(confirmedRunId)}>Confirm stop</Button>
-        <Button disabled={mutation.isPending} onClick={() => setConfirmedRunId(null)}>Keep running</Button>
-      </div>
-    </div> : <Button variant="danger" disabled={mutation.isPending || stopping} onClick={() => setConfirmedRunId(active.id)}>Stop run</Button>}
-  </section>;
+  const stopping = stoppingRunId === active.id;
+  return (
+    <section className="u-stack-sm" aria-label="Run control">
+      <ActionError error={mutation.error} />
+      {stopping && (
+        <p role="status">
+          Stop requested. Waiting for the node to confirm the process has closed. Its capacity remains occupied until
+          closure is confirmed.
+        </p>
+      )}
+      {confirmedRunId === active.id ? (
+        <div className="u-stack-sm" role="group" aria-label="Confirm cancellation">
+          <p>Stop this run and cancel its task? Work already written to the workspace is retained.</p>
+          <p className="run-id">Run {confirmedRunId}</p>
+          <div className="action-row">
+            <Button variant="danger" loading={mutation.isPending} onClick={() => mutation.mutate(confirmedRunId)}>
+              Confirm stop
+            </Button>
+            <Button disabled={mutation.isPending} onClick={() => setConfirmedRunId(null)}>
+              Keep running
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <Button variant="danger" disabled={mutation.isPending || stopping} onClick={() => setConfirmedRunId(active.id)}>
+          Stop run
+        </Button>
+      )}
+    </section>
+  );
 }

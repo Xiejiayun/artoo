@@ -392,13 +392,26 @@ function assertWindowsNativeExecutionIdentity(state: WindowsNativeExecution, con
   if (isWindowsOwnedExecution(state)) {
     state.signal.throwIfAborted();
     if (state.assertCurrent() !== undefined) throw new Error("Windows owned admission must be checked synchronously");
-    const admitted = ownedAdmissions.get(state.admission), identity = admitted?.identity;
-    if (!admitted?.claimed || state.config !== config || state.payload !== config.runStart || !isOwnedRunAdapter(state.adapter)
-      || !identity || identity.runId !== config.runId || identity.taskId !== config.taskId || identity.agentInstanceId !== config.agentInstanceId
-      || identity.runtime !== config.runtime || config.runtime !== state.adapter.runtimeId || identity.workspaceRoot !== config.workspaceRoot
-      || identity.workspaceBranch !== state.payload.workspace.branch || state.worktree.root !== identity.workspaceRoot
-      || state.worktree.branch !== identity.workspaceBranch || readOwnedWorktreeWindowsBackend(state.worktree) !== state.backend
-      || admitted.windowsLaunchWindow !== state.launchWindow)
+    const admitted = ownedAdmissions.get(state.admission),
+      identity = admitted?.identity;
+    if (
+      !admitted?.claimed ||
+      state.config !== config ||
+      state.payload !== config.runStart ||
+      !isOwnedRunAdapter(state.adapter) ||
+      !identity ||
+      identity.runId !== config.runId ||
+      identity.taskId !== config.taskId ||
+      identity.agentInstanceId !== config.agentInstanceId ||
+      identity.runtime !== config.runtime ||
+      config.runtime !== state.adapter.runtimeId ||
+      identity.workspaceRoot !== config.workspaceRoot ||
+      identity.workspaceBranch !== state.payload.workspace.branch ||
+      state.worktree.root !== identity.workspaceRoot ||
+      state.worktree.branch !== identity.workspaceBranch ||
+      readOwnedWorktreeWindowsBackend(state.worktree) !== state.backend ||
+      admitted.windowsLaunchWindow !== state.launchWindow
+    )
       throw new Error("Windows owned admission identity changed");
     assertOwnedWorktreeLocalBoundary(state.worktree);
     assertWindowsProcessBackend(state.backend);
@@ -506,8 +519,12 @@ export function createOwnedRunAdmission(
         throw new Error("Owned launch guard must complete synchronously without a value");
     });
   const launchWindow = snapshotWindowsLaunchWindow(windowsLaunchWindow);
-  ownedAdmissions.set(admission, { identity: value, claimed: false, ...(guard ? { assertLaunchCurrent: guard } : {}),
-    ...(launchWindow ? { windowsLaunchWindow: launchWindow } : {}) });
+  ownedAdmissions.set(admission, {
+    identity: value,
+    claimed: false,
+    ...(guard ? { assertLaunchCurrent: guard } : {}),
+    ...(launchWindow ? { windowsLaunchWindow: launchWindow } : {}),
+  });
   return admission;
 }
 
@@ -1046,917 +1063,984 @@ export function createProcessAdapter(
     if (invocation) invocation.dependencyInputs = dependencyInputs;
     let dependencyProcessAttempted = false;
     try {
-
-    const discussion = config.runStart.context_pack.payload?.policy.execution_mode === "discussion";
-    const productTools =
-      !discussion && !!config.runStart.context_pack.payload?.product_development && !!options.productCommand;
-    const readEvidence = takeWorkspaceToolEvidenceReader(config);
-    const readCapabilities = takeWorkspaceToolCapabilities(config);
-    assertWorkspaceToolCapabilities(config.runStart.context_pack.payload, readCapabilities);
-    const readReleaseCapabilities = takeWorkspaceToolReleaseCapabilities(config);
-    assertReleaseCapabilityContext(config.runStart.context_pack.payload, readReleaseCapabilities);
-    const reviewTools =
-      discussion && !!config.runStart.context_pack.payload?.review_subject && !!readEvidence && !!options.reviewCommand;
-    const readOnlyGrant = takeWorkspaceReadOnlyTools(config);
-    if (readOnlyGrant && (!discussion || !options.readOnlyCommand))
-      throw new Error("Runtime has no configured node-bound read-only command");
-    const verify = productTools ? takeWorkspaceToolVerifier(config) : undefined;
-    if (productTools && !verify) throw new Error("Product tools require the node's local verified-run binding");
-    if (discussion && !options.discussionCommand)
-      throw new Error("runtime has no explicitly configured read-only discussion command");
-    if (!discussion && options.initializeRepository && config.runStart.context_pack.payload?.product_development) {
-      if (worktree || config.runStart.workspace.branch != null)
-        throw new Error("Product bootstrap supports ordinary workspaces only");
-      const git = resolveProductBootstrapGit(options.productBootstrapGit);
-      await initializeEmptyProductRepository(config.workspaceRoot, git, startupSignal, windowsExecution?.backend);
-      if (options.productBootstrapGit) resolveProductBootstrapGit(options.productBootstrapGit);
-    }
-
-    const legacyContextPath =
-      worktree || externalDiscussion ? undefined : workspacePath(config.workspaceRoot, contextPackFilename);
-    artifactPaths(config.workspaceRoot);
-    startupSignal?.throwIfAborted();
-    const ownedContext = worktree
-      ? await ownedPreparation(invocation, startupSignal, () =>
-          writeOwnedContextFile(worktree, contextPackFilename, renderContextPack(config, dependencyInputs?.contextText)),
-        )
-      : undefined;
-    startupSignal?.throwIfAborted();
-    const contextPackPath = ownedContext?.path ?? externalDiscussion?.path ?? legacyContextPath!;
-    if (!ownedContext)
-      writeFileSync(
-        contextPackPath,
-        renderContextPack(config, dependencyInputs?.contextText),
-        externalDiscussion ? { mode: 0o400, flag: "wx" } : undefined,
-      );
-
-    const template = readOnlyGrant
-      ? options.readOnlyCommand!
-      : reviewTools
-        ? options.reviewCommand!
-        : discussion
-          ? options.discussionCommand!
-          : productTools
-            ? options.productCommand!
-            : options.command;
-    if (!template[0]) throw new Error("process adapter command template is empty");
-    const resolved = resolveCliCommand(template[0]);
-    if (!resolved)
-      throw new Error(`runtime executable is unavailable or has an unsupported shell wrapper: ${template[0]}`);
-    let research: ResearchSession | undefined;
-    if (!discussion && researchOptions)
-      research = await createResearchSession(researchOptions, {
-        runId,
-        taskId: config.taskId,
-        projectId: config.runStart.context_pack.payload?.project.id ?? "",
-        goalId: config.runStart.context_pack.payload?.goal_context?.goal_id ?? null,
-        workspaceRoot: realpathSync.native(workspaceRoot),
-      });
-    let workspaceTools: WorkspaceToolSession | undefined;
-    try {
-      if (windowsExecution && isWindowsPlanningExecution(windowsExecution)) {
-        windowsExecution.startupClosed = false;
-        if (externalDiscussion) externalDiscussion.cleanupAllowed = false;
+      const discussion = config.runStart.context_pack.payload?.policy.execution_mode === "discussion";
+      const productTools =
+        !discussion && !!config.runStart.context_pack.payload?.product_development && !!options.productCommand;
+      const readEvidence = takeWorkspaceToolEvidenceReader(config);
+      const readCapabilities = takeWorkspaceToolCapabilities(config);
+      assertWorkspaceToolCapabilities(config.runStart.context_pack.payload, readCapabilities);
+      const readReleaseCapabilities = takeWorkspaceToolReleaseCapabilities(config);
+      assertReleaseCapabilityContext(config.runStart.context_pack.payload, readReleaseCapabilities);
+      const reviewTools =
+        discussion &&
+        !!config.runStart.context_pack.payload?.review_subject &&
+        !!readEvidence &&
+        !!options.reviewCommand;
+      const readOnlyGrant = takeWorkspaceReadOnlyTools(config);
+      if (readOnlyGrant && (!discussion || !options.readOnlyCommand))
+        throw new Error("Runtime has no configured node-bound read-only command");
+      const verify = productTools ? takeWorkspaceToolVerifier(config) : undefined;
+      if (productTools && !verify) throw new Error("Product tools require the node's local verified-run binding");
+      if (discussion && !options.discussionCommand)
+        throw new Error("runtime has no explicitly configured read-only discussion command");
+      if (!discussion && options.initializeRepository && config.runStart.context_pack.payload?.product_development) {
+        if (worktree || config.runStart.workspace.branch != null)
+          throw new Error("Product bootstrap supports ordinary workspaces only");
+        const git = resolveProductBootstrapGit(options.productBootstrapGit);
+        await initializeEmptyProductRepository(config.workspaceRoot, git, startupSignal, windowsExecution?.backend);
+        if (options.productBootstrapGit) resolveProductBootstrapGit(options.productBootstrapGit);
       }
-      if (productTools)
-        workspaceTools = await createWorkspaceToolSession({
-          workspaceRoot,
-          context: config.runStart.context_pack.payload!,
-          contextText: renderWorkspaceToolContext(config, dependencyInputs?.contextText),
-          verify: verify!,
-          researchMcpPath: research?.mcpPath,
-          readEvidence,
-          readCapabilities,
-          readReleaseCapabilities,
-        });
-      else if (readOnlyGrant)
-        workspaceTools = await createWorkspaceToolSession({
-          workspaceRoot,
-          context: config.runStart.context_pack.payload!,
-          contextText: renderWorkspaceToolContext(config, dependencyInputs?.contextText),
-          readEvidence,
-          readCapabilities,
-          readReleaseCapabilities,
-          readOnlyGrant,
-        });
-      else if (reviewTools)
-        workspaceTools = await createWorkspaceToolSession({
-          workspaceRoot,
-          context: config.runStart.context_pack.payload!,
-          contextText: renderWorkspaceToolContext(config),
-          readEvidence,
-          readCapabilities,
-          readReleaseCapabilities,
-          evidenceOnly: true,
-        });
-    } catch (error) {
-      await research?.close();
-      throw error;
-    }
-    const argv = template.map((part) =>
-      part
-        .replaceAll("{{workspace_root}}", config.workspaceRoot)
-        .replaceAll("{{context_pack_path}}", contextPackPath)
-        .replaceAll("{{research_config_path}}", research?.configPath ?? "")
-        .replaceAll("{{research_config_json}}", JSON.stringify(research?.configPath ?? ""))
-        .replaceAll("{{research_mcp_path}}", research?.mcpPath ?? "")
-        .replaceAll("{{workspace_tools_mcp_path}}", workspaceTools?.mcpPath ?? "")
-        .replaceAll("{{workspace_tools_config_path}}", workspaceTools?.configPath ?? "")
-        .replaceAll("{{workspace_tools_config_json}}", JSON.stringify(workspaceTools?.configPath ?? "")),
-    );
-    const [, ...args] = argv;
-    let child: ChildProcess | WindowsOwnedProcess;
-    let nativeProcess: WindowsOwnedProcess | undefined;
-    let nativeRootIdentity: Readonly<{ pid: number; creationTime: string }> | undefined;
-    try {
-      if (ownedContext) {
-        await ownedPreparation(invocation, startupSignal, () => assertOwnedContextForLaunch(ownedContext));
-        // Fresh async Git observations end here. Keep the local boundary and
-        // cancellation check adjacent to spawn, without an intervening await.
-        if (invocation) invocation.helperUncertain = true;
-        assertOwnedContextLocalBoundary(ownedContext);
-        if (invocation) invocation.helperUncertain = false;
-        if (invocation?.startSnapshot?.workspace_allocation !== undefined) {
-          try {
-            if (ownedVerificationDigest(config.runStart) === ownedVerificationDigest(invocation.startSnapshot)) {
-              invocation.renderedContext = Object.freeze({
-                digest: `sha256:${ownedContext.sha256}`,
-                size: ownedContext.bytes,
-              });
-            }
-          } catch {
-            invocation.renderedContext = undefined;
-          } // Legacy data never gains the optional projection proof.
-        }
-      }
+
+      const legacyContextPath =
+        worktree || externalDiscussion ? undefined : workspacePath(config.workspaceRoot, contextPackFilename);
+      artifactPaths(config.workspaceRoot);
       startupSignal?.throwIfAborted();
-      // Private admission closure, never a ContextPack field. Keep this after
-      // all awaited Git/context/tool setup and directly before POSIX spawn.
-      invocation?.assertLaunchCurrent?.();
-      dependencyInputs?.assertCurrent();
-      if (invocation) invocation.spawnAttempted = true;
-      if (externalDiscussion) externalDiscussion.cleanupAllowed = false;
-      if (windowsExecution) {
-        assertWindowsNativeExecutionIdentity(windowsExecution, config);
-        dependencyProcessAttempted = true;
-        child = nativeProcess = await startWindowsScopedProcess(
-          windowsExecution.backend,
-          {
-            executable: resolved[0]!,
-            args: [...resolved.slice(1), ...args],
-            cwd: workspaceRoot,
-            env: process.env,
-            timeoutMs: 43_200_000,
-            maxOutputBytes: 64 * 1024 * 1024,
-            cleanupTimeoutMs: 5000,
-            normalExitPolicy: "terminate-descendants",
-            normalExitGraceMs: 250,
-            signal: windowsExecution.signal,
-            ...(isWindowsOwnedExecution(windowsExecution) && windowsExecution.launchWindow
-              ? { launchWindow: windowsExecution.launchWindow } : {}),
-            assertStartCurrent: () => { assertWindowsNativeExecutionIdentity(windowsExecution!, config); dependencyInputs?.assertCurrent(); },
-          },
-          isWindowsPlanningExecution(windowsExecution) ? "tool" : "author",
+      const ownedContext = worktree
+        ? await ownedPreparation(invocation, startupSignal, () =>
+            writeOwnedContextFile(
+              worktree,
+              contextPackFilename,
+              renderContextPack(config, dependencyInputs?.contextText),
+            ),
+          )
+        : undefined;
+      startupSignal?.throwIfAborted();
+      const contextPackPath = ownedContext?.path ?? externalDiscussion?.path ?? legacyContextPath!;
+      if (!ownedContext)
+        writeFileSync(
+          contextPackPath,
+          renderContextPack(config, dependencyInputs?.contextText),
+          externalDiscussion ? { mode: 0o400, flag: "wx" } : undefined,
         );
-      } else {
-        dependencyProcessAttempted = true;
-        child = spawn(resolved[0]!, [...resolved.slice(1), ...args], {
-          cwd: config.workspaceRoot,
-          detached: process.platform !== "win32",
-          windowsHide: true,
-        });
-      }
-    } catch (error) {
-      if (windowsExecution) {
-        if (externalDiscussion) externalDiscussion.cleanupAllowed = false;
-        // The bridge's admittedToCaller gate guarantees that a synchronous
-        // start failure never dispatched a target. Both brokers still close.
-        const closures = await Promise.allSettled([
-          Promise.resolve().then(() => workspaceTools?.close()),
-          Promise.resolve().then(() => research?.close()),
-        ]);
-        if (closures.some((result) => result.status === "rejected")) {
-          throw new VerificationCleanupError("Windows startup tool closure remains unconfirmed; context retained", {
-            cause: error,
-          });
-        }
-        if (isWindowsPlanningExecution(windowsExecution)) {
-          // Scoped launch first awaits a guardian reservation helper. Its
-          // rejected promise alone cannot prove that helper's actual closure.
-          if (guardianOperation)
-            throw new VerificationCleanupError(
-              "Windows planning guardian startup closure remains unconfirmed; context retained",
-              { cause: error },
-            );
-          windowsExecution.startupClosed = true;
-        }
-        if (externalDiscussion) externalDiscussion.cleanupAllowed = true;
-      } else {
-        if (externalDiscussion) externalDiscussion.cleanupAllowed = true;
-        await workspaceTools?.close();
-        await research?.close();
-      }
-      throw error;
-    }
-    // The agent receives its task via the command template + context pack, not
-    // stdin. Close stdin so CLIs that read it (e.g. `codex exec` prints
-    // "Reading additional input from stdin...") get EOF immediately instead of
-    // blocking forever on an open, never-written pipe.
-    if (!nativeProcess) (child as ChildProcess).stdin?.end();
-    const queue = new AsyncEventQueue<RunEvent>();
-    let finalized = false;
-    let spawned = false;
-    let childExitObserved = false,
-      childStdioClosed = false,
-      childSpawnFailed = false,
-      groupAbsent = false;
-    let resolveClosed!: () => void;
-    const closed = new Promise<void>((resolveClose) => {
-      resolveClosed = resolveClose;
-    });
-    let termination: Promise<void> | undefined;
-    let workspaceCleanupError: VerificationCleanupError | undefined;
-    let nativeFailureCleanup: Promise<void> | undefined;
-    let guardian: ChildProcess | undefined;
-    let guardianClosed: Promise<void> | undefined;
-    let guardianCloseObserved = false,
-      guardianSpawned = false,
-      guardianSpawnFailed = false;
-    let guardianAttempted = false,
-      guardianExitObserved = false,
-      guardianGroupAbsent = false;
-    let guardianStatus: number | null = null,
-      guardianSignal: NodeJS.Signals | null = null;
-    // CLI diagnostics may echo authentication headers. Parse original JSON
-    // first: a short key such as "type" must not alter protocol field names.
-    // Redact log text separately and redact parsed values before publishing.
-    const secret = process.env.ARTOO_CODEX_PROVIDER_KEY;
-    const secretForms = secret ? [secret] : [];
-    let allFormsKnown = !secret;
-    const redact = (text: string): string => {
-      // A provider can embed a JSON response inside another JSON diagnostic.
-      // Cover every possible repeated JSON escaping level that fits in this
-      // text, rather than assuming a single log serialization boundary.
-      while (!allFormsKnown && secretForms.at(-1)!.length <= text.length) {
-        const last = secretForms.at(-1)!;
-        const escaped = JSON.stringify(last).slice(1, -1);
-        if (escaped === last) allFormsKnown = true;
-        else secretForms.push(escaped);
-      }
-      return [...secretForms].reverse().reduce((value, part) => value.replaceAll(part, "[redacted]"), text);
-    };
-    const redactLine = (raw: string): string => {
-      if (!secret) return raw;
-      // JSON may spell a secret with Unicode escapes. Normalize only records
-      // requiring redaction; this output is never used as protocol input.
-      try {
-        const normalized = JSON.stringify(JSON.parse(raw));
-        const safe = redact(normalized);
-        return safe === normalized ? redact(raw) : safe;
-      } catch {
-        return redact(raw);
-      }
-    };
-    const structured = createStructuredOutput(options.outputFormat ?? "plain", redact);
-    const emit = (event: RunEvent): void => {
-      if (event.type === "run.answer")
-        event = { ...event, payload: { ...event.payload, text: redact(event.payload.text) } };
-      else if (event.type === "run.lifecycle" && typeof event.payload.reason === "string")
-        event = { ...event, payload: { ...event.payload, reason: redact(event.payload.reason) } };
-      else if (event.type === "run.usage" && event.payload.provider_session_id)
-        event = {
-          ...event,
-          payload: { ...event.payload, provider_session_id: redact(event.payload.provider_session_id) },
-        };
-      queue.push(event);
-    };
 
-    const stdout = makeLineEmitter((raw) => {
-      const text = redactLine(raw);
-      // Parsed values are redacted before truncation, including secrets crossing a size boundary.
-      const activity = structured.consume(raw);
-      const output = {
-        type: "run.output" as const,
-        payload: { stream: "stdout" as const, text, ...(activity ? { activity } : {}) },
-      };
-      if (!activity || Buffer.byteLength(JSON.stringify(output)) <= 1024 * 1024) queue.push(output);
-      else {
-        // Preserve an otherwise admissible raw line when adding a tool batch would exceed the transport bound.
-        queue.push({ type: "run.output", payload: { stream: "stdout", text } });
-        activity.operations.forEach((operation, index) =>
-          queue.push({
-            type: "run.output",
-            payload: {
-              stream: "stdout",
-              text: "",
-              activity: {
-                version: 1,
-                operations: [operation],
-                ...(index === 0 && activity.omitted_operations
-                  ? { omitted_operations: activity.omitted_operations }
-                  : {}),
+      const template = readOnlyGrant
+        ? options.readOnlyCommand!
+        : reviewTools
+          ? options.reviewCommand!
+          : discussion
+            ? options.discussionCommand!
+            : productTools
+              ? options.productCommand!
+              : options.command;
+      if (!template[0]) throw new Error("process adapter command template is empty");
+      const resolved = resolveCliCommand(template[0]);
+      if (!resolved)
+        throw new Error(`runtime executable is unavailable or has an unsupported shell wrapper: ${template[0]}`);
+      let research: ResearchSession | undefined;
+      if (!discussion && researchOptions)
+        research = await createResearchSession(researchOptions, {
+          runId,
+          taskId: config.taskId,
+          projectId: config.runStart.context_pack.payload?.project.id ?? "",
+          goalId: config.runStart.context_pack.payload?.goal_context?.goal_id ?? null,
+          workspaceRoot: realpathSync.native(workspaceRoot),
+        });
+      let workspaceTools: WorkspaceToolSession | undefined;
+      try {
+        if (windowsExecution && isWindowsPlanningExecution(windowsExecution)) {
+          windowsExecution.startupClosed = false;
+          if (externalDiscussion) externalDiscussion.cleanupAllowed = false;
+        }
+        if (productTools)
+          workspaceTools = await createWorkspaceToolSession({
+            workspaceRoot,
+            context: config.runStart.context_pack.payload!,
+            contextText: renderWorkspaceToolContext(config, dependencyInputs?.contextText),
+            verify: verify!,
+            researchMcpPath: research?.mcpPath,
+            readEvidence,
+            readCapabilities,
+            readReleaseCapabilities,
+          });
+        else if (readOnlyGrant)
+          workspaceTools = await createWorkspaceToolSession({
+            workspaceRoot,
+            context: config.runStart.context_pack.payload!,
+            contextText: renderWorkspaceToolContext(config, dependencyInputs?.contextText),
+            readEvidence,
+            readCapabilities,
+            readReleaseCapabilities,
+            readOnlyGrant,
+          });
+        else if (reviewTools)
+          workspaceTools = await createWorkspaceToolSession({
+            workspaceRoot,
+            context: config.runStart.context_pack.payload!,
+            contextText: renderWorkspaceToolContext(config),
+            readEvidence,
+            readCapabilities,
+            readReleaseCapabilities,
+            evidenceOnly: true,
+          });
+      } catch (error) {
+        await research?.close();
+        throw error;
+      }
+      const argv = template.map((part) =>
+        part
+          .replaceAll("{{workspace_root}}", config.workspaceRoot)
+          .replaceAll("{{context_pack_path}}", contextPackPath)
+          .replaceAll("{{research_config_path}}", research?.configPath ?? "")
+          .replaceAll("{{research_config_json}}", JSON.stringify(research?.configPath ?? ""))
+          .replaceAll("{{research_mcp_path}}", research?.mcpPath ?? "")
+          .replaceAll("{{workspace_tools_mcp_path}}", workspaceTools?.mcpPath ?? "")
+          .replaceAll("{{workspace_tools_config_path}}", workspaceTools?.configPath ?? "")
+          .replaceAll("{{workspace_tools_config_json}}", JSON.stringify(workspaceTools?.configPath ?? "")),
+      );
+      const [, ...args] = argv;
+      let child: ChildProcess | WindowsOwnedProcess;
+      let nativeProcess: WindowsOwnedProcess | undefined;
+      let nativeRootIdentity: Readonly<{ pid: number; creationTime: string }> | undefined;
+      try {
+        if (ownedContext) {
+          await ownedPreparation(invocation, startupSignal, () => assertOwnedContextForLaunch(ownedContext));
+          // Fresh async Git observations end here. Keep the local boundary and
+          // cancellation check adjacent to spawn, without an intervening await.
+          if (invocation) invocation.helperUncertain = true;
+          assertOwnedContextLocalBoundary(ownedContext);
+          if (invocation) invocation.helperUncertain = false;
+          if (invocation?.startSnapshot?.workspace_allocation !== undefined) {
+            try {
+              if (ownedVerificationDigest(config.runStart) === ownedVerificationDigest(invocation.startSnapshot)) {
+                invocation.renderedContext = Object.freeze({
+                  digest: `sha256:${ownedContext.sha256}`,
+                  size: ownedContext.bytes,
+                });
+              }
+            } catch {
+              invocation.renderedContext = undefined;
+            } // Legacy data never gains the optional projection proof.
+          }
+        }
+        startupSignal?.throwIfAborted();
+        // Private admission closure, never a ContextPack field. Keep this after
+        // all awaited Git/context/tool setup and directly before POSIX spawn.
+        invocation?.assertLaunchCurrent?.();
+        dependencyInputs?.assertCurrent();
+        if (invocation) invocation.spawnAttempted = true;
+        if (externalDiscussion) externalDiscussion.cleanupAllowed = false;
+        if (windowsExecution) {
+          assertWindowsNativeExecutionIdentity(windowsExecution, config);
+          dependencyProcessAttempted = true;
+          child = nativeProcess = await startWindowsScopedProcess(
+            windowsExecution.backend,
+            {
+              executable: resolved[0]!,
+              args: [...resolved.slice(1), ...args],
+              cwd: workspaceRoot,
+              env: process.env,
+              timeoutMs: 43_200_000,
+              maxOutputBytes: 64 * 1024 * 1024,
+              cleanupTimeoutMs: 5000,
+              normalExitPolicy: "terminate-descendants",
+              normalExitGraceMs: 250,
+              signal: windowsExecution.signal,
+              ...(isWindowsOwnedExecution(windowsExecution) && windowsExecution.launchWindow
+                ? { launchWindow: windowsExecution.launchWindow }
+                : {}),
+              assertStartCurrent: () => {
+                assertWindowsNativeExecutionIdentity(windowsExecution!, config);
+                dependencyInputs?.assertCurrent();
               },
             },
-          }),
-        );
+            isWindowsPlanningExecution(windowsExecution) ? "tool" : "author",
+          );
+        } else {
+          dependencyProcessAttempted = true;
+          child = spawn(resolved[0]!, [...resolved.slice(1), ...args], {
+            cwd: config.workspaceRoot,
+            detached: process.platform !== "win32",
+            windowsHide: true,
+          });
+        }
+      } catch (error) {
+        if (windowsExecution) {
+          if (externalDiscussion) externalDiscussion.cleanupAllowed = false;
+          // The bridge's admittedToCaller gate guarantees that a synchronous
+          // start failure never dispatched a target. Both brokers still close.
+          const closures = await Promise.allSettled([
+            Promise.resolve().then(() => workspaceTools?.close()),
+            Promise.resolve().then(() => research?.close()),
+          ]);
+          if (closures.some((result) => result.status === "rejected")) {
+            throw new VerificationCleanupError("Windows startup tool closure remains unconfirmed; context retained", {
+              cause: error,
+            });
+          }
+          if (isWindowsPlanningExecution(windowsExecution)) {
+            // Scoped launch first awaits a guardian reservation helper. Its
+            // rejected promise alone cannot prove that helper's actual closure.
+            if (guardianOperation)
+              throw new VerificationCleanupError(
+                "Windows planning guardian startup closure remains unconfirmed; context retained",
+                { cause: error },
+              );
+            windowsExecution.startupClosed = true;
+          }
+          if (externalDiscussion) externalDiscussion.cleanupAllowed = true;
+        } else {
+          if (externalDiscussion) externalDiscussion.cleanupAllowed = true;
+          await workspaceTools?.close();
+          await research?.close();
+        }
+        throw error;
       }
-    });
-    const stderr = makeLineEmitter((text) =>
-      queue.push({ type: "run.output", payload: { stream: "stderr", text: redactLine(text) } }),
-    );
-    child.stdout?.on("data", (chunk: Buffer) => stdout.feed(chunk));
-    child.stderr?.on("data", (chunk: Buffer) => stderr.feed(chunk));
+      // The agent receives its task via the command template + context pack, not
+      // stdin. Close stdin so CLIs that read it (e.g. `codex exec` prints
+      // "Reading additional input from stdin...") get EOF immediately instead of
+      // blocking forever on an open, never-written pipe.
+      if (!nativeProcess) (child as ChildProcess).stdin?.end();
+      const queue = new AsyncEventQueue<RunEvent>();
+      let finalized = false;
+      let spawned = false;
+      let childExitObserved = false,
+        childStdioClosed = false,
+        childSpawnFailed = false,
+        groupAbsent = false;
+      let resolveClosed!: () => void;
+      const closed = new Promise<void>((resolveClose) => {
+        resolveClosed = resolveClose;
+      });
+      let termination: Promise<void> | undefined;
+      let workspaceCleanupError: VerificationCleanupError | undefined;
+      let nativeFailureCleanup: Promise<void> | undefined;
+      let guardian: ChildProcess | undefined;
+      let guardianClosed: Promise<void> | undefined;
+      let guardianCloseObserved = false,
+        guardianSpawned = false,
+        guardianSpawnFailed = false;
+      let guardianAttempted = false,
+        guardianExitObserved = false,
+        guardianGroupAbsent = false;
+      let guardianStatus: number | null = null,
+        guardianSignal: NodeJS.Signals | null = null;
+      // CLI diagnostics may echo authentication headers. Parse original JSON
+      // first: a short key such as "type" must not alter protocol field names.
+      // Redact log text separately and redact parsed values before publishing.
+      const secret = process.env.ARTOO_CODEX_PROVIDER_KEY;
+      const secretForms = secret ? [secret] : [];
+      let allFormsKnown = !secret;
+      const redact = (text: string): string => {
+        // A provider can embed a JSON response inside another JSON diagnostic.
+        // Cover every possible repeated JSON escaping level that fits in this
+        // text, rather than assuming a single log serialization boundary.
+        while (!allFormsKnown && secretForms.at(-1)!.length <= text.length) {
+          const last = secretForms.at(-1)!;
+          const escaped = JSON.stringify(last).slice(1, -1);
+          if (escaped === last) allFormsKnown = true;
+          else secretForms.push(escaped);
+        }
+        return [...secretForms].reverse().reduce((value, part) => value.replaceAll(part, "[redacted]"), text);
+      };
+      const redactLine = (raw: string): string => {
+        if (!secret) return raw;
+        // JSON may spell a secret with Unicode escapes. Normalize only records
+        // requiring redaction; this output is never used as protocol input.
+        try {
+          const normalized = JSON.stringify(JSON.parse(raw));
+          const safe = redact(normalized);
+          return safe === normalized ? redact(raw) : safe;
+        } catch {
+          return redact(raw);
+        }
+      };
+      const structured = createStructuredOutput(options.outputFormat ?? "plain", redact);
+      const emit = (event: RunEvent): void => {
+        if (event.type === "run.answer")
+          event = { ...event, payload: { ...event.payload, text: redact(event.payload.text) } };
+        else if (event.type === "run.lifecycle" && typeof event.payload.reason === "string")
+          event = { ...event, payload: { ...event.payload, reason: redact(event.payload.reason) } };
+        else if (event.type === "run.usage" && event.payload.provider_session_id)
+          event = {
+            ...event,
+            payload: { ...event.payload, provider_session_id: redact(event.payload.provider_session_id) },
+          };
+        queue.push(event);
+      };
 
-    const state: RunState = {
-      queue,
-      workspaceRoot,
-      discussion,
-      kill: async () => {
-        if (workspaceCleanupError) throw workspaceCleanupError;
-        if (finalized) return;
-        if (nativeProcess) {
-          // Stop the Job before disposing tool configurations. Node-owned preview
-          // verification closes independently in the close continuation below.
+      const stdout = makeLineEmitter((raw) => {
+        const text = redactLine(raw);
+        // Parsed values are redacted before truncation, including secrets crossing a size boundary.
+        const activity = structured.consume(raw);
+        const output = {
+          type: "run.output" as const,
+          payload: { stream: "stdout" as const, text, ...(activity ? { activity } : {}) },
+        };
+        if (!activity || Buffer.byteLength(JSON.stringify(output)) <= 1024 * 1024) queue.push(output);
+        else {
+          // Preserve an otherwise admissible raw line when adding a tool batch would exceed the transport bound.
+          queue.push({ type: "run.output", payload: { stream: "stdout", text } });
+          activity.operations.forEach((operation, index) =>
+            queue.push({
+              type: "run.output",
+              payload: {
+                stream: "stdout",
+                text: "",
+                activity: {
+                  version: 1,
+                  operations: [operation],
+                  ...(index === 0 && activity.omitted_operations
+                    ? { omitted_operations: activity.omitted_operations }
+                    : {}),
+                },
+              },
+            }),
+          );
+        }
+      });
+      const stderr = makeLineEmitter((text) =>
+        queue.push({ type: "run.output", payload: { stream: "stderr", text: redactLine(text) } }),
+      );
+      child.stdout?.on("data", (chunk: Buffer) => stdout.feed(chunk));
+      child.stderr?.on("data", (chunk: Buffer) => stderr.feed(chunk));
+
+      const state: RunState = {
+        queue,
+        workspaceRoot,
+        discussion,
+        kill: async () => {
+          if (workspaceCleanupError) throw workspaceCleanupError;
+          if (finalized) return;
+          if (nativeProcess) {
+            // Stop the Job before disposing tool configurations. Node-owned preview
+            // verification closes independently in the close continuation below.
+            await beginTermination();
+            await closed;
+            if (workspaceCleanupError) throw workspaceCleanupError;
+            return;
+          }
+          // The verifier runs in its own owned process group. Stopping only the
+          // CLI/MCP process does not confirm that verifier's exit.
+          const toolClosure = workspaceTools?.close();
+          void toolClosure?.catch(() => {});
           await beginTermination();
+          await toolClosure;
           await closed;
           if (workspaceCleanupError) throw workspaceCleanupError;
-          return;
-        }
-        // The verifier runs in its own owned process group. Stopping only the
-        // CLI/MCP process does not confirm that verifier's exit.
-        const toolClosure = workspaceTools?.close();
-        void toolClosure?.catch(() => {});
-        await beginTermination();
-        await toolClosure;
-        await closed;
-        if (workspaceCleanupError) throw workspaceCleanupError;
-      },
-    };
-
-    function beginTermination(): Promise<void> {
-      if (!termination) {
-        if (nativeProcess) {
-          nativeProcess.cancel();
-          termination = nativeProcess.closed.then(
-            () => {},
-            (cause) => {
-              throw new VerificationCleanupError(
-                withWindowsProcessErrorDiagnostic("Windows process stop did not confirm closure", cause),
-                { cause },
-              );
-            },
-          );
-        } else termination = child.pid === undefined ? Promise.resolve() : stopProcessTree(child.pid);
-        void termination.then(
-          () => {
-            if (!nativeProcess) groupAbsent = true;
-          },
-          () => {},
-        );
-      }
-      return termination;
-    }
-    function zeroProbe(pid: number): "present" | "absent" | "unknown" {
-      // POSIX signal zero is an existence query; it sends no signal.
-      try {
-        process.kill(pid, 0);
-        return "present";
-      } catch (error) {
-        return (error as NodeJS.ErrnoException).code === "ESRCH" ? "absent" : "unknown";
-      }
-    }
-    function physicalFacts(): OwnedPhysicalFacts {
-      const childNeverSpawned = childSpawnFailed && !spawned && child.pid === undefined && childStdioClosed;
-      const guardianNeverSpawned =
-        !guardianAttempted ||
-        (guardianSpawnFailed && !guardianSpawned && guardian?.pid === undefined && guardianCloseObserved);
-      const nativeReceipt = windowsExecution?.receipt;
-      return Object.freeze({
-        childPid: child.pid ?? null,
-        childSpawned: spawned,
-        childExitObserved,
-        childStdioClosed,
-        groupAbsent: groupAbsent || childNeverSpawned,
-        guardianPid: guardian?.pid ?? null,
-        guardianAttempted,
-        guardianSpawned,
-        guardianExitObserved,
-        guardianStdioClosed: guardianCloseObserved || !guardianAttempted,
-        guardianGroupAbsent: guardianGroupAbsent || guardianNeverSpawned,
-        ...(nativeProcess ? { windowsJob: Object.freeze({ version: 1 as const,
-          rootCreationTime: nativeReceipt?.rootCreationTime ?? nativeRootIdentity?.creationTime ?? null,
-          atomicJobMember: nativeReceipt?.atomicJobMember ?? false,
-          jobEmptyObserved: nativeReceipt?.jobEmptyObserved ?? false,
-          helperExitObserved: nativeReceipt?.helperExitObserved ?? false,
-          helperCloseObserved: nativeReceipt?.helperCloseObserved ?? false,
-          nativeClosureConfirmed: nativeReceipt !== undefined && isWindowsOwnedClosureReceipt(nativeReceipt) && nativeReceipt.cleanupConfirmed,
-        }) } : {}),
-      });
-    }
-    function observeFullClosure(): OwnedPhysicalFacts | undefined {
-      if (nativeProcess) {
-        const receipt = windowsExecution?.receipt;
-        if (!receipt || !isWindowsOwnedClosureReceipt(receipt) || !receipt.cleanupConfirmed
-          || !windowsExecution!.resourcesClosed || !invocation?.resultResourcesClosed) return;
-        const facts = physicalFacts();
-        invocation.closedFacts = facts;
-        invocation.control = undefined;
-        return facts;
-      }
-      const childNeverSpawned = childSpawnFailed && !spawned && child.pid === undefined && childStdioClosed;
-      if (!(childNeverSpawned || (childExitObserved && childStdioClosed && groupAbsent))) return;
-      if (guardianAttempted) {
-        const neverSpawned =
-          guardianSpawnFailed && !guardianSpawned && guardian?.pid === undefined && guardianCloseObserved;
-        if (!neverSpawned) {
-          if (
-            !guardianExitObserved ||
-            !guardianCloseObserved ||
-            guardianStatus !== 0 ||
-            guardianSignal !== null ||
-            guardian?.pid === undefined
-          )
-            return;
-          if (!guardianGroupAbsent) guardianGroupAbsent = zeroProbe(-guardian.pid) === "absent";
-          if (!guardianGroupAbsent) return;
-        }
-      }
-      const facts = physicalFacts();
-      if (invocation) {
-        invocation.closedFacts = facts;
-        invocation.control = undefined; // Closed tokens must not retain the child/guardian graph.
-      }
-      return facts;
-    }
-    async function confirmOwnedClosure(): Promise<OwnedPhysicalFacts> {
-      const existing = invocation?.closedFacts ?? observeFullClosure();
-      if (existing) return existing;
-      const deadline = performance.now() + 5000;
-      await boundedOwnedWait(closed, deadline);
-      if (guardianAttempted && guardianClosed) await boundedOwnedWait(guardianClosed, deadline);
-      for (;;) {
-        const facts = observeFullClosure();
-        if (facts) return facts;
-        if (performance.now() >= deadline)
-          throw new Error("Owned child, stdio, group or guardian closure remains uncertain");
-        await new Promise((resolveCheck) => setTimeout(resolveCheck, 10));
-      }
-    }
-    function childObservedRunning(): boolean {
-      return (
-        spawned &&
-        !childExitObserved &&
-        !childStdioClosed &&
-        child.exitCode === null &&
-        child.signalCode === null &&
-        child.pid !== undefined &&
-        zeroProbe(child.pid) === "present" &&
-        zeroProbe(-child.pid) === "present"
-      );
-    }
-    async function nativeObservedRunning(): Promise<boolean> {
-      if (!nativeProcess?.observeMembers || !nativeRootIdentity || childExitObserved || childStdioClosed
-        || nativeProcess.exitCode !== null || windowsExecution?.receipt) return false;
-      const result = await nativeProcess.observeMembers([nativeRootIdentity], 1000);
-      const member = result.members[0];
-      return result.version === 1 && result.members.length === 1 && member?.status === "observed" && member.jobMember
-        && member.pid === nativeRootIdentity.pid && member.creationTime === nativeRootIdentity.creationTime
-        && !childExitObserved && !childStdioClosed && !windowsExecution?.receipt;
-    }
-    if (invocation) {
-      invocation.queue = queue;
-      invocation.workspaceRoot = workspaceRoot;
-      invocation.discussion = discussion;
-      invocation.control = {
-        facts: physicalFacts,
-        confirmClosed: confirmOwnedClosure,
-        stop: async (reason) => {
-          const existing = invocation.closedFacts ?? observeFullClosure();
-          if (existing) return existing;
-          if (nativeProcess) {
-            if (!childExitObserved && !childStdioClosed) state.stopReason = reason;
-            await boundedOwnedWait(state.kill(), performance.now() + 5000);
-            return confirmOwnedClosure();
-          }
-          // Natural exit already has a real terminal outcome. Confirm its
-          // closure without turning a buffered completion into cancellation.
-          if (!childExitObserved && !childStdioClosed && child.exitCode === null && child.signalCode === null) {
-            if (!childObservedRunning()) throw new Error("Owned child liveness is uncertain");
-            state.stopReason = reason;
-            await boundedOwnedWait(state.kill(), performance.now() + 5000);
-          }
-          return confirmOwnedClosure();
-        },
-        inspect: async () => {
-          if (invocation.closedFacts ?? observeFullClosure()) return "confirmed_closed";
-          if (nativeProcess) {
-            if (await nativeObservedRunning()) return "running";
-            try { await confirmOwnedClosure(); return "confirmed_closed"; } catch { return "uncertain"; }
-          }
-          if (childExitObserved || childStdioClosed || child.exitCode !== null || child.signalCode !== null) {
-            try {
-              await confirmOwnedClosure();
-              return "confirmed_closed";
-            } catch {
-              return "uncertain";
-            }
-          }
-          return childObservedRunning() &&
-            guardianSpawned &&
-            !guardianExitObserved &&
-            !guardianCloseObserved &&
-            guardian?.pid !== undefined &&
-            guardian.exitCode === null &&
-            guardian.signalCode === null &&
-            zeroProbe(guardian.pid) === "present" &&
-            zeroProbe(-guardian.pid) === "present"
-            ? "running"
-            : "uncertain";
         },
       };
-    }
-    function compactOwnedAfterClose(): void {
-      if (invocation) void confirmOwnedClosure().catch(() => {});
-    }
 
-    function finishWith(event: RunEvent): void {
-      if (finalized) {
-        return;
-      }
-      finalized = true;
-      if (
-        invocation &&
-        event.type === "run.lifecycle" &&
-        (event.payload.phase === "completed" || event.payload.phase === "failed" || event.payload.phase === "cancelled")
-      )
-        invocation.terminalPhase = event.payload.phase;
-      stdout.flush();
-      stderr.flush();
-      for (const measured of structured.finish(false)) emit(measured);
-      emit(event);
-      queue.end();
-      resolveClosed();
-      compactOwnedAfterClose();
-    }
-
-    function retainWindowsUncertainty(error: unknown): Promise<void> {
-      workspaceCleanupError ??=
-        error instanceof VerificationCleanupError
-          ? error
-          : new VerificationCleanupError(
-              withWindowsProcessErrorDiagnostic(
-                "Windows process closure remains unconfirmed; context and execution retained",
-                error,
-              ),
-              { cause: error },
+      function beginTermination(): Promise<void> {
+        if (!termination) {
+          if (nativeProcess) {
+            nativeProcess.cancel();
+            termination = nativeProcess.closed.then(
+              () => {},
+              (cause) => {
+                throw new VerificationCleanupError(
+                  withWindowsProcessErrorDiagnostic("Windows process stop did not confirm closure", cause),
+                  { cause },
+                );
+              },
             );
-      return (nativeFailureCleanup ??= (async () => {
-        // Invoke both closers even if one rejects. Retention becomes sticky
-        // before either asynchronous closure can remove invocation files.
-        await Promise.allSettled([
-          Promise.resolve().then(() => workspaceTools?.close({ retainFiles: true })),
-          Promise.resolve().then(() => research?.close({ retainFiles: true })),
-        ]);
-        queue.fail(workspaceCleanupError!);
-        resolveClosed();
-      })());
-    }
-    function acceptNativeClosure(receipt: WindowsOwnedClosureReceipt): void {
-      if (!isWindowsOwnedClosureReceipt(receipt) || !receipt.cleanupConfirmed)
-        throw new VerificationCleanupError("Windows process closure is not authenticated");
-      windowsExecution!.receipt = receipt;
-    }
-    if (nativeProcess) {
-      nativeProcess.once("spawn", () => {
-        spawned = true;
-        if (worktree) completeOwnedWorktreeStartup(worktree);
-        queue.push({ type: "run.lifecycle", payload: { phase: "started" } });
-      });
-      void nativeProcess.closed.then(acceptNativeClosure).catch(retainWindowsUncertainty);
-    }
-
-    child.on("error", (err: Error) => {
-      if (!spawned) {
-        childSpawnFailed = child.pid === undefined;
-        return;
-      }
-      stderr.feed(`${err.message}\n`);
-    });
-    child.on("exit", () => {
-      childExitObserved = true;
-      if (process.platform === "win32" || child.pid === undefined) return;
-      // The CLI leader can exit while a writer either ignores or inherits
-      // stdio. Start group cleanup on exit, before waiting for pipe closure.
-      const closing = beginTermination();
-      void closing.catch((error: unknown) =>
-        stderr.feed(`CLI cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`),
-      );
-    });
-    const onChildClose = async (code: number | null, signal: NodeJS.Signals | null): Promise<void> => {
-      childStdioClosed = true;
-      if (nativeProcess) acceptNativeClosure(await nativeProcess.closed);
-      if (process.platform !== "win32" && child.pid !== undefined) {
-        beginTermination();
-        try {
-          await termination;
-        } catch {
-          return;
-        }
-      }
-      // Only disarm after the POSIX group has actually disappeared. A leader
-      // exiting successfully is not evidence that all workspace writers did.
-      guardian?.stdin?.end("disarm");
-      try {
-        await workspaceTools?.close();
-      } catch (error) {
-        workspaceCleanupError =
-          error instanceof VerificationCleanupError
-            ? error
-            : new VerificationCleanupError("Workspace tool closure remains unconfirmed");
-        try {
-          await research?.close(windowsExecution ? { retainFiles: true } : undefined);
-        } catch {
-          workspaceCleanupError = new VerificationCleanupError(
-            "Workspace and research tool closure remain unconfirmed",
+          } else termination = child.pid === undefined ? Promise.resolve() : stopProcessTree(child.pid);
+          void termination.then(
+            () => {
+              if (!nativeProcess) groupAbsent = true;
+            },
+            () => {},
           );
         }
-        // Surface uncertainty without a terminal lifecycle or released lease.
-        queue.fail(workspaceCleanupError);
-        resolveClosed();
-        return;
+        return termination;
       }
-      try {
-        await research?.close();
-      } catch {
-        if (windowsExecution) {
-          workspaceCleanupError = new VerificationCleanupError("Windows research tool closure remains unconfirmed");
+      function zeroProbe(pid: number): "present" | "absent" | "unknown" {
+        // POSIX signal zero is an existence query; it sends no signal.
+        try {
+          process.kill(pid, 0);
+          return "present";
+        } catch (error) {
+          return (error as NodeJS.ErrnoException).code === "ESRCH" ? "absent" : "unknown";
+        }
+      }
+      function physicalFacts(): OwnedPhysicalFacts {
+        const childNeverSpawned = childSpawnFailed && !spawned && child.pid === undefined && childStdioClosed;
+        const guardianNeverSpawned =
+          !guardianAttempted ||
+          (guardianSpawnFailed && !guardianSpawned && guardian?.pid === undefined && guardianCloseObserved);
+        const nativeReceipt = windowsExecution?.receipt;
+        return Object.freeze({
+          childPid: child.pid ?? null,
+          childSpawned: spawned,
+          childExitObserved,
+          childStdioClosed,
+          groupAbsent: groupAbsent || childNeverSpawned,
+          guardianPid: guardian?.pid ?? null,
+          guardianAttempted,
+          guardianSpawned,
+          guardianExitObserved,
+          guardianStdioClosed: guardianCloseObserved || !guardianAttempted,
+          guardianGroupAbsent: guardianGroupAbsent || guardianNeverSpawned,
+          ...(nativeProcess
+            ? {
+                windowsJob: Object.freeze({
+                  version: 1 as const,
+                  rootCreationTime: nativeReceipt?.rootCreationTime ?? nativeRootIdentity?.creationTime ?? null,
+                  atomicJobMember: nativeReceipt?.atomicJobMember ?? false,
+                  jobEmptyObserved: nativeReceipt?.jobEmptyObserved ?? false,
+                  helperExitObserved: nativeReceipt?.helperExitObserved ?? false,
+                  helperCloseObserved: nativeReceipt?.helperCloseObserved ?? false,
+                  nativeClosureConfirmed:
+                    nativeReceipt !== undefined &&
+                    isWindowsOwnedClosureReceipt(nativeReceipt) &&
+                    nativeReceipt.cleanupConfirmed,
+                }),
+              }
+            : {}),
+        });
+      }
+      function observeFullClosure(): OwnedPhysicalFacts | undefined {
+        if (nativeProcess) {
+          const receipt = windowsExecution?.receipt;
+          if (
+            !receipt ||
+            !isWindowsOwnedClosureReceipt(receipt) ||
+            !receipt.cleanupConfirmed ||
+            !windowsExecution!.resourcesClosed ||
+            !invocation?.resultResourcesClosed
+          )
+            return;
+          const facts = physicalFacts();
+          invocation.closedFacts = facts;
+          invocation.control = undefined;
+          return facts;
+        }
+        const childNeverSpawned = childSpawnFailed && !spawned && child.pid === undefined && childStdioClosed;
+        if (!(childNeverSpawned || (childExitObserved && childStdioClosed && groupAbsent))) return;
+        if (guardianAttempted) {
+          const neverSpawned =
+            guardianSpawnFailed && !guardianSpawned && guardian?.pid === undefined && guardianCloseObserved;
+          if (!neverSpawned) {
+            if (
+              !guardianExitObserved ||
+              !guardianCloseObserved ||
+              guardianStatus !== 0 ||
+              guardianSignal !== null ||
+              guardian?.pid === undefined
+            )
+              return;
+            if (!guardianGroupAbsent) guardianGroupAbsent = zeroProbe(-guardian.pid) === "absent";
+            if (!guardianGroupAbsent) return;
+          }
+        }
+        const facts = physicalFacts();
+        if (invocation) {
+          invocation.closedFacts = facts;
+          invocation.control = undefined; // Closed tokens must not retain the child/guardian graph.
+        }
+        return facts;
+      }
+      async function confirmOwnedClosure(): Promise<OwnedPhysicalFacts> {
+        const existing = invocation?.closedFacts ?? observeFullClosure();
+        if (existing) return existing;
+        const deadline = performance.now() + 5000;
+        await boundedOwnedWait(closed, deadline);
+        if (guardianAttempted && guardianClosed) await boundedOwnedWait(guardianClosed, deadline);
+        for (;;) {
+          const facts = observeFullClosure();
+          if (facts) return facts;
+          if (performance.now() >= deadline)
+            throw new Error("Owned child, stdio, group or guardian closure remains uncertain");
+          await new Promise((resolveCheck) => setTimeout(resolveCheck, 10));
+        }
+      }
+      function childObservedRunning(): boolean {
+        return (
+          spawned &&
+          !childExitObserved &&
+          !childStdioClosed &&
+          child.exitCode === null &&
+          child.signalCode === null &&
+          child.pid !== undefined &&
+          zeroProbe(child.pid) === "present" &&
+          zeroProbe(-child.pid) === "present"
+        );
+      }
+      async function nativeObservedRunning(): Promise<boolean> {
+        if (
+          !nativeProcess?.observeMembers ||
+          !nativeRootIdentity ||
+          childExitObserved ||
+          childStdioClosed ||
+          nativeProcess.exitCode !== null ||
+          windowsExecution?.receipt
+        )
+          return false;
+        const result = await nativeProcess.observeMembers([nativeRootIdentity], 1000);
+        const member = result.members[0];
+        return (
+          result.version === 1 &&
+          result.members.length === 1 &&
+          member?.status === "observed" &&
+          member.jobMember &&
+          member.pid === nativeRootIdentity.pid &&
+          member.creationTime === nativeRootIdentity.creationTime &&
+          !childExitObserved &&
+          !childStdioClosed &&
+          !windowsExecution?.receipt
+        );
+      }
+      if (invocation) {
+        invocation.queue = queue;
+        invocation.workspaceRoot = workspaceRoot;
+        invocation.discussion = discussion;
+        invocation.control = {
+          facts: physicalFacts,
+          confirmClosed: confirmOwnedClosure,
+          stop: async (reason) => {
+            const existing = invocation.closedFacts ?? observeFullClosure();
+            if (existing) return existing;
+            if (nativeProcess) {
+              if (!childExitObserved && !childStdioClosed) state.stopReason = reason;
+              await boundedOwnedWait(state.kill(), performance.now() + 5000);
+              return confirmOwnedClosure();
+            }
+            // Natural exit already has a real terminal outcome. Confirm its
+            // closure without turning a buffered completion into cancellation.
+            if (!childExitObserved && !childStdioClosed && child.exitCode === null && child.signalCode === null) {
+              if (!childObservedRunning()) throw new Error("Owned child liveness is uncertain");
+              state.stopReason = reason;
+              await boundedOwnedWait(state.kill(), performance.now() + 5000);
+            }
+            return confirmOwnedClosure();
+          },
+          inspect: async () => {
+            if (invocation.closedFacts ?? observeFullClosure()) return "confirmed_closed";
+            if (nativeProcess) {
+              if (await nativeObservedRunning()) return "running";
+              try {
+                await confirmOwnedClosure();
+                return "confirmed_closed";
+              } catch {
+                return "uncertain";
+              }
+            }
+            if (childExitObserved || childStdioClosed || child.exitCode !== null || child.signalCode !== null) {
+              try {
+                await confirmOwnedClosure();
+                return "confirmed_closed";
+              } catch {
+                return "uncertain";
+              }
+            }
+            return childObservedRunning() &&
+              guardianSpawned &&
+              !guardianExitObserved &&
+              !guardianCloseObserved &&
+              guardian?.pid !== undefined &&
+              guardian.exitCode === null &&
+              guardian.signalCode === null &&
+              zeroProbe(guardian.pid) === "present" &&
+              zeroProbe(-guardian.pid) === "present"
+              ? "running"
+              : "uncertain";
+          },
+        };
+      }
+      function compactOwnedAfterClose(): void {
+        if (invocation) void confirmOwnedClosure().catch(() => {});
+      }
+
+      function finishWith(event: RunEvent): void {
+        if (finalized) {
+          return;
+        }
+        finalized = true;
+        if (
+          invocation &&
+          event.type === "run.lifecycle" &&
+          (event.payload.phase === "completed" ||
+            event.payload.phase === "failed" ||
+            event.payload.phase === "cancelled")
+        )
+          invocation.terminalPhase = event.payload.phase;
+        stdout.flush();
+        stderr.flush();
+        for (const measured of structured.finish(false)) emit(measured);
+        emit(event);
+        queue.end();
+        resolveClosed();
+        compactOwnedAfterClose();
+      }
+
+      function retainWindowsUncertainty(error: unknown): Promise<void> {
+        workspaceCleanupError ??=
+          error instanceof VerificationCleanupError
+            ? error
+            : new VerificationCleanupError(
+                withWindowsProcessErrorDiagnostic(
+                  "Windows process closure remains unconfirmed; context and execution retained",
+                  error,
+                ),
+                { cause: error },
+              );
+        return (nativeFailureCleanup ??= (async () => {
+          // Invoke both closers even if one rejects. Retention becomes sticky
+          // before either asynchronous closure can remove invocation files.
+          await Promise.allSettled([
+            Promise.resolve().then(() => workspaceTools?.close({ retainFiles: true })),
+            Promise.resolve().then(() => research?.close({ retainFiles: true })),
+          ]);
+          queue.fail(workspaceCleanupError!);
+          resolveClosed();
+        })());
+      }
+      function acceptNativeClosure(receipt: WindowsOwnedClosureReceipt): void {
+        if (!isWindowsOwnedClosureReceipt(receipt) || !receipt.cleanupConfirmed)
+          throw new VerificationCleanupError("Windows process closure is not authenticated");
+        windowsExecution!.receipt = receipt;
+      }
+      if (nativeProcess) {
+        nativeProcess.once("spawn", () => {
+          spawned = true;
+          if (worktree) completeOwnedWorktreeStartup(worktree);
+          queue.push({ type: "run.lifecycle", payload: { phase: "started" } });
+        });
+        void nativeProcess.closed.then(acceptNativeClosure).catch(retainWindowsUncertainty);
+      }
+
+      child.on("error", (err: Error) => {
+        if (!spawned) {
+          childSpawnFailed = child.pid === undefined;
+          return;
+        }
+        stderr.feed(`${err.message}\n`);
+      });
+      child.on("exit", () => {
+        childExitObserved = true;
+        if (process.platform === "win32" || child.pid === undefined) return;
+        // The CLI leader can exit while a writer either ignores or inherits
+        // stdio. Start group cleanup on exit, before waiting for pipe closure.
+        const closing = beginTermination();
+        void closing.catch((error: unknown) =>
+          stderr.feed(`CLI cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`),
+        );
+      });
+      const onChildClose = async (code: number | null, signal: NodeJS.Signals | null): Promise<void> => {
+        childStdioClosed = true;
+        if (nativeProcess) acceptNativeClosure(await nativeProcess.closed);
+        if (process.platform !== "win32" && child.pid !== undefined) {
+          beginTermination();
+          try {
+            await termination;
+          } catch {
+            return;
+          }
+        }
+        // Only disarm after the POSIX group has actually disappeared. A leader
+        // exiting successfully is not evidence that all workspace writers did.
+        guardian?.stdin?.end("disarm");
+        try {
+          await workspaceTools?.close();
+        } catch (error) {
+          workspaceCleanupError =
+            error instanceof VerificationCleanupError
+              ? error
+              : new VerificationCleanupError("Workspace tool closure remains unconfirmed");
+          try {
+            await research?.close(windowsExecution ? { retainFiles: true } : undefined);
+          } catch {
+            workspaceCleanupError = new VerificationCleanupError(
+              "Workspace and research tool closure remain unconfirmed",
+            );
+          }
+          // Surface uncertainty without a terminal lifecycle or released lease.
           queue.fail(workspaceCleanupError);
           resolveClosed();
           return;
         }
-        finishWith({ type: "run.lifecycle", payload: { phase: "failed", reason: "Research session cleanup failed" } });
-        return;
-      }
-      try { dependencyInputs?.close(); if (invocation) invocation.dependencyInputs = undefined; }
-      catch (cause) {
-        workspaceCleanupError = new VerificationCleanupError("Dependency input snapshot cleanup failed; input evidence retained", { cause });
-        queue.fail(workspaceCleanupError); resolveClosed(); return;
-      }
-      if (invocation) invocation.resultResourcesClosed = true;
-      if (windowsExecution) windowsExecution.resourcesClosed = true;
-      if (externalDiscussion) {
-        externalDiscussion.cleanupAllowed = true;
         try {
-          cleanupDiscussionContext(externalDiscussion);
-        } catch (error) {
+          await research?.close();
+        } catch {
+          if (windowsExecution) {
+            workspaceCleanupError = new VerificationCleanupError("Windows research tool closure remains unconfirmed");
+            queue.fail(workspaceCleanupError);
+            resolveClosed();
+            return;
+          }
           finishWith({
             type: "run.lifecycle",
-            payload: { phase: "failed", reason: "External discussion context cleanup failed" },
+            payload: { phase: "failed", reason: "Research session cleanup failed" },
           });
           return;
         }
-      }
-      if (state.stopReason) {
-        // A parent exit alone does not prove its descendants stopped.
         try {
-          await termination;
-        } catch {
+          dependencyInputs?.close();
+          if (invocation) invocation.dependencyInputs = undefined;
+        } catch (cause) {
+          workspaceCleanupError = new VerificationCleanupError(
+            "Dependency input snapshot cleanup failed; input evidence retained",
+            { cause },
+          );
+          queue.fail(workspaceCleanupError);
           resolveClosed();
           return;
         }
-        finishWith({
-          type: "run.lifecycle",
-          payload: { phase: "cancelled", reason: state.stopReason },
-        });
-        return;
-      }
+        if (invocation) invocation.resultResourcesClosed = true;
+        if (windowsExecution) windowsExecution.resourcesClosed = true;
+        if (externalDiscussion) {
+          externalDiscussion.cleanupAllowed = true;
+          try {
+            cleanupDiscussionContext(externalDiscussion);
+          } catch (error) {
+            finishWith({
+              type: "run.lifecycle",
+              payload: { phase: "failed", reason: "External discussion context cleanup failed" },
+            });
+            return;
+          }
+        }
+        if (state.stopReason) {
+          // A parent exit alone does not prove its descendants stopped.
+          try {
+            await termination;
+          } catch {
+            resolveClosed();
+            return;
+          }
+          finishWith({
+            type: "run.lifecycle",
+            payload: { phase: "cancelled", reason: state.stopReason },
+          });
+          return;
+        }
 
-      if (
-        windowsExecution?.receipt &&
-        (windowsExecution.receipt.failureCode ||
-          (windowsExecution.receipt.terminationReason !== null &&
-            windowsExecution.receipt.terminationReason !== "normal_exit_descendants"))
-      ) {
+        if (
+          windowsExecution?.receipt &&
+          (windowsExecution.receipt.failureCode ||
+            (windowsExecution.receipt.terminationReason !== null &&
+              windowsExecution.receipt.terminationReason !== "normal_exit_descendants"))
+        ) {
+          finishWith({
+            type: "run.lifecycle",
+            payload: {
+              phase: "failed",
+              reason: `Windows execution ${windowsExecution.receipt.failureCode ?? windowsExecution.receipt.terminationReason}`,
+            },
+          });
+          return;
+        }
+
+        if (code === 0) {
+          stdout.flush();
+          stderr.flush();
+          if (structured.failureReason() !== undefined) {
+            finishWith({ type: "run.lifecycle", payload: { phase: "failed", reason: structured.failureReason() } });
+            return;
+          }
+          let descriptors: ArtifactDescriptor[];
+          try {
+            const context = config.runStart.context_pack.payload;
+            descriptors = discussion
+              ? []
+              : [
+                  ...collectDescriptors(workspaceRoot),
+                  ...(context ? validateProductStage(workspaceRoot, context, researchOptions) : []),
+                ];
+            completedArtifacts.set(runId, descriptors);
+          } catch (error) {
+            finishWith({
+              type: "run.lifecycle",
+              payload: {
+                phase: "failed",
+                reason: error instanceof Error ? error.message : "artifact collection failed",
+              },
+            });
+            return;
+          }
+          stdout.flush();
+          stderr.flush();
+          finalized = true;
+          for (const descriptor of descriptors) {
+            queue.push({ type: "artifact.created", payload: descriptor.payload });
+          }
+          for (const measured of structured.finish(true)) emit(measured);
+          if (invocation) invocation.terminalPhase = "completed";
+          queue.push({ type: "run.lifecycle", payload: { phase: "completed", reason: null } });
+          queue.end();
+          resolveClosed();
+          compactOwnedAfterClose();
+          return;
+        }
+
+        // Parse any final unterminated JSON record before choosing the error.
+        // CLIs normally exit nonzero for model/auth/provider failures; preserve
+        // their actionable reason instead of reducing every failure to exit 1.
+        stdout.flush();
+        stderr.flush();
         finishWith({
           type: "run.lifecycle",
           payload: {
             phase: "failed",
-            reason: `Windows execution ${windowsExecution.receipt.failureCode ?? windowsExecution.receipt.terminationReason}`,
+            reason: signal ? `signal ${signal}` : (structured.failureReason() ?? `exit ${code ?? "unknown"}`),
           },
         });
-        return;
-      }
+      };
+      // EventEmitter does not await asynchronous listeners. Keep all native
+      // continuation failures inside the sticky ownership/retention boundary.
+      if (nativeProcess)
+        child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+          void onChildClose(code, signal).catch(retainWindowsUncertainty);
+        });
+      else child.on("close", onChildClose);
 
-      if (code === 0) {
-        stdout.flush();
-        stderr.flush();
-        if (structured.failureReason() !== undefined) {
-          finishWith({ type: "run.lifecycle", payload: { phase: "failed", reason: structured.failureReason() } });
-          return;
-        }
-        let descriptors: ArtifactDescriptor[];
+      let startupStop: Promise<void> | undefined;
+      let startupAbortHandled = false;
+      const onStartupAbort = (): void => {
+        state.stopReason = "user_cancelled";
+        startupStop ??= state.kill();
+        // The startup continuation awaits and reports cleanup failure below.
+        void startupStop.catch(() => {});
+      };
+      async function rejectAfterStartupAbort(): Promise<never> {
+        startupAbortHandled = true;
+        onStartupAbort();
         try {
-          const context = config.runStart.context_pack.payload;
-          descriptors = discussion
-            ? []
-            : [
-                ...collectDescriptors(workspaceRoot),
-                ...(context ? validateProductStage(workspaceRoot, context, researchOptions) : []),
-              ];
-          completedArtifacts.set(runId, descriptors);
-        } catch (error) {
-          finishWith({
-            type: "run.lifecycle",
-            payload: { phase: "failed", reason: error instanceof Error ? error.message : "artifact collection failed" },
-          });
-          return;
-        }
-        stdout.flush();
-        stderr.flush();
-        finalized = true;
-        for (const descriptor of descriptors) {
-          queue.push({ type: "artifact.created", payload: descriptor.payload });
-        }
-        for (const measured of structured.finish(true)) emit(measured);
-        if (invocation) invocation.terminalPhase = "completed";
-        queue.push({ type: "run.lifecycle", payload: { phase: "completed", reason: null } });
-        queue.end();
-        resolveClosed();
-        compactOwnedAfterClose();
-        return;
-      }
-
-      // Parse any final unterminated JSON record before choosing the error.
-      // CLIs normally exit nonzero for model/auth/provider failures; preserve
-      // their actionable reason instead of reducing every failure to exit 1.
-      stdout.flush();
-      stderr.flush();
-      finishWith({
-        type: "run.lifecycle",
-        payload: {
-          phase: "failed",
-          reason: signal ? `signal ${signal}` : (structured.failureReason() ?? `exit ${code ?? "unknown"}`),
-        },
-      });
-    };
-    // EventEmitter does not await asynchronous listeners. Keep all native
-    // continuation failures inside the sticky ownership/retention boundary.
-    if (nativeProcess)
-      child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
-        void onChildClose(code, signal).catch(retainWindowsUncertainty);
-      });
-    else child.on("close", onChildClose);
-
-    let startupStop: Promise<void> | undefined;
-    let startupAbortHandled = false;
-    const onStartupAbort = (): void => {
-      state.stopReason = "user_cancelled";
-      startupStop ??= state.kill();
-      // The startup continuation awaits and reports cleanup failure below.
-      void startupStop.catch(() => {});
-    };
-    async function rejectAfterStartupAbort(): Promise<never> {
-      startupAbortHandled = true;
-      onStartupAbort();
-      try {
-        await startupStop;
-        if (guardian) {
-          if (!guardianClosed) throw new Error("Startup guardian closure was not observed");
-          let timer: ReturnType<typeof setTimeout> | undefined;
-          try {
-            await Promise.race([
-              guardianClosed,
-              new Promise<never>((_resolve, reject) => {
-                timer = setTimeout(() => reject(new Error("Startup guardian did not close after disarm")), 5000);
-              }),
-            ]);
-          } finally {
-            clearTimeout(timer);
-          }
-          const neverSpawned = guardianSpawnFailed && !guardianSpawned && guardian.pid === undefined;
-          if (!neverSpawned && (!guardianCloseObserved || guardianStatus !== 0 || guardianSignal !== null)) {
-            throw new Error("Startup guardian closure was not successful");
-          }
-        }
-      } catch (error) {
-        if (windowsExecution)
-          throw new VerificationCleanupError("Windows startup cleanup remains unconfirmed; context retained");
-        throw new Error("Owned startup cleanup is uncertain; worktree and context retained", { cause: error });
-      }
-      throw startupSignal!.reason;
-    }
-    try {
-      startupSignal?.addEventListener("abort", onStartupAbort, { once: true });
-      if (startupSignal?.aborted) onStartupAbort();
-      if (nativeProcess) {
-        try {
-          const started = await nativeProcess.started;
-          if (started.creationTime) nativeRootIdentity = Object.freeze({ pid: started.pid, creationTime: started.creationTime });
-        } catch (error) {
-          try {
-            await nativeProcess.closed;
-            await closed;
-          } catch (cause) {
-            throw new VerificationCleanupError(
-              withWindowsProcessErrorDiagnostic("Windows process startup closure remains unconfirmed", cause),
-              { cause },
-            );
-          }
-          if (workspaceCleanupError) throw workspaceCleanupError;
-          throw error;
-        }
-      } else
-        await new Promise<void>((resolveSpawn, rejectSpawn) => {
-          child.once("spawn", () => {
-            spawned = true;
-            if (worktree) completeOwnedWorktreeStartup(worktree);
-            queue.push({ type: "run.lifecycle", payload: { phase: "started" } });
-            resolveSpawn();
-          });
-          child.once("error", (err: Error) => {
-            if (!spawned) {
-              rejectSpawn(err);
+          await startupStop;
+          if (guardian) {
+            if (!guardianClosed) throw new Error("Startup guardian closure was not observed");
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            try {
+              await Promise.race([
+                guardianClosed,
+                new Promise<never>((_resolve, reject) => {
+                  timer = setTimeout(() => reject(new Error("Startup guardian did not close after disarm")), 5000);
+                }),
+              ]);
+            } finally {
+              clearTimeout(timer);
             }
-          });
-        });
-      if (startupSignal?.aborted) await rejectAfterStartupAbort();
-
-      if (!nativeProcess && !finalized && child.pid !== undefined) {
-        guardianAttempted = true;
-        guardian = spawn(process.execPath, ["-e", PROCESS_GUARDIAN, String(child.pid)], {
-          stdio: ["pipe", "ignore", "ignore"],
-          windowsHide: true,
-          detached: process.platform !== "win32",
-          env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
-        });
-        if (startupSignal) {
-          // Observe the actual guardian at creation, before its spawn/close
-          // callbacks can run. Only startup cancellation waits on this proof.
-          const observedGuardian = guardian;
-          guardianClosed = new Promise<void>((resolveGuardianClose) => {
-            observedGuardian.once("spawn", () => {
-              guardianSpawned = true;
+            const neverSpawned = guardianSpawnFailed && !guardianSpawned && guardian.pid === undefined;
+            if (!neverSpawned && (!guardianCloseObserved || guardianStatus !== 0 || guardianSignal !== null)) {
+              throw new Error("Startup guardian closure was not successful");
+            }
+          }
+        } catch (error) {
+          if (windowsExecution)
+            throw new VerificationCleanupError("Windows startup cleanup remains unconfirmed; context retained");
+          throw new Error("Owned startup cleanup is uncertain; worktree and context retained", { cause: error });
+        }
+        throw startupSignal!.reason;
+      }
+      try {
+        startupSignal?.addEventListener("abort", onStartupAbort, { once: true });
+        if (startupSignal?.aborted) onStartupAbort();
+        if (nativeProcess) {
+          try {
+            const started = await nativeProcess.started;
+            if (started.creationTime)
+              nativeRootIdentity = Object.freeze({ pid: started.pid, creationTime: started.creationTime });
+          } catch (error) {
+            try {
+              await nativeProcess.closed;
+              await closed;
+            } catch (cause) {
+              throw new VerificationCleanupError(
+                withWindowsProcessErrorDiagnostic("Windows process startup closure remains unconfirmed", cause),
+                { cause },
+              );
+            }
+            if (workspaceCleanupError) throw workspaceCleanupError;
+            throw error;
+          }
+        } else
+          await new Promise<void>((resolveSpawn, rejectSpawn) => {
+            child.once("spawn", () => {
+              spawned = true;
+              if (worktree) completeOwnedWorktreeStartup(worktree);
+              queue.push({ type: "run.lifecycle", payload: { phase: "started" } });
+              resolveSpawn();
             });
-            observedGuardian.once("exit", () => {
-              guardianExitObserved = true;
-            });
-            observedGuardian.once("close", (code, signal) => {
-              guardianCloseObserved = true;
-              guardianStatus = code;
-              guardianSignal = signal;
-              resolveGuardianClose();
-            });
-            observedGuardian.once("error", () => {
-              if (!guardianSpawned && observedGuardian.pid === undefined) {
-                guardianSpawnFailed = true;
-                resolveGuardianClose();
+            child.once("error", (err: Error) => {
+              if (!spawned) {
+                rejectSpawn(err);
               }
             });
           });
-        }
-        guardian.stdin?.on("error", () => {});
-        try {
-          await new Promise<void>((resolveGuard, rejectGuard) => {
-            guardian!.once("spawn", resolveGuard);
-            guardian!.once("error", rejectGuard);
-          });
-        } catch (error) {
-          state.stopReason = "user_cancelled";
-          await state.kill();
-          throw error;
-        }
-        if (finalized) guardian.stdin?.end("disarm");
-      }
+        if (startupSignal?.aborted) await rejectAfterStartupAbort();
 
-      if (startupSignal?.aborted) await rejectAfterStartupAbort();
-      if (invocation) {
-        const handle = Object.freeze({ runId });
-        invocation.handle = new WeakRef(handle);
-        ownedExecutions.set(handle, invocation);
-        return handle;
-      }
-      runs.set(runId, state);
-      const handle = windowsExecution ? Object.freeze({ runId }) : { runId };
-      if (windowsExecution) windowsExecution.handle = new WeakRef(handle);
-      return handle;
-    } catch (error) {
-      if (startupSignal?.aborted && !startupAbortHandled) await rejectAfterStartupAbort();
-      if (nativeProcess && !windowsExecution!.resourcesClosed) {
-        try {
-          await state.kill();
-        } catch (cause) {
-          await retainWindowsUncertainty(cause);
-          throw workspaceCleanupError!;
+        if (!nativeProcess && !finalized && child.pid !== undefined) {
+          guardianAttempted = true;
+          guardian = spawn(process.execPath, ["-e", PROCESS_GUARDIAN, String(child.pid)], {
+            stdio: ["pipe", "ignore", "ignore"],
+            windowsHide: true,
+            detached: process.platform !== "win32",
+            env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+          });
+          if (startupSignal) {
+            // Observe the actual guardian at creation, before its spawn/close
+            // callbacks can run. Only startup cancellation waits on this proof.
+            const observedGuardian = guardian;
+            guardianClosed = new Promise<void>((resolveGuardianClose) => {
+              observedGuardian.once("spawn", () => {
+                guardianSpawned = true;
+              });
+              observedGuardian.once("exit", () => {
+                guardianExitObserved = true;
+              });
+              observedGuardian.once("close", (code, signal) => {
+                guardianCloseObserved = true;
+                guardianStatus = code;
+                guardianSignal = signal;
+                resolveGuardianClose();
+              });
+              observedGuardian.once("error", () => {
+                if (!guardianSpawned && observedGuardian.pid === undefined) {
+                  guardianSpawnFailed = true;
+                  resolveGuardianClose();
+                }
+              });
+            });
+          }
+          guardian.stdin?.on("error", () => {});
+          try {
+            await new Promise<void>((resolveGuard, rejectGuard) => {
+              guardian!.once("spawn", resolveGuard);
+              guardian!.once("error", rejectGuard);
+            });
+          } catch (error) {
+            state.stopReason = "user_cancelled";
+            await state.kill();
+            throw error;
+          }
+          if (finalized) guardian.stdin?.end("disarm");
         }
+
+        if (startupSignal?.aborted) await rejectAfterStartupAbort();
+        if (invocation) {
+          const handle = Object.freeze({ runId });
+          invocation.handle = new WeakRef(handle);
+          ownedExecutions.set(handle, invocation);
+          return handle;
+        }
+        runs.set(runId, state);
+        const handle = windowsExecution ? Object.freeze({ runId }) : { runId };
+        if (windowsExecution) windowsExecution.handle = new WeakRef(handle);
+        return handle;
+      } catch (error) {
+        if (startupSignal?.aborted && !startupAbortHandled) await rejectAfterStartupAbort();
+        if (nativeProcess && !windowsExecution!.resourcesClosed) {
+          try {
+            await state.kill();
+          } catch (cause) {
+            await retainWindowsUncertainty(cause);
+            throw workspaceCleanupError!;
+          }
+        }
+        throw error;
+      } finally {
+        startupSignal?.removeEventListener("abort", onStartupAbort);
       }
-      throw error;
-    } finally {
-      startupSignal?.removeEventListener("abort", onStartupAbort);
-    }
     } catch (error) {
       if (!dependencyProcessAttempted && dependencyInputs) {
-        try { dependencyInputs.close(); if (invocation) invocation.dependencyInputs = undefined; }
-        catch (cleanup) { throw new AggregateError([error, cleanup], "Process preparation and dependency input cleanup failed; evidence retained"); }
+        try {
+          dependencyInputs.close();
+          if (invocation) invocation.dependencyInputs = undefined;
+        } catch (cleanup) {
+          throw new AggregateError(
+            [error, cleanup],
+            "Process preparation and dependency input cleanup failed; evidence retained",
+          );
+        }
       }
       throw error;
     }
@@ -2100,12 +2184,24 @@ export function createProcessAdapter(
           const backend = windowsProcessBackend;
           if (!backend || readOwnedWorktreeWindowsBackend(worktree) !== backend)
             throw new Error("Windows owned execution requires the worktree's original local backend");
-          await ownedPreparation(invocation, signal, () => assertOwnedWindowsWorktreeBoundary(worktree));
+          await ownedPreparation(invocation, signal, async () => assertOwnedWindowsWorktreeBoundary(worktree));
           freezeOwnedStart(snapshot);
-          windowsExecution = { adapter, config: snapshot, payload: snapshot.runStart, backend, signal,
-            admission, worktree, launchWindow: admitted.windowsLaunchWindow,
-            assertCurrent: () => { signal.throwIfAborted(); invocation.assertLaunchCurrent?.(); },
-            claimed: true, resourcesClosed: false };
+          windowsExecution = {
+            adapter,
+            config: snapshot,
+            payload: snapshot.runStart,
+            backend,
+            signal,
+            admission,
+            worktree,
+            launchWindow: admitted.windowsLaunchWindow,
+            assertCurrent: () => {
+              signal.throwIfAborted();
+              invocation.assertLaunchCurrent?.();
+            },
+            claimed: true,
+            resourcesClosed: false,
+          };
           windowsOwnedExecutions.add(windowsExecution);
           assertWindowsNativeExecutionIdentity(windowsExecution, snapshot);
         }
@@ -2113,8 +2209,15 @@ export function createProcessAdapter(
       } catch (cause) {
         let failureCause = cause;
         if (invocation.dependencyInputs && !invocation.spawnAttempted && !invocation.helperUncertain) {
-          try { invocation.dependencyInputs.close(); invocation.dependencyInputs = undefined; }
-          catch (cleanup) { failureCause = new AggregateError([cause, cleanup], "Owned startup and dependency input cleanup failed; evidence retained"); }
+          try {
+            invocation.dependencyInputs.close();
+            invocation.dependencyInputs = undefined;
+          } catch (cleanup) {
+            failureCause = new AggregateError(
+              [cause, cleanup],
+              "Owned startup and dependency input cleanup failed; evidence retained",
+            );
+          }
         }
         let kind: OwnedStartupReceipt["kind"] = "uncertain";
         if (invocation.genuine && !invocation.spawnAttempted && !invocation.helperUncertain) kind = "not_spawned";
@@ -2126,7 +2229,9 @@ export function createProcessAdapter(
           }
         }
         if (invocation.closedFacts) kind = invocation.closedFacts.childSpawned ? "confirmed_closed" : "not_spawned";
-        const error = new Error("Owned runtime startup failed; workspace and context retained", { cause: failureCause });
+        const error = new Error("Owned runtime startup failed; workspace and context retained", {
+          cause: failureCause,
+        });
         if (invocation.genuine) {
           const facts = invocation.closedFacts ?? invocation.control?.facts();
           const receipt: OwnedStartupReceipt = Object.freeze({
