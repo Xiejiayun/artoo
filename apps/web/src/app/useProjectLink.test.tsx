@@ -58,15 +58,30 @@ it("resolves project links on navigation and browser history", async () => {
   await waitFor(() => expect(screen.getByLabelText("Selected project")).toHaveTextContent("first"));
 });
 
-it.each(["/?project=unknown", "/?project=target&task=unverified", "/?project=target&goal=unverified"])(
-  "does not select an unknown project or bypass resource verification at %s",
-  async (route) => {
-    const bootstrap = vi.fn(async () => snapshot());
-    renderWithProviders(<Probe />, { route, client: fakeApi({ bootstrap }) });
-    await waitFor(() => expect(screen.getByLabelText("Selected project")).toHaveTextContent("first"));
-    expect(bootstrap).toHaveBeenCalledTimes(1);
-  },
-);
+it.each([
+  "/?project=unknown",
+  ...[
+    "task",
+    "goal",
+    "room",
+    "thread",
+    "message",
+    "notification",
+    "run",
+    "instance",
+    "agent",
+    "create",
+    "instance_id",
+    "project_id",
+    "run_id",
+    "future_resource",
+  ].map((key) => `/?project=target&${key}=unverified`),
+])("does not select an unknown project or bypass resource verification at %s", async (route) => {
+  const bootstrap = vi.fn(async () => snapshot());
+  renderWithProviders(<Probe />, { route, client: fakeApi({ bootstrap }) });
+  await waitFor(() => expect(screen.getByLabelText("Selected project")).toHaveTextContent("first"));
+  expect(bootstrap).toHaveBeenCalledTimes(1);
+});
 
 it("does not apply a late bootstrap response after leaving the link", async () => {
   let finish!: (value: ReturnType<typeof snapshot>) => void;

@@ -6,8 +6,10 @@ import { useProject } from "./useProject.js";
 export function useProjectLink(): void {
   const [params] = useSearchParams();
   const { bootstrap, projectId, setSelectedProjectId } = useProject();
-  // Resource links retain their stronger server-verified identity resolution.
-  const requested = params.get("task") || params.get("goal") ? null : params.get("project");
+  // Only a bare project scope belongs here. Every other query is left to its
+  // route owner, including current resource links and future query contracts.
+  const projectOnly = Array.from(params.keys()).every((key) => key === "project");
+  const requested = projectOnly ? params.get("project") : null;
   const known = !!bootstrap.data?.projects.some((project) => project.id === requested);
   const identity = JSON.stringify([bootstrap.data?.organization.id, bootstrap.data?.user.id, requested]);
   const applied = useRef<string | null>(null);
