@@ -1041,3 +1041,18 @@ performance baseline or a proven root cause. A temporary batched-migration trial
 was slower in two sequential comparisons and was fully withdrawn; no startup
 deadline, assertion or durability setting changed. The startup failures remain
 open and must be resolved and rerun before unified final acceptance.
+
+PR #151's final source passed protected macOS acceptance: 10 real Git startup
+boundary cases, 14 SQLite cases (one platform skip) and three v4/v5/v6 actual
+author/verifier/server-ACK compatibility cases. Its broader Web gate had 55
+passes and two failures. The mobile composer failure was reproduced independently
+on the integrated main by browsing older messages: adding the jump strip left
+only 17.5% of the send button visible at 390x667. Narrow channel history now
+reserves at least 80px plus the separate jump strip, while desktop keeps 120px.
+The regression explicitly retains older-message browsing, full visible/uncovered
+send controls, multiline channel/thread sends and durable server readback.
+The separate Windows browser ancestry/cleanup rejection remains open; neither
+that gate nor unified acceptance is reported as passed by this layout change.
+Local verification of the layout change passed typecheck, workspace build and
+all four channel browser cases, including cross-client reload and interrupted
+transport reconciliation. Full-suite and broader browser results are separate.

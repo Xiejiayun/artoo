@@ -233,11 +233,12 @@
 /* Reserve usable scroll space separately from the Jump-to-latest strip. The
    outer conversation scrolls when a tall composer cannot fit the window. */
 .channels-page .conversation__history {
-  min-height: 120px;
+  --channel-history-min: 120px;
+  min-height: var(--channel-history-min);
 }
 .channels-page .conversation__history:has(.conversation__jump) {
   /* The jump strip uses a 32px button, space-2 padding and a 1px border. */
-  min-height: calc(120px + 32px + var(--space-2) * 2 + 1px);
+  min-height: calc(var(--channel-history-min) + 32px + var(--space-2) * 2 + 1px);
 }
 .channel-main .conversation__viewport {
   min-height: 0;
@@ -335,6 +336,10 @@
   }
 }
 @media (max-width: 800px) {
+  /* Leave room for the composer while browsing older messages on a short phone. */
+  .channels-page .conversation__history {
+    --channel-history-min: 80px;
+  }
   .channels-page .channels-layout,
   .channels-page .channels-layout.has-thread {
     grid-template-columns: minmax(0, 1fr);
