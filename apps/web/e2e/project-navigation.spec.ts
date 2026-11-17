@@ -35,7 +35,8 @@ test("touch activation remains selected after the touch pointer leaves", async (
       .getByRole("navigation", { name: "Primary", exact: true })
       .getByRole("button", { name: "artoo", exact: true });
     await project.tap();
-    await expect(page.getByText("Conversations in artoo", { exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/\/channels$/);
+    await expect(page.locator(".os-breadcrumb").getByText("artoo", { exact: true })).toBeVisible();
     await openSidebar(page);
     await expect(project).toHaveAttribute("aria-pressed", "true");
   } finally {
