@@ -32,6 +32,7 @@ export function Nav({ onNavigate }: { onNavigate?: () => void } = {}): React.Rea
   const data = bootstrap.data;
   const presence = useDaemons({ enabled: !!data });
   const user = data?.user;
+  const canManage = user?.role === "owner" || user?.role === "admin";
   const squad = useProjectSquad(projectId, data);
   const instances = squad.instances;
   const computers = data?.computers ?? [];
@@ -95,9 +96,16 @@ export function Nav({ onNavigate }: { onNavigate?: () => void } = {}): React.Rea
         <section className="os-projects" aria-label="Projects">
           <div className="os-section-label">
             <span>Projects</span>
-            <Link to="/settings" className="os-icon-button" aria-label="Manage projects" onClick={onNavigate}>
-              <Plus size={14} aria-hidden="true" />
-            </Link>
+            {canManage && (
+              <Link
+                to="/settings?create=project"
+                className="os-icon-button"
+                aria-label="New project"
+                onClick={onNavigate}
+              >
+                <Plus size={14} aria-hidden="true" />
+              </Link>
+            )}
           </div>
           <ul className="os-project-list">
             {data?.projects.map((item) => (
@@ -109,6 +117,11 @@ export function Nav({ onNavigate }: { onNavigate?: () => void } = {}): React.Rea
                   aria-describedby={`project-workspace-${item.id}`}
                   aria-pressed={item.id === projectId}
                   onClick={() => selectProject(item.id)}
+                  onPointerLeave={(event) => {
+                    if (event.pointerType !== "mouse" || item.id !== projectId) return;
+                    setSelectedProjectId(null);
+                    if (PROJECT_PATHS.has(pathname)) navigate("/overview");
+                  }}
                 >
                   <Hash size={15} aria-hidden="true" />
                   <span className="os-project-identity">
@@ -123,8 +136,8 @@ export function Nav({ onNavigate }: { onNavigate?: () => void } = {}): React.Rea
           </ul>
           {bootstrap.isLoading && <p className="os-nav-empty">Loading projects…</p>}
           {bootstrap.error && <p className="os-nav-empty">Projects unavailable.</p>}
-          {data && data.projects.length === 0 && (
-            <Link className="os-nav-empty" to="/settings" onClick={onNavigate}>
+          {canManage && data?.projects.length === 0 && (
+            <Link className="os-nav-empty" to="/settings?create=project" onClick={onNavigate}>
               Create your first project
             </Link>
           )}

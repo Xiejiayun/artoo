@@ -150,7 +150,8 @@ test("project management, device pairing/revocation and reviewed skill installat
   await createTask(page, unique("Isolated project task"));
   await selectProject(page);
   await expect(page.getByText("No task selected", { exact: true })).toBeVisible();
-  await page.getByRole("link", { name: "Manage projects", exact: true }).click();
+  await page.getByRole("link", { name: "New project", exact: true }).click();
+  await page.getByRole("dialog", { name: "New project" }).getByRole("button", { name: "Cancel", exact: true }).click();
   await page.getByText("Pair a desktop or mobile app", { exact: true }).click();
   await page.getByRole("button", { name: "Generate pairing code" }).click();
   const code = await page

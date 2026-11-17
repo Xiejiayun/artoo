@@ -79,7 +79,14 @@ export function WorkspaceLayout(): React.ReactNode {
   if (project === undefined) {
     return (
       <div className="workspace-state">
-        <EmptyState title="No projects yet" description="Create a project to start tracking agent work." />
+        <EmptyState
+          title={bootstrap.data.projects.length ? "Select a project" : "No projects yet"}
+          description={
+            bootstrap.data.projects.length
+              ? "Choose a project from the sidebar to open its workspace."
+              : "Create a project to start tracking agent work."
+          }
+        />
       </div>
     );
   }

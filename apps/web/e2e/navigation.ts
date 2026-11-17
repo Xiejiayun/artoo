@@ -2,17 +2,28 @@ import { expect, type Page } from "@playwright/test";
 
 export async function openSidebar(page: Page): Promise<void> {
   const toggle = page.getByRole("button", { name: "Toggle navigation", exact: true });
-  if (await toggle.isVisible() && await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
+  if ((await toggle.isVisible()) && (await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
 }
 
 /** Use the product's actual navigation; a page reload would lose project selection. */
-export async function selectProject(page: Page, view: "tasks" | "plan" | "thread" | "release" = "tasks", name = "artoo"): Promise<void> {
+export async function selectProject(
+  page: Page,
+  view: "tasks" | "plan" | "thread" | "release" = "tasks",
+  name = "artoo",
+): Promise<void> {
   await openSidebar(page);
-  const project = page.getByRole("navigation", { name: "Primary", exact: true }).getByRole("button", { name, exact: true });
-  await project.click();
+  const project = page
+    .getByRole("navigation", { name: "Primary", exact: true })
+    .getByRole("button", { name, exact: true });
+  // Mouse activation intentionally closes the project when the pointer leaves
+  // its row. Keyboard activation lets these workflows operate the content.
+  await project.focus();
+  await project.press("Enter");
   await expect(project).toHaveAttribute("aria-pressed", "true");
   if (view === "thread") return;
   const views = page.getByRole("navigation", { name: "Project views", exact: true });
-  await views.getByRole("link", { name: view === "plan" ? "Plan" : view === "release" ? "Release" : "Board", exact: true }).click();
+  await views
+    .getByRole("link", { name: view === "plan" ? "Plan" : view === "release" ? "Release" : "Board", exact: true })
+    .click();
   if (view === "tasks") await page.getByRole("link", { name: "Task list", exact: true }).click();
 }
