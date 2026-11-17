@@ -78,9 +78,13 @@ export function OverviewPage(): React.ReactNode {
       </header>
       {!projectId ? (
         <EmptyState
-          title="Create your first project"
-          description="Add a project to plan work and connect your agent team."
-          action={<Link to="/settings">Open project settings</Link>}
+          title={bootstrap.data?.projects.length ? "Select a project" : "Create your first project"}
+          description={
+            bootstrap.data?.projects.length
+              ? "Choose a project from the sidebar to open its workspace."
+              : "Add a project to plan work and connect your agent team."
+          }
+          action={!bootstrap.data?.projects.length && <Link to="/settings">Open project settings</Link>}
         />
       ) : (
         <>

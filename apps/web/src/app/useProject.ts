@@ -8,8 +8,14 @@ export function useProject() {
   const api = useApi();
   const poll5s = usePollMs(5000);
   const { selectedProjectId, setSelectedProjectId } = useSelection();
-  const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap(),
-    refetchInterval: (query) => query.state.data?.goal_entry ? poll5s : false });
-  const project = bootstrap.data?.projects.find((item) => item.id === selectedProjectId) ?? bootstrap.data?.projects[0];
+  const bootstrap = useQuery({
+    queryKey: queryKeys.bootstrap,
+    queryFn: () => api.bootstrap(),
+    refetchInterval: (query) => (query.state.data?.goal_entry ? poll5s : false),
+  });
+  const project =
+    selectedProjectId === null
+      ? undefined
+      : (bootstrap.data?.projects.find((item) => item.id === selectedProjectId) ?? bootstrap.data?.projects[0]);
   return { bootstrap, project, projectId: project?.id, setSelectedProjectId };
 }

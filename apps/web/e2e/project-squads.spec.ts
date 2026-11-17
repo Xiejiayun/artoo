@@ -79,7 +79,9 @@ test("project squads stay separate across navigation and persist explicit member
       agent_id: registered.agent.id,
     });
     await page.goto("/channels");
-    await page.getByRole("button", { name: first.name, exact: true }).click();
+    // Keep scope through keyboard navigation while inspecting project content;
+    // moving a mouse off its selected project row intentionally dismisses it.
+    await page.getByRole("button", { name: first.name, exact: true }).press("Enter");
     const squad = page.getByRole("region", { name: "Agent Squad" });
     await expect(squad.locator(".os-squad-agent")).toHaveCount(1);
     await expect(squad.locator(".os-squad-agent")).toHaveAttribute(
@@ -97,12 +99,12 @@ test("project squads stay separate across navigation and persist explicit member
     await expect(card.getByRole("button", { name: "Save project squad" })).toBeDisabled();
     // The instance-only URL does not carry a project selection across its full
     // reload. Explicitly select the source before inspecting its current Squad.
-    await page.getByRole("button", { name: first.name, exact: true }).click();
+    await page.getByRole("button", { name: first.name, exact: true }).press("Enter");
     await expect(squad.getByText("No agents assigned. Set up this project's squad.")).toBeVisible();
-    await page.getByRole("button", { name: second.name, exact: true }).click();
+    await page.getByRole("button", { name: second.name, exact: true }).press("Enter");
     await expect(squad.locator(".os-squad-agent")).toHaveCount(2);
     await page.reload();
-    await page.getByRole("button", { name: second.name, exact: true }).click();
+    await page.getByRole("button", { name: second.name, exact: true }).press("Enter");
     await expect(squad.locator(".os-squad-agent")).toHaveCount(2);
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.screenshot({ path: testInfo.outputPath("project-squad-desktop.png"), fullPage: true });

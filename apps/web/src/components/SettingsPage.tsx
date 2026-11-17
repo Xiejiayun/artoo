@@ -3,7 +3,7 @@ import { MyContentReports } from "./ContentReporting.js";
 import { SchedulerBaseline } from "./SchedulerBaseline.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { FolderKanban, Laptop, Link2, Monitor, Smartphone } from "lucide-react";
 import type { DevicePlatform } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
@@ -26,7 +26,19 @@ export function SettingsPage(): React.ReactNode {
   const query = useQueryClient();
   const navigate = useNavigate();
   const { bootstrap, project, setSelectedProjectId } = useProject();
-  const [creating, setCreating] = useState(false);
+  const [params, setParams] = useSearchParams();
+  const creating = params.get("create") === "project";
+  const setCreating = (open: boolean): void => {
+    setParams(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        if (open) next.set("create", "project");
+        else next.delete("create");
+        return next;
+      },
+      { replace: true },
+    );
+  };
   const [connecting, setConnecting] = useState(false);
   const [platform, setPlatform] = useState<DevicePlatform>("windows");
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
@@ -95,7 +107,7 @@ export function SettingsPage(): React.ReactNode {
           </div>
           {canManage && <Button onClick={() => setCreating(true)}>New project</Button>}
         </header>
-        {creating && (
+        {canManage && creating && (
           <ProjectForm
             onSaved={(id) => {
               setSelectedProjectId(id);

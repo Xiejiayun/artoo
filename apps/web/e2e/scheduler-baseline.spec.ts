@@ -9,7 +9,7 @@ test("project baseline preserves unknown measurements across refresh and reload"
   expect((await baseline.json()).failure.rate).toBeNull();
   await page.goto("/settings");
   const button = page.getByRole("button", { name: (await projectResponse.json()).project.name, exact: true });
-  await button.click();
+  await button.press("Enter");
   await page.goto("/settings");
   await page.getByText("Scheduler baseline · last seven days", { exact: true }).click();
   await expect(page.getByText("No samples · 0 samples", { exact: true })).toBeVisible();
