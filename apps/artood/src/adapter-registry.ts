@@ -28,6 +28,8 @@ export interface RuntimeDescriptor {
 export interface AdapterRegistry {
   resolve(runtime: string): RuntimeAdapter | undefined;
   runtimes(): readonly RuntimeDescriptor[];
+  set?(registration: RuntimeRegistration): void;
+  remove?(runtime: string): boolean;
 }
 
 export function createAdapterRegistry(registrations: readonly RuntimeRegistration[]): AdapterRegistry {
@@ -42,8 +44,14 @@ export function createAdapterRegistry(registrations: readonly RuntimeRegistratio
     runtimes(): readonly RuntimeDescriptor[] {
       return [...byRuntime.values()].map((registration) => ({
         runtime: registration.runtime,
-        capabilities: registration.capabilities ?? []
+        capabilities: registration.capabilities ?? [],
       }));
-    }
+    },
+    set(registration: RuntimeRegistration): void {
+      byRuntime.set(registration.runtime, registration);
+    },
+    remove(runtime: string): boolean {
+      return byRuntime.delete(runtime);
+    },
   };
 }

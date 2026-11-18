@@ -51,7 +51,8 @@ import {
 import type { PreparedCleanDaemonConfiguration } from "./windows-clean-local-configuration.js";
 import type { ResearchOptions } from "./research.js";
 import type { SourceCommandDiagnostic } from "./source-command-diagnostics.js";
-import { APPLICATION_PUBLICATION_FEATURE_V1 } from "@artoo/domain";
+import { APPLICATION_PUBLICATION_FEATURE_V1, SINGLE_TURN_TEXT_RUNTIME_FEATURE_V1 } from "@artoo/domain";
+import type { SingleTurnRuntimeController } from "./cli-verification.js";
 import {
   prepareApplicationPublicationProfile,
   readApplicationPublicationProfile,
@@ -102,6 +103,8 @@ export interface ArtoodNodeOptions {
     verificationProfileId: string;
     selection: ApplicationPublicationProfileSelection;
   }[];
+  /** Controlled single-turn CLI discovery/verification/isolation controller. */
+  singleTurnRuntime?: SingleTurnRuntimeController;
 }
 
 export interface ArtoodNode {
@@ -268,6 +271,12 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
     )
       throw Error("Application publication profile identities must be unique");
     Object.freeze(hello.application_publication_profiles);
+  }
+  if (
+    options.singleTurnRuntime?.featureEnabled() &&
+    !configuredFeatures.includes(SINGLE_TURN_TEXT_RUNTIME_FEATURE_V1)
+  ) {
+    configuredFeatures.push(SINGLE_TURN_TEXT_RUNTIME_FEATURE_V1);
   }
   if (hello.execution_features !== undefined || configuredFeatures.length)
     hello.execution_features = configuredFeatures;
@@ -475,6 +484,16 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
           },
           verificationProfiles,
           releaseProfiles,
+          ...(options.singleTurnRuntime
+            ? {
+                singleTurnRuntime: options.singleTurnRuntime,
+                emitHeartbeat: heartbeat
+                  ? async () => {
+                      if (transport?.connected) await transport.send(heartbeat());
+                    }
+                  : undefined,
+              }
+            : {}),
           ...(applicationPublicationProfiles.length
             ? {
                 applicationPublication: {

@@ -19,8 +19,9 @@ import { lstatSync, realpathSync } from "node:fs";
 import type { NodeHello } from "@artoo/protocol";
 
 import { createAdapterRegistry, type AdapterRegistry, type RuntimeRegistration } from "./adapter-registry.js";
+import { createAcpSingleTurnAdapter } from "./acp-single-turn-adapter.js";
 import { createArtifactUploader } from "./artifact-upload.js";
-import { createCliDiscoverySampler } from "./cli-discovery.js";
+import { createSingleTurnRuntimeController } from "./cli-verification.js";
 import { runtimeAvailable } from "./cli-resolver.js";
 import { createRegistryHeartbeat } from "./heartbeat.js";
 import { createNativeSkillSampler } from "./native-skills.js";
@@ -521,16 +522,20 @@ export function createNodeFromConfig(
   if (config.ownedResultProfilesFile && (!binding || config.allowNewAllocations !== true))
     throw new Error("Owned-result profiles require a prepared journal with fresh allocations enabled");
   const registry = buildRegistry(config);
-  let cliDiscoverySampler: ReturnType<typeof createCliDiscoverySampler> | undefined;
-  const getCliDiscoverySampler = () => {
-    cliDiscoverySampler ??= createCliDiscoverySampler({
-      ...(config.codex?.binaryPath ? { binaryOverrides: { codex: config.codex.binaryPath } } : {}),
-      registeredRuntimes: new Set(config.runtimes),
-      supportedSingleTurnRuntimes: new Set(),
-      enabledSingleTurnRuntimes: new Set(),
-    });
-    return cliDiscoverySampler;
-  };
+  const singleTurnRuntime = createSingleTurnRuntimeController({
+    ...(config.codex?.binaryPath ? { binaryOverrides: { codex: config.codex.binaryPath } } : {}),
+    registeredRuntimes: new Set(config.runtimes),
+    registry,
+    supportedRuntimes: binding ? new Set() : new Set(["copilot"]),
+    enabledRuntimes: binding ? new Set() : new Set(["copilot"]),
+  });
+  const acpSingleTurnAdapter = createAcpSingleTurnAdapter({
+    sampler: singleTurnRuntime.sampler,
+    isVerifiedReady: (runtime, fingerprint) => singleTurnRuntime.isVerifiedReady(runtime, fingerprint),
+    supportedRuntimes: singleTurnRuntime.supportedRuntimes,
+    enabledRuntimes: singleTurnRuntime.enabledRuntimes,
+  });
+  singleTurnRuntime.bindAdapter(acpSingleTurnAdapter);
   const common = {
     url: config.url,
     hello: helloFor(config),
@@ -539,7 +544,7 @@ export function createNodeFromConfig(
       nodeId: config.nodeId,
       registry,
       nativeSkillsForRuntime: createNativeSkillSampler({ workspaceRoots: config.allowedRoots }),
-      cliDiscovery: () => getCliDiscoverySampler().snapshot(),
+      cliDiscovery: () => singleTurnRuntime.snapshot(),
       statusForRuntime: (runtime) =>
         runtimeAvailable(runtime, runtime === "codex" ? config.codex?.binaryPath : undefined) ? "available" : "missing",
     }),
@@ -573,7 +578,7 @@ export function createNodeFromConfig(
         ...(config.scheduler ? { scheduler: true } : {}),
         ...(config.ownedResultProfilesFile ? { ownedResultProfilesFile: config.ownedResultProfilesFile } : {}),
       })
-    : createArtoodNode({ ...common, acknowledgeRunEvents: true });
+    : createArtoodNode({ ...common, singleTurnRuntime, acknowledgeRunEvents: true });
 }
 
 /** Load config, connect, and start dispatching. Connects the real WebSocket. */
