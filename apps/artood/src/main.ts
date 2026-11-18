@@ -20,6 +20,7 @@ import type { NodeHello } from "@artoo/protocol";
 
 import { createAdapterRegistry, type AdapterRegistry, type RuntimeRegistration } from "./adapter-registry.js";
 import { createArtifactUploader } from "./artifact-upload.js";
+import { createCliDiscoverySampler } from "./cli-discovery.js";
 import { runtimeAvailable } from "./cli-resolver.js";
 import { createRegistryHeartbeat } from "./heartbeat.js";
 import { createNativeSkillSampler } from "./native-skills.js";
@@ -520,6 +521,16 @@ export function createNodeFromConfig(
   if (config.ownedResultProfilesFile && (!binding || config.allowNewAllocations !== true))
     throw new Error("Owned-result profiles require a prepared journal with fresh allocations enabled");
   const registry = buildRegistry(config);
+  let cliDiscoverySampler: ReturnType<typeof createCliDiscoverySampler> | undefined;
+  const getCliDiscoverySampler = () => {
+    cliDiscoverySampler ??= createCliDiscoverySampler({
+      ...(config.codex?.binaryPath ? { binaryOverrides: { codex: config.codex.binaryPath } } : {}),
+      registeredRuntimes: new Set(config.runtimes),
+      supportedSingleTurnRuntimes: new Set(),
+      enabledSingleTurnRuntimes: new Set(),
+    });
+    return cliDiscoverySampler;
+  };
   const common = {
     url: config.url,
     hello: helloFor(config),
@@ -528,6 +539,7 @@ export function createNodeFromConfig(
       nodeId: config.nodeId,
       registry,
       nativeSkillsForRuntime: createNativeSkillSampler({ workspaceRoots: config.allowedRoots }),
+      cliDiscovery: () => getCliDiscoverySampler().snapshot(),
       statusForRuntime: (runtime) =>
         runtimeAvailable(runtime, runtime === "codex" ? config.codex?.binaryPath : undefined) ? "available" : "missing",
     }),

@@ -8,7 +8,7 @@ import { claudeCodeRuntime, codexRuntime } from "./runtimes.js";
 describe("createRegistryHeartbeat", () => {
   const registry = createAdapterRegistry([
     codexRuntime({ allowedRoots: ["/ws"] }),
-    claudeCodeRuntime({ allowedRoots: ["/ws"] })
+    claudeCodeRuntime({ allowedRoots: ["/ws"] }),
   ]);
 
   it("emits a schema-valid heartbeat carrying each runtime's capability tags", () => {
@@ -21,8 +21,8 @@ describe("createRegistryHeartbeat", () => {
       {
         runtime: "claude-code",
         status: "available",
-        capabilities: ["code.read", "code.modify", "code.review", "test.run"]
-      }
+        capabilities: ["code.read", "code.modify", "code.review", "test.run"],
+      },
     ]);
   });
 
@@ -34,7 +34,13 @@ describe("createRegistryHeartbeat", () => {
   });
 
   it("includes optional native skill observations without changing advertised capabilities", () => {
-    const native = { version: 1 as const, observed_at: "2026-11-12T00:00:00.000Z", skills: [], truncated: false, unreadable_count: 0 };
+    const native = {
+      version: 1 as const,
+      observed_at: "2026-11-12T00:00:00.000Z",
+      skills: [],
+      truncated: false,
+      unreadable_count: 0,
+    };
     const hb = createRegistryHeartbeat({ nodeId: "n", registry, nativeSkillsForRuntime: () => native })();
     expect(nodeHeartbeatSchema.parse(hb).runtimes[0]?.native_skills).toEqual(native);
     expect(hb.runtimes[0]?.capabilities).toEqual(["code.read", "code.modify", "code.review", "test.run"]);
@@ -58,9 +64,33 @@ describe("createRegistryHeartbeat", () => {
       nodeId: "n",
       registry,
       resources: () => ({ cpu_load: 0.5, memory_used_pct: 40, disk_free_gb: 12 }),
-      runningInstances: () => ["ai_1", "ai_2"]
+      runningInstances: () => ["ai_1", "ai_2"],
     })();
     expect(hb.resources).toEqual({ cpu_load: 0.5, memory_used_pct: 40, disk_free_gb: 12 });
     expect(hb.running_instances).toEqual(["ai_1", "ai_2"]);
+  });
+
+  it("omits cli_discovery unless supplied, and keeps existing runtimes intact when included", () => {
+    expect(createRegistryHeartbeat({ nodeId: "n", registry })().cli_discovery).toBeUndefined();
+    const cliDiscovery = {
+      version: 1 as const,
+      observed_at: "2026-11-18T00:00:00.000Z",
+      entries: [
+        {
+          id: "copilot" as const,
+          display_name: "GitHub Copilot CLI",
+          install_status: "installed" as const,
+          execution_status: "unsupported" as const,
+          version: "1.0.109",
+          reason_code: "execution_unsupported_in_mvp" as const,
+          reason: "已安装，暂不支持执行",
+          can_verify: false,
+          can_dispatch: false,
+        },
+      ],
+    };
+    const hb = createRegistryHeartbeat({ nodeId: "n", registry, cliDiscovery: () => cliDiscovery })();
+    expect(nodeHeartbeatSchema.parse(hb).cli_discovery).toEqual(cliDiscovery);
+    expect(hb.runtimes).toHaveLength(2);
   });
 });

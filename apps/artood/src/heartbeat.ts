@@ -21,6 +21,8 @@ export interface RegistryHeartbeatOptions {
   status?: RuntimeStatus["status"];
   statusForRuntime?: (runtime: string) => RuntimeStatus["status"];
   nativeSkillsForRuntime?: (runtime: string) => RuntimeStatus["native_skills"];
+  /** Optional cached single-machine CLI discovery inventory. */
+  cliDiscovery?: () => NonNullable<NodeHeartbeat["cli_discovery"]>;
   /** Resource sampler; defaults to zeros. */
   resources?: () => NodeHeartbeat["resources"];
   /** Active agent-instance ids; defaults to []. */
@@ -30,19 +32,23 @@ export interface RegistryHeartbeatOptions {
 export function createRegistryHeartbeat(options: RegistryHeartbeatOptions): () => NodeHeartbeat {
   const status = options.status ?? "available";
   let sequence = 0;
-  return () => ({
-    kind: "node.heartbeat",
-    node_id: options.nodeId,
-    sequence: sequence++,
-    resources: options.resources?.() ?? { cpu_load: 0, memory_used_pct: 0, disk_free_gb: 0 },
-    runtimes: options.registry.runtimes().map(
-      (rt): RuntimeStatus => ({
-        runtime: rt.runtime,
-        status: options.statusForRuntime?.(rt.runtime) ?? status,
-        ...(options.nativeSkillsForRuntime ? { native_skills: options.nativeSkillsForRuntime(rt.runtime) } : {}),
-        capabilities: [...rt.capabilities]
-      })
-    ),
-    running_instances: [...(options.runningInstances?.() ?? [])]
-  });
+  return () => {
+    const cliDiscovery = options.cliDiscovery?.();
+    return {
+      kind: "node.heartbeat",
+      node_id: options.nodeId,
+      sequence: sequence++,
+      resources: options.resources?.() ?? { cpu_load: 0, memory_used_pct: 0, disk_free_gb: 0 },
+      runtimes: options.registry.runtimes().map(
+        (rt): RuntimeStatus => ({
+          runtime: rt.runtime,
+          status: options.statusForRuntime?.(rt.runtime) ?? status,
+          ...(options.nativeSkillsForRuntime ? { native_skills: options.nativeSkillsForRuntime(rt.runtime) } : {}),
+          capabilities: [...rt.capabilities],
+        }),
+      ),
+      ...(cliDiscovery ? { cli_discovery: cliDiscovery } : {}),
+      running_instances: [...(options.runningInstances?.() ?? [])],
+    };
+  };
 }
