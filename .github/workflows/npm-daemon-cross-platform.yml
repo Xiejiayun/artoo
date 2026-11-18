@@ -75,7 +75,7 @@ jobs:
         run: npm run build --workspace @artoo/server
       - name: Check CLI contracts, controlled fixture isolation and registry pins
         run: node --test scripts/npm-daemon/cli.test.mjs scripts/npm-daemon/onboarding.test.mjs scripts/npm-daemon/bootstrap.test.mjs scripts/npm-daemon/controlled-cli-smoke.test.mjs scripts/npm-daemon/registry-platform-smoke.test.mjs scripts/npm-daemon/temporary-context-real.test.mjs
-      - name: Build a fresh Windows host and one universal tarball
+      - name: Build a fresh Windows host and Windows x64 tarball
         id: pack
         run: |
           $ErrorActionPreference = 'Stop'

@@ -6,7 +6,7 @@ Connect a Windows computer to an Artoo Web platform using the official npm packa
 | --- | --- | --- |
 | Windows | x64 | Required |
 
-Windows arm64 is not supported. npm's separate OS/CPU fields cannot express that exclusion, so the daemon checks the exact platform/architecture pair before starting.
+The npm manifest and the daemon startup check both require Windows x64. Windows arm64 is not supported.
 
 ## Connect with one command
 

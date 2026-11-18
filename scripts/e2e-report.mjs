@@ -4,6 +4,7 @@ import { lstatSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from 
 import { dirname, extname, resolve } from "node:path";
 import { release } from "node:os";
 import { fileURLToPath } from "node:url";
+import { hasCompletePNGPixelStream, MAX_PNG_BYTES } from "./png-evidence.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const escape = (value) =>
@@ -113,7 +114,13 @@ export function writeE2EReport({ outputPath, title, report, screenshots = [] }) 
         extname(path).toLowerCase()
       ];
       if (!mime) throw new Error("Unsupported screenshot format");
-      const encoded = readFileSync(path).toString("base64");
+      if (mime === "image/png") {
+        const file = lstatSync(path);
+        if (!file.isFile() || file.size > MAX_PNG_BYTES) throw new Error("Invalid PNG evidence file");
+      }
+      const bytes = readFileSync(path);
+      if (mime === "image/png" && !hasCompletePNGPixelStream(bytes)) throw new Error("Incomplete PNG evidence");
+      const encoded = bytes.toString("base64");
       return `<figure><a href="data:${mime};base64,${encoded}" target="_blank" rel="noopener"><img src="data:${mime};base64,${encoded}" alt="${escape(caption)}" loading="lazy"></a><figcaption>${escape(caption)}</figcaption></figure>`;
     } catch {
       return `<p class="warning">Screenshot unavailable: ${escape(caption)}</p>`;
