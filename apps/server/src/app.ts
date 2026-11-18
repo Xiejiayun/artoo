@@ -7,8 +7,12 @@ import {
   AgentHistoryEventsQuerySchema,
   AgentHistoryQuerySchema,
   SendMessageRequestSchema,
+  SingleTurnTextRuntimeIdSchema,
   apiError,
 } from "@artoo/domain";
+import { computers } from "@artoo/db";
+import { and, eq, isNull } from "drizzle-orm";
+import { requireAdministrator } from "./auth/request-auth.js";
 
 import { registerAiDataSharingRoutes } from "./ai-data-sharing-routes.js";
 import { registerApplicationPublicationRoutes } from "./application-publication-routes.js";
@@ -270,6 +274,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
       isLive,
       (id) => graceWindow.isArmed(id),
       (id) => nodeRegistry.get(id)?.workspaceRoots,
+      (id) => nodeRegistry.get(id)?.getCliDiscovery?.(),
     ),
   }));
   app.get("/api/v1/agent-instances/presence", async (req) => ({
@@ -357,7 +362,46 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   // heartbeat, with status + last_seen_at for the scheduler to filter (Part 3).
   app.get("/api/v1/computers/:id/runtimes", async (req) => {
     const { id } = req.params as { id: string };
-    return { runtimes: await runtimeRegistry.listComputerRuntimes(rc(req), id) };
+    return {
+      runtimes: await runtimeRegistry.listComputerRuntimes(rc(req), id),
+      cli_discovery: nodeRegistry.get(id)?.getCliDiscovery?.() ?? null,
+    };
+  });
+
+  app.post("/api/v1/computers/:id/cli-discovery/refresh", async (req) => {
+    const { id } = req.params as { id: string };
+    const c = rc(req);
+    await c.db.transaction(async (tx) => {
+      const [computer] = await tx
+        .select({ id: computers.id })
+        .from(computers)
+        .where(and(eq(computers.id, id), eq(computers.organizationId, c.organizationId), isNull(computers.deletedAt)));
+      if (!computer) throw AppError.notFound("computer not found");
+      await requireAdministrator(c, tx);
+    });
+    const binding = nodeRegistry.get(id);
+    if (!binding?.refreshCliDiscovery) throw AppError.conflict("Execution node is offline");
+    return { cli_discovery: await binding.refreshCliDiscovery() };
+  });
+
+  app.post("/api/v1/computers/:id/cli-discovery/verify", async (req) => {
+    const { id } = req.params as { id: string };
+    const c = rc(req);
+    const parsed = SingleTurnTextRuntimeIdSchema.safeParse((req.body as { runtime?: unknown } | undefined)?.runtime);
+    if (!parsed.success) {
+      throw AppError.validation("runtime must identify a supported single-turn CLI", { issues: parsed.error.issues });
+    }
+    await c.db.transaction(async (tx) => {
+      const [computer] = await tx
+        .select({ id: computers.id })
+        .from(computers)
+        .where(and(eq(computers.id, id), eq(computers.organizationId, c.organizationId), isNull(computers.deletedAt)));
+      if (!computer) throw AppError.notFound("computer not found");
+      await requireAdministrator(c, tx);
+    });
+    const binding = nodeRegistry.get(id);
+    if (!binding?.verifyCliConnection) throw AppError.conflict("Execution node is offline");
+    return binding.verifyCliConnection(parsed.data);
   });
 
   registerSkillRoutes(app, ctx);

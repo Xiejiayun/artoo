@@ -11,6 +11,7 @@ import {
 } from "@artoo/db";
 import {
   SkillManifestSchema,
+  SINGLE_TURN_TEXT_RUNTIME_FEATURE_V1,
   deriveResourceLifecycle,
   concurrencyLimitFromConfig,
   contributedCapabilities,
@@ -19,6 +20,7 @@ import {
   isDeviceTrustEligible,
   isInstanceAdminAvailable,
   isRuntimeStale,
+  isSingleTurnTextRuntime,
   matchCapabilities,
   type Capability,
   type SkillInstallState,
@@ -82,6 +84,8 @@ export interface ScheduleOptions {
   /** Derived from the validated explicit/generated branch request. */
   branchBacked: boolean;
   agentInstanceId?: string | null;
+  /** Positive opt-in set only when a manual standalone plain-text task qualifies. */
+  singleTurnTextEligible?: boolean;
   /**
    * #115 P3b: the linked goal's budget `allowed_runtimes`. When provided (a goal
    * with an allowed_runtimes budget), only candidates whose runtime is in the list
@@ -515,6 +519,30 @@ async function scheduleTaskWithReservation(
     )
     .filter((r) => opts.mode !== "manual" || opts.agentInstanceId == null || r.instanceId === opts.agentInstanceId)
     .filter((r) => {
+      if (isSingleTurnTextRuntime(r.runtime)) {
+        // Contract 1 (#T17): single-turn runtimes never use missing-row fallback,
+        // never enter auto scheduling, and require manual pin + standalone text
+        // task + empty capabilities + live feature + verified session state.
+        if (r.runtimeStatus !== "available" || isRuntimeStale(r.runtimeLastSeen, now, RUNTIME_STALE_AFTER_MS)) {
+          return false;
+        }
+        if (opts.mode !== "manual" || opts.agentInstanceId !== r.instanceId) {
+          return false;
+        }
+        if (opts.singleTurnTextEligible !== true || required.length > 0 || opts.branchBacked || requestedOpinion) {
+          return false;
+        }
+        if (((r.runtimeCaps as Capability[] | null) ?? []).length > 0) {
+          return false;
+        }
+        if (ctx.supportsExecutionFeature?.(r.computerId, SINGLE_TURN_TEXT_RUNTIME_FEATURE_V1) !== true) {
+          return false;
+        }
+        if (ctx.isSingleTurnRuntimeReady?.(r.computerId, r.runtime) !== true) {
+          return false;
+        }
+        return true;
+      }
       // Runtime eligibility (#15 Part 3). A missing agent_runtimes row is a
       // deliberate fallback (seeded/dev/pre-heartbeat): the candidate stays
       // eligible with no runtime caps. A present-but-missing/disabled or stale/
@@ -588,6 +616,54 @@ async function scheduleTaskWithReservation(
     }
     if (permitted.length > 0 && supported.length === 0) {
       throw AppError.conflict("No eligible current node session supports the configured per-run workspace allocation");
+    }
+    if (opts.mode === "manual" && opts.agentInstanceId != null) {
+      const target = rows.find((r) => r.instanceId === opts.agentInstanceId);
+      if (
+        target &&
+        isSingleTurnTextRuntime(target.runtime) &&
+        target.computerStatus === "online" &&
+        isInstanceAdminAvailable(target.instanceStatus)
+      ) {
+        if (
+          target.runtimeStatus !== "available" ||
+          isRuntimeStale(target.runtimeLastSeen, now, RUNTIME_STALE_AFTER_MS)
+        ) {
+          throw new AppError(
+            "runtime_unavailable",
+            "Single-turn runtime is not available on the target computer",
+            409,
+            {
+              reason: "single_turn_runtime_unavailable",
+              runtime: target.runtime,
+            },
+          );
+        }
+        if (opts.singleTurnTextEligible !== true || required.length > 0 || opts.branchBacked || requestedOpinion) {
+          throw new AppError(
+            "runtime_unavailable",
+            "This runtime only supports manual standalone plain-text tasks without tools, branches, goals, or verification",
+            409,
+            { reason: "single_turn_no_tools_only", runtime: target.runtime },
+          );
+        }
+        if (ctx.supportsExecutionFeature?.(target.computerId, SINGLE_TURN_TEXT_RUNTIME_FEATURE_V1) !== true) {
+          throw new AppError(
+            "runtime_unavailable",
+            "The connected node does not support single-turn text execution",
+            409,
+            { reason: "single_turn_feature_unsupported", runtime: target.runtime },
+          );
+        }
+        if (ctx.isSingleTurnRuntimeReady?.(target.computerId, target.runtime) !== true) {
+          throw new AppError(
+            "runtime_unavailable",
+            "Verify CLI connection on the node before assigning a single-turn task",
+            409,
+            { reason: "single_turn_runtime_unverified", runtime: target.runtime },
+          );
+        }
+      }
     }
     if (rows.length === 0) {
       throw new AppError(

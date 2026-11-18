@@ -616,6 +616,25 @@ async function assignTaskInTransaction(
     req.write_paths ??
     (assistantTurnId || row.executionPolicyTaskId ? await inheritedWritePaths(ctx, tx, row, policyTask) : []);
 
+  const singleTurnTextEligible =
+    req.mode === "manual" &&
+    typeof req.agent_instance_id === "string" &&
+    row.goalId === null &&
+    row.sourcePlanId === null &&
+    row.executionPolicyTaskId === null &&
+    (row.requiredCapabilities as Capability[]).length === 0 &&
+    !req.branch_backed &&
+    req.workspace_branch == null &&
+    writePaths.length === 0 &&
+    !verificationRequirement &&
+    !ownedSelection &&
+    !assistantTurnId &&
+    !requestedOpinion &&
+    !planning &&
+    !independentReview &&
+    !automation &&
+    !researchOrigin;
+
   const scheduleOptions = {
     shadowTaskId: row.id,
     captureShadow: schedulerRolloutEnabled(ctx.schedulerRollout, "claim_shadow", {
@@ -627,6 +646,7 @@ async function assignTaskInTransaction(
     agentInstanceId: req.agent_instance_id ?? null,
     allowedRuntimes,
     branchBacked: req.workspace_branch != null || req.branch_backed === true,
+    singleTurnTextEligible,
   };
   const outcome = await scheduleTask(tx, ctx, row.requiredCapabilities as Capability[], scheduleOptions);
 
