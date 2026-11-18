@@ -314,9 +314,13 @@ export type NodeToServerMessage =
   | import("./scheduler-lease.js").SchedulerLeaseRequestMessage
   | import("./scheduler-run.js").SchedulerRunRequestMessage
   | import("./scheduler-run.js").SchedulerRunEventMessage
-  | import("./scheduler-claim.js").SchedulerClaimPollMessage;
+  | import("./scheduler-claim.js").SchedulerClaimPollMessage
+  | import("./cli-discovery.js").CliDiscoverySnapshotMessage
+  | import("./cli-discovery.js").CliVerifyResultMessage;
 export type ServerToNodeMessage =
   | ExistingServerToNodeMessage
+  | import("./cli-discovery.js").CliDiscoveryRefreshCommand
+  | import("./cli-discovery.js").CliVerifyConnectionCommand
   | import("./dependency-inputs.js").DependencyInputsSessionCommand
   | ApplicationPublicationStartCommand
   | ApplicationPublicationStopCommand
