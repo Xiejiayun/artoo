@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Bot, Check, FileCheck2, Plus, ShieldCheck } from "lucide-react";
 import {
   SkillManifestSchema,
+  isSingleTurnTextRuntime,
   summarizeSkillPermissions,
   type AgentInstance,
   type AgentRuntime,
@@ -47,9 +48,13 @@ export function AgentRegistration({
   const agents = bootstrap.data?.agents ?? [];
   const selectedAgent = agents.find((agent) => agent.id === agentId);
   const creatingAgent = agentId === "__new__";
+  const singleTurnSelected = isSingleTurnTextRuntime(runtime);
   const compatible = (item: AgentRuntime): boolean =>
     item.status === "available" &&
-    (!selectedAgent || selectedAgent.capabilities.every((capability) => item.capabilities.includes(capability)));
+    (!selectedAgent ||
+      (isSingleTurnTextRuntime(item.runtime)
+        ? selectedAgent.capabilities.length === 0
+        : selectedAgent.capabilities.every((capability) => item.capabilities.includes(capability))));
   const mutation = useMutation({
     mutationFn: () =>
       api.registerAgent(
@@ -61,14 +66,16 @@ export function AgentRegistration({
           ...(creatingAgent
             ? {
                 display_name: name.trim() || undefined,
-                ...(capabilities.trim()
-                  ? {
-                      capabilities: capabilities
-                        .split(",")
-                        .map((item) => item.trim())
-                        .filter(Boolean),
-                    }
-                  : {}),
+                ...(singleTurnSelected
+                  ? { capabilities: [] }
+                  : capabilities.trim()
+                    ? {
+                        capabilities: capabilities
+                          .split(",")
+                          .map((item) => item.trim())
+                          .filter(Boolean),
+                      }
+                    : {}),
               }
             : { agent_id: agentId }),
         },
@@ -216,7 +223,8 @@ export function AgentRegistration({
             <option value="">Choose runtime</option>
             {runtimes.map((item) => (
               <option key={item.id} value={item.runtime} disabled={!compatible(item)}>
-                {item.runtime} ·{" "}
+                {item.runtime}
+                {isSingleTurnTextRuntime(item.runtime) ? " (仅手动单轮)" : ""} ·{" "}
                 {compatible(item)
                   ? "available"
                   : item.status !== "available"
@@ -225,6 +233,11 @@ export function AgentRegistration({
               </option>
             ))}
           </Select>
+          {singleTurnSelected && (
+            <p className="resource-form__notice" role="status">
+              单轮纯文本 CLI 运行时固定以无工具模式运行（capabilities 必须为空），仅支持手动指定且不关联 Goal。
+            </p>
+          )}
           {selectedAgent && runtimes.length > 0 && !runtimes.some(compatible) && (
             <p className="resource-form__notice" role="status">
               No available runtime on this machine supports all of {selectedAgent.display_name}'s capabilities. Choose
@@ -252,7 +265,7 @@ export function AgentRegistration({
               ))}
             </div>
           )}
-          {creatingAgent && (
+          {creatingAgent && !singleTurnSelected && (
             <details className="resource-details">
               <summary>Advanced configuration</summary>
               <Input

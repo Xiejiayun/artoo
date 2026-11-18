@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { ArrowRight, Bot, Monitor, RotateCcw, ShieldCheck, Sparkles } from "lucide-react";
 
-import type { Approval, Task } from "@artoo/domain";
+import { isSingleTurnTextRuntime, type Approval, type Task } from "@artoo/domain";
 
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { useApi, useCommands } from "../app/ApiContext.js";
@@ -76,7 +76,8 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
   const assignmentLabel = (instance: (typeof instances)[number]): string => {
     const computer = bootstrap.data?.computers.find((item) => item.id === instance.computer_id);
     const agent = bootstrap.data?.agents.find((item) => item.id === instance.agent_id);
-    return `${agent?.display_name ?? instance.id} · ${computer?.display_name ?? instance.computer_id} · ${instance.runtime}${computer ? ` · ${computer.status}` : ""}`;
+    const suffix = isSingleTurnTextRuntime(instance.runtime) ? " (仅手动单轮)" : "";
+    return `${agent?.display_name ?? instance.id} · ${computer?.display_name ?? instance.computer_id} · ${instance.runtime}${suffix}${computer ? ` · ${computer.status}` : ""}`;
   };
 
   const invalidate = async (): Promise<void> => {
@@ -130,6 +131,11 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
   const selectedInstance = bootstrap.data?.agent_instances.find((instance) => instance.id === assignee);
   const selectedAgent = bootstrap.data?.agents.find((agent) => agent.id === selectedInstance?.agent_id);
   const selectedComputer = bootstrap.data?.computers.find((computer) => computer.id === selectedInstance?.computer_id);
+  const selectedSingleTurn = selectedInstance ? isSingleTurnTextRuntime(selectedInstance.runtime) : false;
+  const singleTurnTaskBlockedReason =
+    selectedSingleTurn && (task.goal_id !== null || task.required_capabilities.length > 0)
+      ? "单轮纯文本 CLI 运行时仅支持无关联 Goal、无能力要求的独立纯文本任务。"
+      : undefined;
 
   if (task.status !== "backlog" && task.status !== "ready" && task.status !== "blocked") {
     return null;
@@ -178,6 +184,7 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
                 const selected = instances.find((instance) => instance.id === event.target.value);
                 setAssignee(event.target.value);
                 setAssigneeLabel(selected ? assignmentLabel(selected) : "");
+                if (selected && isSingleTurnTextRuntime(selected.runtime)) setBranchBacked(false);
               }}
               disabled={busy}
             >
@@ -250,20 +257,26 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
                 {approvalBlockReason}
               </p>
             )}
+            {singleTurnTaskBlockedReason && (
+              <p className="work-assignment__approval" role="status">
+                {singleTurnTaskBlockedReason}
+              </p>
+            )}
             <div className="assignment-worktree u-stack-sm">
               <label>
                 <input
                   type="checkbox"
                   checked={branchBacked}
                   onChange={(event) => setBranchBacked(event.target.checked)}
-                  disabled={busy}
+                  disabled={busy || selectedSingleTurn}
                   aria-describedby={worktreeHelpId}
                 />{" "}
                 Use an isolated Git worktree
               </label>
               <p className="work-help" id={worktreeHelpId}>
-                Requires a Git repository configured on the execution computer and an unused workspace path. Completed,
-                failed and stopped work stays there. Use a new workspace for each isolated execution.
+                {selectedSingleTurn
+                  ? "单轮纯文本运行时固定在隔离空目录中无工具运行，不支持 Git 工作树或文件修改。"
+                  : "Requires a Git repository configured on the execution computer and an unused workspace path. Completed, failed and stopped work stays there. Use a new workspace for each isolated execution."}
               </p>
             </div>
             <Button
@@ -271,7 +284,7 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
               className="work-assignment__submit"
               iconRight={ArrowRight}
               loading={assign.isPending}
-              disabled={busy || !!approvalBlockReason || assigneeUnavailable}
+              disabled={busy || !!approvalBlockReason || assigneeUnavailable || !!singleTurnTaskBlockedReason}
               aria-describedby={
                 [approvalBlockReason ? approvalReasonId : "", assigneeUnavailable ? availabilityReasonId : ""]
                   .filter(Boolean)

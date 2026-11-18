@@ -84,6 +84,7 @@ import type {
   AgentHistoryEventsQuery,
   AgentHistoryPage,
   AgentHistoryDetail,
+  SingleTurnTextRuntimeId,
 } from "@artoo/domain";
 
 import type {
@@ -93,6 +94,8 @@ import type {
   AssignResponse,
   AuditBundleResponse,
   BootstrapResponse,
+  CliDiscoveryRefreshResponse,
+  CliVerifyConnectionResponse,
   ComputerRuntimesResponse,
   CreateTaskResponse,
   MemoriesResponse,
@@ -858,6 +861,24 @@ export class ApiClient {
 
   listComputerRuntimes(computerId: string): Promise<ComputerRuntimesResponse> {
     return this.request<ComputerRuntimesResponse>("GET", `/computers/${encodeURIComponent(computerId)}/runtimes`);
+  }
+
+  refreshComputerCliDiscovery(computerId: string): Promise<CliDiscoveryRefreshResponse> {
+    return this.request<CliDiscoveryRefreshResponse>(
+      "POST",
+      `/computers/${encodeURIComponent(computerId)}/cli-discovery/refresh`,
+    );
+  }
+
+  verifyComputerCliConnection(
+    computerId: string,
+    runtime: SingleTurnTextRuntimeId,
+  ): Promise<CliVerifyConnectionResponse> {
+    return this.request<CliVerifyConnectionResponse>(
+      "POST",
+      `/computers/${encodeURIComponent(computerId)}/cli-discovery/verify`,
+      { body: { runtime } },
+    );
   }
 
   listSkillInstalls(): Promise<SkillInstallsResponse> {

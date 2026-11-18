@@ -17,6 +17,9 @@ import type {
   AgentRuntime,
   Approval,
   Artifact,
+  CliConnectionVerificationOutcomeV1,
+  CliDiscoveryInventoryV1,
+  SingleTurnTextRuntimeId,
   Memory,
   Message,
   Notification,
@@ -64,6 +67,16 @@ export interface BootstrapResponse {
 
 export interface ComputerRuntimesResponse {
   runtimes: AgentRuntime[];
+  cli_discovery?: CliDiscoveryInventoryV1 | null;
+}
+
+export interface CliDiscoveryRefreshResponse {
+  cli_discovery: CliDiscoveryInventoryV1;
+}
+
+export interface CliVerifyConnectionResponse {
+  outcome: CliConnectionVerificationOutcomeV1;
+  cli_discovery: CliDiscoveryInventoryV1 | null;
 }
 
 export interface SkillInstallsResponse {
@@ -139,6 +152,7 @@ export interface DaemonPresence {
   heartbeat_age_ms: number | null;
   active_runs: number;
   runtimes: AgentRuntime[];
+  cli_discovery?: CliDiscoveryInventoryV1 | null;
   workspace_roots?: { version: 1; paths: string[] };
 }
 
