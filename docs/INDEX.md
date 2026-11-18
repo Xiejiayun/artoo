@@ -24,25 +24,18 @@
 | 场景 | 入口 |
 | --- | --- |
 | 共享预览部署与维护 | [共享服务](shared-server.md)、[预览运维：配对/备份/恢复](preview-operations.md)、[小团队预览交付](trusted-team-preview.md) |
-| Windows/Linux 节点接入 | [npm daemon 使用](npm-daemon-setup.zh-CN.md)、[打包与验证](../scripts/npm-daemon/README.md) |
+| Windows 节点接入 | [npm daemon 使用](npm-daemon-setup.zh-CN.md)、[打包与验证](../scripts/npm-daemon/README.md) |
 | Web 与云端基础设施 | [Web/Windows 部署方案](web-deployment-plan.zh-CN.md)、[Azure 调度](azure-deployment.md)、[Azure Container Apps/Supabase](azure-container-apps.md)、[GitHub Actions 发布](github-actions-production-release.md) |
 | Windows 单需求安装 | [本地入口与停止约定](../scripts/windows-local-request/README.md) |
 | 审计密钥 | [生成、分发、轮换、撤销及离线验签](audit-signing.md) |
-| 门禁与验收 | [脚本入口](../scripts/README.md)、[v1 发布门禁](v1-release-gates.md)、[Apple 发布就绪](apple-release-readiness.md)、[E4 最终产品验收准备](opportunities-acceptance-2026-11-13.md) |
+| 门禁与验收 | [脚本入口](../scripts/README.md)、[v1 发布门禁](v1-release-gates.md)、[E4 最终产品验收准备](opportunities-acceptance-2026-11-13.md) |
 
 执行部署、密钥更换或数据恢复前，遵循对应 Runbook 的环境、权限、版本、健康检查和恢复要求。
 源码检查、受控夹具、真实 Provider、签名分发与生产部署分别保留证据。
 
 ## 客户端指南
 
-- Apple：[Mac/iOS E2E](apple-client-e2e.md)、[开发归档](apple-development-archive.md)、
-  [App Store 分发](ios-app-store-distribution.md)、[审核准备](ios-app-review.md)。
-- 已安装真实 Provider：[Mac 验证](mac-live-provider-verification.md)、
-  [Windows 验证](windows-copilot-verification.md)；配置与受保护 Profile 是执行前置条件。
-- 客户端功能与覆盖：[协作 UI](native-collaboration-ui.md)、
-  [工作管理 UI](native-work-management-ui.md)、[工作流覆盖](apple-client-workflow-coverage.md)、
-  [iOS 发布/历史/Goals](ios-release-history-2026-11-14.md)、
-  [通知解码](ios-notification-decoding-2026-11-14.md)。
+- Windows 已安装真实 Provider：[Windows 验证](windows-copilot-verification.md)；配置与受保护 Profile 是执行前置条件。
 
 ## 版本化验证与测量记录
 
@@ -59,11 +52,7 @@
 - 工程：[Windows 冷浏览器缓存实验](ci-vitest-browser-validation-2026-11-13.md)、
   [依赖升级](dependency-upgrades.md)、[优化原始清单](../opportunities.md)、
   [首轮优化待办](optimization-backlog-2026-11-13.zh-CN.md)。
-- 客户端：[验证里程碑](apple-client-milestones.md)、
-  [2026-10-08 收尾](apple-client-closeout-2026-10-08.md)、
-  [2026-10-10 收尾](apple-client-closeout-2026-10-10.md)、
-  [执行修正尝试](apple-execution-correction-attempts.md)、
-  [2026-11-09 Web/Windows 收敛](release-convergence-2026-11-09.md)。
+- 客户端：[2026-11-09 Web/Windows 收敛](release-convergence-2026-11-09.md)。
 
 ## 历史里程碑与设计计划
 
@@ -72,7 +61,7 @@
 | 类别 | 记录 |
 | --- | --- |
 | 早期自治研发 | [首个工作区里程碑](autonomous-development.md)、[2026-11-03 能力评估](autonomous-product-development-assessment-2026-11-03.md)、[2026-11-12 协作方案](agent-collaboration-design-and-implementation-2026-11-12.zh-CN.md) |
-| 产品版本规划 | [v1 路线](v1-roadmap.md)、[v1 候选审计](v1-release-candidate.md)、[v2 路线](v2-roadmap.md)、[Android 计划](v2-android-plan.md)、[v3 产品](v3-product-plan.md)、[v3 Apple](v3-ios-mac-client-plan.md)、[Apple UX](v3-apple-client-ux-implications.md) |
+| 产品版本规划 | [v1 路线](v1-roadmap.md)、[v1 候选审计](v1-release-candidate.md)、[v2 路线](v2-roadmap.md)、[v3 产品](v3-product-plan.md) |
 | 历史专项设计 | [Presence](v3-113-presence-design.md)、[Goals schema](v3-115-goals-schema-design.md)、[Goal 审计发布记录](v3-140-goal-audit-bundle.md) |
 | UI 演进 | [协作改版](collaboration-ui-refresh.md)、[产品改版](product-ui-refresh.md)、[体验交付](experience-redesign-2026-11-11.md)、[Server/UI 契约地图](server-ui-contract-map.md)、[Production UI gate](production-ui-gate.md) |
 | Cowork 联合实施 | [UI 与调度重构实施计划（2026-11-16）](cowork-ui-scheduler-implementation-2026-11-16.md)、[联合接入契约](cowork-ui-integration-contract.md)、[调度重构跟踪](cowork-scheduler-refactor.md)；区分规划、实现、验收与观察期 |

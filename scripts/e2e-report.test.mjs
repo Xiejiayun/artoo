@@ -1,57 +1,72 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { expectedNativeScreenshots, readXCTestScreenshots, writeE2EReport } from "./e2e-report.mjs";
+import { writeE2EReport } from "./e2e-report.mjs";
 
 // Valid 2x2 RGBA PNG generated independently with Pillow, not client evidence.
-const pixels = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGP8KuTxn4GBgYGJAQoAI8UCUpBcPuMAAAAASUVORK5CYII=", "base64");
+const pixels = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGP8KuTxn4GBgYGJAQoAI8UCUpBcPuMAAAAASUVORK5CYII=",
+  "base64",
+);
 
 test("failure reports retain provenance, escape markup, redact credentials and embed immutable evidence", () => {
   const directory = mkdtempSync(join(tmpdir(), "artoo-report-test-"));
   try {
     const screenshot = join(directory, "screen.png");
     writeFileSync(screenshot, pixels);
-    const output = writeE2EReport({ outputPath: join(directory, "report.html"), title: "A <script>alert(1)</script>",
-      report: { passed: false, source: { commit: "abc123", branch: "main", working_tree_dirty: true }, environment: { platform: "test-platform" },
-        started_at: "2026-01-01T00:00:00Z", finished_at: "2026-01-01T00:01:00Z", scope: "Fixture workflow only",
-        error: "Request failed with Bearer PRIVATE_TOKEN at https://user:password@localhost/?access_token=PRIVATE_QUERY",
-        control_token: "PRIVATE_CONTROL", nested: { pairing_code: "PRIVATE_CODE", cookie: "PRIVATE_COOKIE", input_tokens: 55 },
-        checks: [{ name: "A&B \"failure\"", passed: false, duration_ms: 500 }] },
-      screenshots: [{ path: screenshot, caption: "<img onerror=alert(1)>" }, { path: join(directory, "missing.png"), caption: "Missing evidence" }] });
+    const output = writeE2EReport({
+      outputPath: join(directory, "report.html"),
+      title: "A <script>alert(1)</script>",
+      report: {
+        passed: false,
+        source: { commit: "abc123", branch: "main", working_tree_dirty: true },
+        environment: { platform: "test-platform" },
+        started_at: "2026-01-01T00:00:00Z",
+        finished_at: "2026-01-01T00:01:00Z",
+        scope: "Fixture workflow only",
+        error:
+          "Request failed with Bearer PRIVATE_TOKEN at https://user:password@localhost/?access_token=PRIVATE_QUERY",
+        control_token: "PRIVATE_CONTROL",
+        nested: { pairing_code: "PRIVATE_CODE", cookie: "PRIVATE_COOKIE", input_tokens: 55 },
+        checks: [{ name: 'A&B "failure"', passed: false, duration_ms: 500 }],
+      },
+      screenshots: [
+        { path: screenshot, caption: "<img onerror=alert(1)>" },
+        { path: join(directory, "missing.png"), caption: "Missing evidence" },
+      ],
+    });
     const html = readFileSync(output, "utf8");
     assert.match(html, />Failed</);
-    for (const value of ["abc123", "main", "test-platform", "2026-01-01T00:01:00Z", "Fixture workflow only", "working tree changes", "Screenshot unavailable: Missing evidence"]) assert.ok(html.includes(value));
+    for (const value of [
+      "abc123",
+      "main",
+      "test-platform",
+      "2026-01-01T00:01:00Z",
+      "Fixture workflow only",
+      "working tree changes",
+      "Screenshot unavailable: Missing evidence",
+    ])
+      assert.ok(html.includes(value));
     assert.ok(html.includes(`data:image/png;base64,${pixels.toString("base64")}`));
     assert.ok(!html.includes(screenshot), "Report must not depend on a mutable external screenshot path");
     assert.ok(!html.includes("<script>"));
     assert.ok(!html.includes("<img onerror="));
     assert.match(html, /A&amp;B &quot;failure&quot;/);
-    for (const secret of ["PRIVATE_TOKEN", "PRIVATE_QUERY", "PRIVATE_CONTROL", "PRIVATE_CODE", "PRIVATE_COOKIE", "user:password"]) assert.ok(!html.includes(secret), `${secret} leaked`);
+    for (const secret of [
+      "PRIVATE_TOKEN",
+      "PRIVATE_QUERY",
+      "PRIVATE_CONTROL",
+      "PRIVATE_CODE",
+      "PRIVATE_COOKIE",
+      "user:password",
+    ])
+      assert.ok(!html.includes(secret), `${secret} leaked`);
     assert.match(html, /input_tokens.*55/);
-  } finally { rmSync(directory, { recursive: true, force: true }); }
-});
-
-test("XCTest reports only explicit workflow images from the current export manifest", () => {
-  const directory = mkdtempSync(join(tmpdir(), "artoo-xcresult-report-test-"));
-  try {
-    writeFileSync(join(directory, "workflow.png"), pixels);
-    writeFileSync(join(directory, "named.png"), pixels);
-    writeFileSync(join(directory, "manifest.json"), JSON.stringify([{ attachments: [
-      { exportedFileName: "workflow.png", suggestedHumanReadableName: "Native accepted plan with dependent tasks" },
-      { exportedFileName: "named.png", name: "Native daemon online after real reconnect" },
-      { exportedFileName: "named.png", name: "Native goal cancelled after explicit confirmation_0_fixture.png" },
-      { exportedFileName: "failure.png", suggestedHumanReadableName: "Screenshot at failure" },
-      { exportedFileName: "named.png", suggestedHumanReadableName: "Native UI failure" },
-      { exportedFileName: "named.png", suggestedHumanReadableName: "Native future unreviewed screenshot" },
-      { exportedFileName: "../escaped.png", suggestedHumanReadableName: "Native outside export" },
-      { exportedFileName: "private.json", suggestedHumanReadableName: "Native UI tree" },
-    ] }]));
-    assert.deepEqual(readXCTestScreenshots(directory), [{ path: join(directory, "workflow.png"), caption: "Native accepted plan with dependent tasks" }, { path: join(directory, "named.png"), caption: "Native daemon online after real reconnect" }, { path: join(directory, "named.png"), caption: "Native goal cancelled after explicit confirmation_0_fixture.png" }]);
-    rmSync(join(directory, "manifest.json"));
-    assert.deepEqual(readXCTestScreenshots(directory), [], "A missing manifest must never reuse old screenshots");
-  } finally { rmSync(directory, { recursive: true, force: true }); }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("Playwright attaches deliberate images once and excludes private failure context", async () => {
@@ -61,102 +76,18 @@ test("Playwright attaches deliberate images once and excludes private failure co
     writeFileSync(join(directory, "channels-390.png"), "workflow image");
     writeFileSync(join(directory, "automatic-failure.png"), "possibly sensitive onboarding image");
     const reporter = new Reporter();
-    const result = { attachments: [{ name: "error-context", contentType: "text/markdown", body: Buffer.from("private pairing code") }] };
+    const result = {
+      attachments: [{ name: "error-context", contentType: "text/markdown", body: Buffer.from("private pairing code") }],
+    };
     const testCase = { parent: { project: () => ({ outputDir: directory }) } };
     reporter.onTestEnd(testCase, result);
-    assert.deepEqual(result.attachments, [{ name: "Workflow · channels-390.png", contentType: "image/png", path: join(directory, "channels-390.png") }]);
+    assert.deepEqual(result.attachments, [
+      { name: "Workflow · channels-390.png", contentType: "image/png", path: join(directory, "channels-390.png") },
+    ]);
     const later = { attachments: [] };
     reporter.onTestEnd(testCase, later);
     assert.deepEqual(later.attachments, [], "A later result must not inherit earlier screenshot evidence");
-  } finally { rmSync(directory, { recursive: true, force: true }); }
-});
-
-test("member recovery HTML admits reviewed connected screens but excludes onboarding and revocation failures", () => {
-  const directory = mkdtempSync(join(tmpdir(), "artoo-member-report-test-"));
-  try {
-    writeFileSync(join(directory, "member.png"), pixels);
-    const permitted = ["Native member device permissions without pairing inputs", "Native member restored after fresh pairing without pairing inputs"];
-    const privateNames = ["Native member pairing code", "Native revoked device requires pairing", "Native member onboarding", "Native UI failure"];
-    writeFileSync(join(directory, "manifest.json"), JSON.stringify([{ attachments: [...permitted, ...privateNames].map((name) => ({ exportedFileName: "member.png", name })) }]));
-    assert.deepEqual(readXCTestScreenshots(directory).map((item) => item.caption), permitted);
-  } finally { rmSync(directory, { recursive: true, force: true }); }
-});
-
-test("planning and executor reports admit only reviewed workflow screenshots", () => {
-  const directory = mkdtempSync(join(tmpdir(), "artoo-planning-report-test-"));
-  try {
-    writeFileSync(join(directory, "workflow.png"), pixels);
-    const permitted = ["Native planning instructions summarized before proposal", "Native original coordinator instruction expanded", "Native executor options with readable details"];
-    const excluded = ["Native planning pairing code", "Native executor onboarding", "Native UI failure", "Native unreviewed coordinator screenshot"];
-    writeFileSync(join(directory, "manifest.json"), JSON.stringify([{ attachments: [...permitted, ...excluded].map((name) => ({ exportedFileName: "workflow.png", name })) }]));
-    assert.deepEqual(readXCTestScreenshots(directory).map((item) => item.caption), permitted);
-  } finally { rmSync(directory, { recursive: true, force: true }); }
-});
-
-test("an approved capture name cannot admit an empty, corrupt, nonregular or unsupported file", () => {
-  const directory = mkdtempSync(join(tmpdir(), "artoo-png-report-test-"));
-  try {
-    const valid = join(directory, "complete.png"); writeFileSync(valid, pixels);
-    writeFileSync(join(directory, "empty.png"), Buffer.alloc(0));
-    writeFileSync(join(directory, "not-an-image.png"), "not PNG pixels");
-    writeFileSync(join(directory, "partial.png"), pixels.subarray(0, pixels.length - 5));
-    const corrupt = Buffer.from(pixels); corrupt[corrupt.length - 5] ^= 1;
-    writeFileSync(join(directory, "bad-crc.png"), corrupt);
-    mkdirSync(join(directory, "directory.png"));
-    writeFileSync(join(directory, "unsupported.jpg"), pixels);
-    if (process.platform !== "win32") symlinkSync(valid, join(directory, "symlink.png"));
-    const files = ["complete.png", "empty.png", "not-an-image.png", "partial.png", "bad-crc.png", "directory.png", "unsupported.jpg", "symlink.png", "missing.png"];
-    const caption = "Native accepted plan with dependent tasks";
-    writeFileSync(join(directory, "manifest.json"), JSON.stringify(files.map((exportedFileName) => ({ exportedFileName, name: caption }))));
-    assert.deepEqual(readXCTestScreenshots(directory), [{ path: valid, caption }], "Bad individual files must not prevent retaining another complete approved capture");
-  } finally { rmSync(directory, { recursive: true, force: true }); }
-});
-
-test("only newly guarded diagnostic names are retained, never legacy or automatic failure captures", () => {
-  const directory = mkdtempSync(join(tmpdir(), "artoo-guarded-diagnostics-"));
-  try {
-    const permitted = ["Native assistant guarded failure diagnostics", "Native mentions guarded failure diagnostics", "Native correction guarded failure diagnostics", "Native retention guarded failure diagnostics"];
-    const rejected = ["Native assistant failure diagnostics", "Native mentions failure diagnostics", "Screenshot at failure", "Native UI failure"];
-    writeFileSync(join(directory, "guarded.png"), pixels);
-    writeFileSync(join(directory, "manifest.json"), JSON.stringify([...permitted, ...rejected].map((name) => ({ name, exportedFileName: "guarded.png" }))));
-    assert.deepEqual(readXCTestScreenshots(directory).map((entry) => entry.caption), permitted);
-    for (const suite of ["core", "assistant", "mentions", "correction", "retention"]) assert.ok(expectedNativeScreenshots(suite).every((name) => !permitted.includes(name)), "A failure scene cannot satisfy successful workflow coverage");
-  } finally { rmSync(directory, { recursive: true, force: true }); }
-});
-
-
-test("native correction requires retained completed/historical work images without losing its original workflow captures", () => {
-  const expected = expectedNativeScreenshots("correction");
-  const retained = ["Native correction completed initial workspace retained", "Native correction initial workspace retained after relaunch",
-    "Native correction failed workspace retained", "Native correction completed corrected workspace retained",
-    "Native correction corrected workspace retained after relaunch", "Native correction cancelled workspace retained"];
-  assert.equal(expected.length, 21); assert.equal(new Set(expected).size, 21);
-  for (const name of retained) {
-    assert.ok(expected.includes(name));
-    for (const suite of ["core", "assistant", "mentions"]) assert.ok(!expectedNativeScreenshots(suite).includes(name));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
-  for (const name of ["Native correction exact Stop confirmation", "Native correction kept running", "Native correction retained artifacts after Stop"])
-    assert.ok(expected.includes(name));
-  const directory = mkdtempSync(join(tmpdir(), "artoo-retention-images-"));
-  try {
-    writeFileSync(join(directory, "native.png"), pixels);
-    writeFileSync(join(directory, "manifest.json"), JSON.stringify([...retained, "Native correction unreviewed workspace", "Native correction pairing credentials"]
-      .map((name) => ({ name, exportedFileName: "native.png" }))));
-    assert.deepEqual(readXCTestScreenshots(directory).map((image) => image.caption), retained);
-  } finally { rmSync(directory, { recursive: true, force: true }); }
-});
-
-
-test("retention requires its separate seven successful UI captures and never counts a guarded failure as success", () => {
-  const expected = expectedNativeScreenshots("retention");
-  assert.deepEqual(expected, ["Native retention task ready before approval", "Native retention completed execution", "Native retention no uploaded artifacts",
-    "Native retention reported recovery details", "Native retention exact workspace path and branch", "Native retention recovery after cold relaunch", "Native retention no artifacts after relaunch"]);
-  const directory = mkdtempSync(join(tmpdir(), "artoo-retention-report-"));
-  try {
-    writeFileSync(join(directory, "native.png"), pixels);
-    writeFileSync(join(directory, "manifest.json"), JSON.stringify([...expected, "Native retention guarded failure diagnostics", "Native retention pairing code"]
-      .map((name) => ({ name, exportedFileName: "native.png" }))));
-    assert.deepEqual(readXCTestScreenshots(directory).map((image) => image.caption), [...expected, "Native retention guarded failure diagnostics"]);
-    assert.ok(!expected.includes("Native retention guarded failure diagnostics"));
-  } finally { rmSync(directory, { recursive: true, force: true }); }
 });

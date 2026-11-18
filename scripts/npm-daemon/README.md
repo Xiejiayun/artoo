@@ -1,22 +1,18 @@
 # Artoo agent daemon
 
-Connect a Windows or Linux computer to an Artoo Web platform using the official npm package. One package contains the daemon, its JavaScript dependencies and the self-contained Windows x64 process host. macOS implementation is included, but its release qualification is deferred and is not guaranteed by this release. Install **Node.js 24 or later and npm 11 or later** first. No repository checkout or .NET installation is needed.
+Connect a Windows computer to an Artoo Web platform using the official npm package. One package contains the daemon, its JavaScript dependencies and the self-contained Windows x64 process host. Install **Node.js 24 or later and npm 11 or later** first. No repository checkout or .NET installation is needed.
 
 | Operating system | Implemented architecture | Release validation scope |
 | --- | --- | --- |
 | Windows | x64 | Required |
-| Linux | x64, arm64 | Required |
-| macOS | Intel x64, Apple Silicon arm64 | Deferred; optional CI evidence only |
 
-Windows arm64 is not supported. npm's separate OS/CPU fields cannot express that exclusion, so the daemon checks the exact platform/architecture pair before starting. The Windows native host is carried in the same tarball on every platform; ordinary macOS/Linux execution does not load it.
+Windows arm64 is not supported. npm's separate OS/CPU fields cannot express that exclusion, so the daemon checks the exact platform/architecture pair before starting.
 
 ## Connect with one command
 
-In Web, open **Machines → Connect Local Node**, select this computer's platform and copy its connection command. Run it in your local terminal as the same user who runs Codex/Claude. The command installs the pinned official npm package, claims the short-lived pairing code, enrolls the computer, saves its credentials and starts Artoo in the background. Deploy the matching server/Web release only after its exact daemon version has been published to the official registry and passed registry installation checks.
+In Web, open **Machines → Connect Local Node**, select Windows and copy its connection command. Run it in your local PowerShell terminal as the same user who runs Codex/Claude. The command installs the pinned official npm package, claims the short-lived pairing code, enrolls the computer, saves its credentials and starts Artoo in the background. Deploy the matching server/Web release only after its exact daemon version has been published to the official registry and passed registry installation checks.
 
-Windows PowerShell, Linux and macOS terminals use the same command:
-
-```sh
+```powershell
 npx -y {{PACKAGE_NAME}}@{{PACKAGE_VERSION}} connect --server https://your-artoo-site --code XXXX-XXXX
 ```
 
@@ -24,7 +20,7 @@ Replace the example address and code with the command from your own Web session.
 
 For frequent use, install the same version globally once, then use the shorter `artood` command:
 
-```sh
+```powershell
 npm install --global {{PACKAGE_NAME}}@{{PACKAGE_VERSION}}
 artood connect --server https://your-artoo-site --code XXXX-XXXX
 ```
@@ -43,21 +39,13 @@ The verified package is retained outside npm's disposable cache. The command pri
 & "$env:USERPROFILE\.artoo\daemon\artood.cmd" start
 ```
 
-```sh
-"$HOME/.artoo/daemon/artood" status
-"$HOME/.artoo/daemon/artood" stop
-"$HOME/.artoo/daemon/artood" start
-```
-
 `start --foreground` uses the saved connection in the current terminal; Ctrl+C stops it. Background `stop` requests the daemon's normal task shutdown and retains its configuration. The authenticated loopback management port is local to this user. An unresponsive or mismatched process is never force-killed. Concurrent managed starts cannot create duplicate daemons.
 
-Windows protects saved credentials with DPAPI CurrentUser and a private directory ACL. POSIX uses mode 0600 files in a mode 0700 directory. Long-lived node credentials are not passed as command arguments or inherited by model subprocesses in this managed flow. Do not copy the state directory between users or computers. `ARTOO_HOME` can select an absolute private state directory for advanced isolated installations.
+Windows protects saved credentials with DPAPI CurrentUser and a private directory ACL. Long-lived node credentials are not passed as command arguments or inherited by model subprocesses in this managed flow. Do not copy the state directory between users or computers. `ARTOO_HOME` can select an absolute private state directory for advanced isolated installations.
 
 This is a background process, not an operating-system service: it does not register auto-start at login or boot. Run the printed `start` command after reboot. `npx` does not put a global `artood` command on PATH. If you installed the same version globally, use `artood status`, `artood stop` and `artood start` directly.
 
-Always install an explicit version. Prereleases use `next`; do not rely on an unversioned install or assume that `latest` points to the current candidate. Published `0.1.0-rc.1` was Windows x64 only; the universal candidate begins with `0.1.0-rc.2` and is a separate artifact.
-
-Linux pairing and enrollment require the matching server/Web upgrade and its new ordered database migration. Back up the existing server data before upgrading; installing this npm package alone does not add Linux support to an older server. Follow the server runbook for migration and recovery, and keep each computer's own credentials.
+Always install an explicit version. Prereleases use `next`; do not rely on an unversioned install or assume that `latest` points to the current candidate.
 
 ## Configure a managed node for Agent Team
 
@@ -78,7 +66,7 @@ The JSON must contain only these version 1 fields. All paths must already exist,
 }
 ```
 
-The three settings after `version` are optional. A receipts directory enables public HTTPS research fetch; this interface does not configure a search-provider key. Repository initialization applies only to empty autonomous product directories. A verifier selection enables existing node-owned verification; it does not provision its profile, browser or evidence directories. Prepare those using the [Agent Team guide](https://github.com/Xiejiayun/artoo/blob/main/docs/agent-team-development.md). On POSIX, restrict the input JSON to its owner (mode 0600). Keep the selected profiles, verifier programs and evidence directories protected from agent writes.
+The three settings after `version` are optional. A receipts directory enables public HTTPS research fetch; this interface does not configure a search-provider key. Repository initialization applies only to empty autonomous product directories. A verifier selection enables existing node-owned verification; it does not provision its profile, browser or evidence directories. Prepare those using the [Agent Team guide](https://github.com/Xiejiayun/artoo/blob/main/docs/agent-team-development.md). Keep the selected profiles, verifier programs and evidence directories protected from agent writes.
 
 An optional `codex` object selects a model and a Responses API provider for this daemon without editing the user's global Codex configuration:
 
@@ -94,15 +82,15 @@ An optional `codex` object selects a model and a Responses API provider for this
 }
 ```
 
-Add this object to the same JSON as the research/verifier settings; `configure` replaces the saved selections. The model name and URL above are examples, not defaults. A provider URL requires an explicit model and HTTPS or loopback HTTP without embedded credentials, query or fragment. The optional key file requires an explicit URL and must be an existing physical single-link file outside every agent workspace, contain one nonempty ASCII token (at most 4096 bytes), and have private permissions. POSIX requires current-user ownership and mode 0600; Windows inspects the owner and DACL, trusting the current user, SYSTEM, Administrators and TrustedInstaller, and rejects unsafe parent permissions. Artoo does not change the source key file's ACL. Prepare a private operator-owned copy if the original application's file is shared with other users.
+Add this object to the same JSON as the research/verifier settings; `configure` replaces the saved selections. The model name and URL above are examples, not defaults. A provider URL requires an explicit model and HTTPS or loopback HTTP without embedded credentials, query or fragment. The optional key file requires an explicit URL and must be an existing physical single-link file outside every agent workspace, contain one nonempty ASCII token (at most 4096 bytes), and have private permissions. Windows inspects the owner and DACL, trusting the current user, SYSTEM, Administrators and TrustedInstaller, and rejects unsafe parent permissions. Artoo does not change the source key file's ACL. Prepare a private operator-owned copy if the original application's file is shared with other users.
 
 Only the key file's path is saved. `configure` checks its metadata and permissions without reading the key or contacting the provider. The worker reads it on each start and passes the selected credential through `ARTOO_CODEX_PROVIDER_KEY` for the existing runtime's environment-key authentication and output redaction. The key is never a command argument or part of the task context; it is cleared from the daemon environment after startup failure or normal/failed shutdown. Node connection credentials remain outside the model environment. Missing or invalid selected credentials fail startup. With no `codex` object, the local CLI keeps its existing login, model and provider configuration; `codex login status` alone does not establish whether a custom provider is authenticated.
 
-The optional `codex.home_directory` selects a private `CODEX_HOME` for this daemon and its model children across background restarts and foreground starts. It can be selected without a provider override. Prepare an existing empty directory outside all agent roots; Windows requires a local fixed disk and trusted private owner/DACL on the directory and its contents, with protected ancestors. POSIX requires current-user ownership, private contents (directories 0700, files 0600), and trusted ancestors without group/other write permissions. Artoo inspects these permissions without changing them. Do not select or copy your ordinary Codex home, `config.toml`, authentication files, plugins or other credentials. Only the directory path is saved. A newly selected home must be empty; the same already saved home may retain state generated by Codex. Configuration and startup reject links, hard-linked files, unsafe permissions, or a tree exceeding 2,048 entries, 32 descendant levels or 1 MiB of path names. This bounded metadata/ACL inspection runs at configuration/startup, not for each model task. Missing or invalid state fails startup; it does not fall back to the operator's home.
+The optional `codex.home_directory` selects a private `CODEX_HOME` for this daemon and its model children across background restarts and foreground starts. It can be selected without a provider override. Prepare an existing empty directory outside all agent roots; Windows requires a local fixed disk and trusted private owner/DACL on the directory and its contents, with protected ancestors. Artoo inspects these permissions without changing them. Do not select or copy your ordinary Codex home, `config.toml`, authentication files, plugins or other credentials. Only the directory path is saved. A newly selected home must be empty; the same already saved home may retain state generated by Codex. Configuration and startup reject links, hard-linked files, unsafe permissions, or a tree exceeding 2,048 entries, 32 descendant levels or 1 MiB of path names. This bounded metadata/ACL inspection runs at configuration/startup, not for each model task. Missing or invalid state fails startup; it does not fall back to the operator's home.
 
 A private home removes reliance on the operator's ordinary home; it is not proof of a restricted effective tool catalog. Codex may also load managed/system settings and trusted project configuration. Before qualifying a real Agent Team run, inspect the effective MCP/plugin tools and verify that only the tools authorized for that role are available. Runtime-created or operator-added contents are not semantically approved by the directory permission check. The existing provider-key environment mechanism remains independent and no credential is copied into the home. The daemon restores its prior process `CODEX_HOME` after startup failure or shutdown; user-global files are untouched. When `home_directory` is absent, existing home inheritance and ordinary manual behavior are preserved.
 
-The optional top-level `temporary_directory` selects a dedicated existing private temporary root, for example `"temporary_directory": "C:\\ArtooControl\\private\\temporary"`. It must be outside every agent workspace in both directions. Prepare it empty with trusted ancestors; do not select your Codex home or ordinary shared temporary directory. Windows requires a local fixed NTFS volume, trusted owner and canonical DACL, and rejects other principals' effective or future-child access, including inherit-only and generic grants. Ancestors must prevent untrusted replacement of descendants. POSIX requires current-user ownership, directory mode 0700, files 0400 or 0600, and trusted ancestors without group/other write permissions. Artoo checks these permissions without repairing ACLs or copying any existing contents.
+The optional top-level `temporary_directory` selects a dedicated existing private temporary root, for example `"temporary_directory": "C:\\ArtooControl\\private\\temporary"`. It must be outside every agent workspace in both directions. Prepare it empty with trusted ancestors; do not select your Codex home or ordinary shared temporary directory. Windows requires a local fixed NTFS volume, trusted owner and canonical DACL, and rejects other principals' effective or future-child access, including inherit-only and generic grants. Ancestors must prevent untrusted replacement of descendants. Artoo checks these permissions without repairing ACLs or copying any existing contents.
 
 A newly selected temporary directory must be empty; the same already saved selection may retain safe runtime-created state. Configuration and every start inspect physical identities, links, ownership and permissions within a bound of 2,048 paths (including ancestors), 32 descendant levels and 1 MiB of path names. Invalid or missing state fails startup. When selected, the daemon removes inherited case variants of `TMP`, `TEMP` and `TMPDIR`, sets all three in its actual process environment, and passes them to children. This changes the daemon's `os.tmpdir()` as well as child inheritance. Startup failure, normal/failed shutdown and process exit restore the prior environment; the selection does not delete retained temporary state. Without this field, existing temporary-directory inheritance and manual execution are unchanged. This selection qualifies storage, not a successful live-model task or browser verification result.
 
@@ -116,7 +104,7 @@ An online configured node still requires an authorized project, two distinct Age
 
 The explicit environment interface below remains supported and runs in the foreground. Before switching an existing daemon to managed connection, stop it through its original launcher and confirm it is offline. The new installer does not inspect arbitrary private configuration files, kill old processes or revoke devices. To preserve an existing computer identity, an operator must migrate its protected device/computer IDs, node token and workspace roots into the new protected connection format. Otherwise revoke the old device in Web before creating a replacement, and reassign agent workspaces to the new computer. Never run two daemons using the same node credential.
 
-1. Sign in to your Artoo Web platform as the person who will operate this computer. Create a pairing code for the computer's platform (`windows`, `macos` or `linux`) in **Settings → Connect a device**, then claim it using the platform's device pairing API. An owner/admin must **Enroll computer** for the paired device.
+1. Sign in to your Artoo Web platform as the person who will operate this computer. Create a pairing code for `windows` in **Settings → Connect a device**, then claim it using the platform's device pairing API. An owner/admin must **Enroll computer** for the paired device.
 2. Record this computer's `computer_id` and its own node token. The `device_id` is not the computer ID. Never reuse another computer's token.
 3. Install and sign in to the local Codex or Claude CLI. Create a workspace directory outside this npm installation.
 4. Configure the existing daemon environment, then run `artood start`.
@@ -130,17 +118,6 @@ $env:ARTOO_ALLOWED_ROOTS = 'C:\ArtooWorkspaces'
 $env:ARTOO_RUNTIMES = 'codex'
 # Use the actual installed executable, particularly for supervised Windows mode.
 $env:ARTOO_CODEX_BINARY = 'C:\Tools\codex.exe'
-artood start
-```
-
-Linux shell example (macOS uses the same implemented interface, with release qualification deferred):
-
-```sh
-export ARTOO_NODE_URL='wss://artoo.example.com/api/v1/node?token=<your-node-token>'
-export ARTOO_NODE_ID='<computer_id>'
-export ARTOO_ALLOWED_ROOTS='/absolute/path/to/ArtooWorkspaces'
-export ARTOO_RUNTIMES='codex'
-export ARTOO_CODEX_BINARY='/absolute/path/to/codex'
 artood start
 ```
 
@@ -164,7 +141,7 @@ The package includes the Playwright libraries. Browser acceptance additionally r
 
 ## Maintainer release checks
 
-From a validated repository checkout, build a **fresh** Windows x64 native process host with the stable .NET 10 SDK. The package builder still runs on Windows x64 even when the resulting tarball will also run on macOS and Linux:
+From a validated repository checkout, build a **fresh** Windows x64 native process host with the stable .NET 10 SDK:
 
 ```powershell
 node apps/artood/scripts/build-windows-process-host.mjs --out-dir C:\ArtooRelease\native
@@ -172,14 +149,12 @@ node scripts/npm-daemon/build.mjs --name {{PACKAGE_NAME}} --version {{PACKAGE_VE
 npm pack C:\ArtooRelease\package --pack-destination C:\ArtooRelease
 ```
 
-Use fresh output/install directories. The `npm-daemon-cross-platform.yml` workflow builds one tarball on Windows and distributes those exact bytes to required Windows x64 and Linux x64/arm64 jobs, plus separate optional macOS Intel/Apple Silicon jobs. Every runner uses the same SHA-256, package metadata, npm installation without `--force` or `--ignore-scripts`, installed CLI shim, manifest and fixture-authenticated connection/task/normal-stop checks. POSIX real-process verification runs separately against built repository modules. The required aggregate also waits for the separate **Required sandboxed browser (Ubuntu 22.04)** job at the candidate's exact source commit. Optional Mac results never turn that three-platform summary into five-platform qualification.
+Use fresh output/install directories. The `npm-daemon-cross-platform.yml` workflow builds one tarball on Windows and verifies those exact bytes on `win32-x64` (`windows-latest`), checking the SHA-256, package metadata, npm installation without `--force` or `--ignore-scripts`, installed CLI shim, manifest and fixture-authenticated connection/task/normal-stop behavior.
 
-Package and ordinary POSIX checks use Ubuntu 24.04; protected CLI/browser source fixtures use Ubuntu 22.04 and pinned Chromium Headless Shell with its sandbox enabled. A fixed `about:blank` probe preserves bounded startup diagnostics and actual process/group closure before the fixtures run. Neither runner security policy nor the verifier's executable bounds are relaxed. A successful browser job qualifies these fixtures on Ubuntu 22.04 only. Earlier Ubuntu 24.04 browser attempts exited during launch without raw Chromium stderr; their precise cause remains unconfirmed. Keep that failure distinct from the separate package/POSIX results and from any real-provider acceptance.
-
-PR artifacts validate that PR's merge checkout. For a deliverable release candidate, use a `push` run on `main` or dispatch the workflow on `main`, and require its build, all three Windows/Linux jobs, sandboxed browser job and **Required Windows/Linux aggregate** to succeed for the exact source and tarball. Retain the three required reports, POSIX/browser logs and startup probe, metadata, summary and raw run/attempt-specific job facts. The overall run may remain pending or fail because of optional Mac jobs; record that status separately. Do not publish a PR merge-ref build as though it came from main. This build/check workflow has read-only GitHub permissions, no npm credentials and no publication step. The package's five platform tuples describe implemented startup interfaces, not five qualified release targets.
+PR artifacts validate that PR's merge checkout. For a deliverable release candidate, use a `push` run on `main` or dispatch the workflow on `main`, and require its build, Windows x64 package check and aggregate job to succeed for the exact source and tarball. Retain the report, metadata, summary and raw run/attempt-specific job facts. Do not publish a PR merge-ref build as though it came from main. This build/check workflow has read-only GitHub permissions, no npm credentials and no publication step.
 
 Individual installation checks can also use `scripts/npm-daemon/package-smoke.mjs` with `--tarball`, `--sha256`, `--name`, `--version`, `--platform`, `--source-commit` and a new absolute `--evidence-directory`. Build `@artoo/server` and its TypeScript references first for the connection fixture. The safe evidence directory excludes the test database, package installation, cache and credentials.
 
-The historical Windows-only registry check in `registry-smoke.mjs` remains pinned to published `0.1.0-rc.1`; it is not the universal-candidate check. For publication, use the separate staged-publishing runbook and verify fresh registry installations on the three required Windows/Linux targets after approval. Candidate checks do not prove npm publication, production OAuth, a real provider, browser acceptance, Windows native-supervisor admission or deployed-product health.
+The historical Windows-only registry check in `registry-smoke.mjs` remains pinned to published `0.1.0-rc.1`; for publication of later candidates, use the separate staged-publishing runbook and verify fresh registry installations on Windows x64 after approval. Candidate checks do not prove npm publication, production OAuth, a real provider, browser acceptance, Windows native-supervisor admission or deployed-product health.
 
 The complete runtime remains in `runtime/`, including its nested `node_modules`. The outer npm manifest has no private workspace dependencies or install lifecycle scripts. Neither the runtime manifest nor the private internal package manifest is rewritten for npm.

@@ -1,10 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, extname, resolve, sep } from "node:path";
+import { lstatSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { dirname, extname, resolve } from "node:path";
 import { release } from "node:os";
 import { fileURLToPath } from "node:url";
-import { hasCompletePNGPixelStream, MAX_PNG_BYTES } from "./png-evidence.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const escape = (value) =>
@@ -52,10 +51,8 @@ export function getE2EReportContext(sourceRoot = root) {
     "test-results",
     "test-results-auth",
     "playwright-report",
-    "Artoo.xcodeproj",
   ];
   // Apply the same existing generated-file exclusion before capturing stdout.
-  // Xcode DerivedData can otherwise overflow spawnSync while real source is tiny.
   const untracked = git(
     "ls-files",
     "--others",
@@ -68,9 +65,7 @@ export function getE2EReportContext(sourceRoot = root) {
   const paths = (untracked?.split("\0").filter(Boolean) ?? [])
     .filter(
       (path) =>
-        !/(^|\/)(artifacts|node_modules|dist|release|test-results(?:-auth)?|playwright-report|Artoo\.xcodeproj)(\/|$)/.test(
-          path,
-        ),
+        !/(^|\/)(artifacts|node_modules|dist|release|test-results(?:-auth)?|playwright-report)(\/|$)/.test(path),
     )
     .sort();
   const digest = createHash("sha256");
@@ -101,170 +96,6 @@ export function getE2EReportContext(sourceRoot = root) {
       node: process.version,
     },
   };
-}
-
-// Xcode also exports failure screenshots and UI trees, which can contain
-// onboarding codes. Only reviewed workflow image names enter shareable HTML.
-// Raw xcresult/CI diagnostics inherit their storage/repository access rules.
-const nativeCoreImages = [
-  "Native real-server thread after foreground catch-up",
-  "Native daemon offline after real disconnect grace",
-  "Native daemon online after real reconnect",
-  "Native suggested plan card before proposal",
-  "Native suggested plan with original reply expanded",
-  "Native planning instructions summarized before proposal",
-  "Native original coordinator instruction expanded",
-  "Native proposed plan before human acceptance",
-  "Native accepted plan with dependent tasks",
-  "Native needs-information approval restored after relaunch",
-  "Native approval completed and removed from Inbox",
-  "Native goal cancellation requires confirmation",
-  "Native goal preserved after dismissing cancellation",
-  "Native goal cancelled after explicit confirmation",
-  "Native task awaiting execution approval",
-  "Native assignment rejected with selection preserved",
-  "Native executor options with readable details",
-  "Native execution completed with uploaded artifact",
-  "Native uploaded execution report in Quick Look",
-  "Native task accepted after artifact review",
-  "Native agent history original request for the completed run",
-  "Native agent history real executor response",
-  "Native agent history large text original request",
-  "Native agent history large text response after refresh",
-  "Native unpublished goal static and application evidence",
-  "Native member device permissions without pairing inputs",
-  "Native member restored after fresh pairing without pairing inputs",
-];
-const nativeAssistantImages = [
-  "Native assistant readable agent selection",
-  "Native assistant focused composer with visible controls",
-  "Native assistant waiting with draft restored",
-  "Native assistant failed request before retry",
-  "Native assistant first completed answer",
-  "Native assistant follow-up uses the actual first answer",
-  "Native assistant linked execution task",
-  "Native assistant cancelled with process stopped",
-];
-const nativeMentionsImages = [
-  "Native mentions project A draft before publication",
-  "Native mentions global unread across projects",
-  "Native mentions historical reply with read failure",
-  "Native mentions draft preserved after read retry",
-  "Native mentions second historical reply",
-  "Native mentions selected project B",
-  "Native mentions one unread sentinel remains",
-  "Native mentions project A draft restored",
-  "Native mentions project B draft restored after relaunch",
-];
-const nativeCorrectionImages = [
-  "Native correction initial artifact details",
-  "Native correction initial patch in Quick Look",
-  "Native correction feedback after relaunch",
-  "Native correction failed run",
-  "Native correction retained initial artifact after failure",
-  "Native correction ready after explicit Retry",
-  "Native correction original and corrected artifacts",
-  "Native correction corrected patch in Quick Look",
-  "Native correction second feedback",
-  "Native correction exact Stop confirmation",
-  "Native correction kept running",
-  "Native correction cancelled task",
-  "Native correction retained first review after Stop",
-  "Native correction retained second review after Stop",
-  "Native correction retained artifacts after Stop",
-  "Native correction completed initial workspace retained",
-  "Native correction initial workspace retained after relaunch",
-  "Native correction failed workspace retained",
-  "Native correction completed corrected workspace retained",
-  "Native correction corrected workspace retained after relaunch",
-  "Native correction cancelled workspace retained",
-];
-const nativeRetentionImages = [
-  "Native retention task ready before approval",
-  "Native retention completed execution",
-  "Native retention no uploaded artifacts",
-  "Native retention reported recovery details",
-  "Native retention exact workspace path and branch",
-  "Native retention recovery after cold relaunch",
-  "Native retention no artifacts after relaunch",
-];
-export const nativeReleaseImages = Object.freeze([
-  "Native release publisher links before pairing",
-  "Native release public privacy website",
-  "Native release public support website",
-  "Native release publisher links landscape",
-]);
-const nativeWorkflowImages = [
-  ...nativeCoreImages,
-  ...nativeAssistantImages,
-  ...nativeMentionsImages,
-  ...nativeCorrectionImages,
-  ...nativeRetentionImages,
-  ...nativeReleaseImages,
-];
-// These XCTest helpers explicitly refuse captures whenever onboarding or
-// generated pairing-code controls exist. Retain their controlled failure
-// scene for CI diagnosis, without accepting Xcode's automatic failure images
-// or counting a diagnostic as a required successful workflow screenshot.
-const nativeDiagnosticImages = [
-  "Native assistant guarded failure diagnostics",
-  "Native mentions guarded failure diagnostics",
-  "Native correction guarded failure diagnostics",
-  "Native retention guarded failure diagnostics",
-];
-export function expectedNativeScreenshots(suite) {
-  if (suite === "core") return [...nativeCoreImages];
-  if (suite === "assistant") return [...nativeAssistantImages];
-  if (suite === "mentions") return [...nativeMentionsImages];
-  if (suite === "correction") return [...nativeCorrectionImages];
-  if (suite === "retention") return [...nativeRetentionImages];
-  throw new Error("Native screenshot scope must be core, assistant, mentions, correction or retention");
-}
-export function readXCTestScreenshots(directory) {
-  let manifest, canonicalDirectory;
-  try {
-    canonicalDirectory = realpathSync(directory);
-    manifest = JSON.parse(readFileSync(resolve(directory, "manifest.json"), "utf8"));
-  } catch {
-    return [];
-  }
-  const screenshots = [];
-  function visit(value) {
-    if (!value || typeof value !== "object") return;
-    const name = value.suggestedHumanReadableName ?? value.name;
-    const approved =
-      typeof name === "string" &&
-      [...nativeWorkflowImages, ...nativeDiagnosticImages].some(
-        (title) => name === title || name.startsWith(`${title}_`) || name.startsWith(`${title}.`),
-      );
-    if (typeof value.exportedFileName === "string" && approved) {
-      const path = resolve(directory, value.exportedFileName);
-      // Native XCTest exports PNG. Unsupported formats and invalid individual
-      // files are omitted so the suite's required-capture gate fails closed,
-      // while failure HTML can still retain other complete approved captures.
-      if (path.startsWith(`${resolve(directory)}${sep}`) && /\.png$/i.test(path)) {
-        try {
-          const stat = lstatSync(path);
-          if (
-            stat.isFile() &&
-            stat.size <= MAX_PNG_BYTES &&
-            realpathSync(path).startsWith(`${canonicalDirectory}${sep}`) &&
-            hasCompletePNGPixelStream(readFileSync(path))
-          )
-            screenshots.push({ path, caption: name });
-        } catch {
-          /* Unreadable or replaced captures are not evidence. */
-        }
-      }
-    }
-    for (const nested of Object.values(value)) {
-      if (Array.isArray(nested)) nested.forEach(visit);
-      else if (nested && typeof nested === "object") visit(nested);
-    }
-  }
-  if (Array.isArray(manifest)) manifest.forEach(visit);
-  else visit(manifest);
-  return screenshots;
 }
 
 /** Write a self-contained, offline HTML report. Screenshots are embedded, so

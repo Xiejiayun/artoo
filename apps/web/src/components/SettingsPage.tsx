@@ -176,9 +176,6 @@ export function SettingsPage(): React.ReactNode {
                 }}
               >
                 <option value="windows">Windows</option>
-                <option value="ios">iOS</option>
-                <option value="macos">macOS</option>
-                <option value="linux">Linux</option>
               </Select>
               <Button variant="primary" loading={pairing.isPending} onClick={() => pairing.mutate()}>
                 Generate pairing code
@@ -263,7 +260,7 @@ export function SettingsPage(): React.ReactNode {
               <div className="settings-device__actions">
                 {canManage &&
                   device.trust === "active" &&
-                  ["macos", "windows", "linux"].includes(device.platform) &&
+                  device.platform === "windows" &&
                   !device.computer_id &&
                   (confirmEnroll === device.id ? (
                     <div className="u-stack-sm">
@@ -300,14 +297,11 @@ export function SettingsPage(): React.ReactNode {
                       Enroll computer
                     </Button>
                   ))}
-                {!canManage &&
-                  device.trust === "active" &&
-                  ["macos", "windows", "linux"].includes(device.platform) &&
-                  !device.computer_id && (
-                    <p className="t-subtle">
-                      An owner or admin must enroll this computer before its local worker can start.
-                    </p>
-                  )}
+                {!canManage && device.trust === "active" && device.platform === "windows" && !device.computer_id && (
+                  <p className="t-subtle">
+                    An owner or admin must enroll this computer before its local worker can start.
+                  </p>
+                )}
                 {device.trust === "active" &&
                   (confirmRevoke === device.id ? (
                     <div className="u-stack-sm">

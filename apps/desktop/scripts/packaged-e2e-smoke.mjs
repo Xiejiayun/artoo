@@ -1,12 +1,10 @@
 import { withWorkflowCleanup } from "../../../scripts/workflow-cleanup.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
-  chmodSync,
   cpSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -24,18 +22,11 @@ import { _electron as electron, chromium } from "playwright";
 import { expect } from "@playwright/test";
 import { getE2EReportContext, writeE2EReport } from "../../../scripts/e2e-report.mjs";
 import { closeOwnedBrowser } from "../../../scripts/owned-browser.mjs";
-import { buildMacDistribution } from "./mac-distribution.mjs";
-import { mountPreviewDmg } from "./mac-dmg-install.mjs";
 import {
   finalizeInstalledLiveProviderEvidence,
   installedLiveProviderEvidence,
   runOptionalInstalledLiveProvider,
 } from "./installed-live-provider-gate.mjs";
-import { macPlanningImageNames, runInstalledMacPlanning } from "./installed-mac-planning.mjs";
-import { macAssistantImageNames, runInstalledMacAssistant } from "./installed-mac-assistant.mjs";
-import { macMentionsImageNames, runInstalledMacMentions } from "./installed-mac-mentions.mjs";
-import { macCorrectionImageNames, runInstalledMacCorrection } from "./installed-mac-correction.mjs";
-import { verifyMacCorrectionWorkspaceExport } from "./installed-mac-correction-evidence.mjs";
 import {
   openInstalledAccount,
   openInstalledNewAgentForm,
@@ -43,19 +34,6 @@ import {
   selectInstalledProject,
   waitForInstalledShell,
 } from "./installed-ui-navigation.mjs";
-import { macZeroArtifactImageNames, runInstalledMacZeroArtifact } from "./installed-mac-zero-artifact.mjs";
-import {
-  createZeroArtifactWorkspaceSetup,
-  createZeroArtifactWorkspaceObserver,
-  verifyZeroArtifactWorkspaceExport,
-} from "../../../scripts/fixtures/zero-artifact-workspace-scenario.mjs";
-import { ZERO_ARTIFACT_FILES, zeroArtifactHash } from "../../../scripts/fixtures/zero-artifact-workspace.mjs";
-import {
-  createCorrectionWorkspaces,
-  createCorrectionObserver,
-  correctionProcessAlive,
-  exportCorrectionWorkspaceEvidence,
-} from "../../../scripts/fixtures/execution-correction-scenario.mjs";
 
 const desktopDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(desktopDir, "..", "..");
@@ -165,18 +143,12 @@ async function removeTemp(directory) {
   );
 }
 
-export async function runPackagedSmoke(platform, { macDistribution, macViewport } = {}) {
-  const isMac = platform === "darwin";
-  const fromDmg = macDistribution === "dmg";
-  const label = isMac ? (fromDmg ? "macos-dmg" : "macos") : "windows";
-  const platformName = isMac ? "macOS" : "Windows";
+export async function runPackagedSmoke(platform = "win32") {
+  const label = "windows";
+  const platformName = "Windows";
   const artifactDir = process.env.ARTOO_DESKTOP_REPORT_DIR
     ? resolve(process.env.ARTOO_DESKTOP_REPORT_DIR)
-    : join(
-        desktopDir,
-        "release",
-        isMac ? (fromDmg ? "mac-dmg-smoke-artifacts" : "mac-smoke-artifacts") : "smoke-artifacts",
-      );
+    : join(desktopDir, "release", "smoke-artifacts");
   const jsonPath = join(artifactDir, `${label}-desktop-smoke.json`);
   const htmlPath = join(artifactDir, `${label}-desktop-smoke.html`);
   const liveEvidence = installedLiveProviderEvidence(platform, artifactDir);
@@ -197,19 +169,15 @@ export async function runPackagedSmoke(platform, { macDistribution, macViewport 
     checks,
     captures,
     screenshots,
-    package_reused: !fromDmg && process.env.ARTOO_SMOKE_SKIP_BUILD === "1",
-    package_provenance: fromDmg
-      ? "DMG and ZIP built during this invocation; the app is installed from that verified, read-only mounted DMG"
-      : process.env.ARTOO_SMOKE_SKIP_BUILD === "1"
+    package_reused: process.env.ARTOO_SMOKE_SKIP_BUILD === "1",
+    package_provenance:
+      process.env.ARTOO_SMOKE_SKIP_BUILD === "1"
         ? "Existing package; recorded source identifies the test harness and does not prove the package was built from this revision"
         : "Package built from the working tree during this invocation",
-    scope: `${platformName} packaged app: pairing, authenticated realtime, worker lifecycle, task execution, artifact download, review and restart recovery${isMac ? ", installed journal preparation with new allocations disabled, ordinary execution through the prepared worker, process-backed planning, coordinator instruction disclosure, human plan acceptance, direct-assistant waiting/retry/cancellation, cross-project historical mentions with read recovery and draft persistence, four-run task correction with retained Git work, and separate zero-artifact success with historical recovery and exact Copy values" : ""}`,
+    scope:
+      "Windows packaged app: pairing, authenticated realtime, worker lifecycle, task execution, artifact download, review and restart recovery",
     cleanup_complete: false,
-    distribution: isMac
-      ? fromDmg
-        ? "Unsigned preview DMG installed in an isolated directory; no Developer ID, notarization or Gatekeeper trust claim"
-        : "Unsigned packaged .app copied to an isolated installation; signing, notarization and updates are separate release gates"
-      : "NSIS installed package",
+    distribution: "NSIS installed package",
     modelExecution: "Temporary CLI fixture through production Codex adapter; no real model quality claim",
     ownerAuthentication: "Test-provisioned owner cookie; native pairing and authorization use production endpoints",
   };
@@ -226,44 +194,20 @@ export async function runPackagedSmoke(platform, { macDistribution, macViewport 
     `${label}-desktop-restored.png`,
     `${label}-desktop-approval-needs-info.png`,
     `${label}-desktop-approval-replaced.png`,
-    ...(isMac
-      ? [`${label}-desktop-managed-ready.png`]
-      : ["windows-live-copilot.json", "windows-live-copilot-plan.png"]),
+    "windows-live-copilot.json",
+    "windows-live-copilot-plan.png",
   ]) {
     rmSync(join(artifactDir, filename), { force: true });
   }
-  for (const path of [liveEvidence.reportPath, liveEvidence.planScreenshotPath, liveEvidence.chatScreenshotPath])
+  for (const path of [liveEvidence.reportPath, liveEvidence.planScreenshotPath, liveEvidence.chatScreenshotPath]) {
     rmSync(path, { force: true });
-  if (isMac)
-    for (const filename of [
-      ...macPlanningImageNames,
-      ...macAssistantImageNames,
-      ...macMentionsImageNames,
-      ...macCorrectionImageNames,
-      ...macZeroArtifactImageNames,
-    ])
-      rmSync(join(artifactDir, filename), { force: true });
+  }
   // Record build/preflight failures too; every invocation owns an HTML report.
   writeFileSync(jsonPath, `${JSON.stringify(report, null, 2)}\n`);
   writeE2EReport({ outputPath: htmlPath, title: `Artoo ${platformName} packaged E2E`, report, screenshots });
-  let tempRoot,
-    installDir,
-    userData,
-    workspace,
-    fixtureBin,
-    fixtureProgram,
-    fixtureKey,
-    installer,
-    packagedApp,
-    planningConfigurationPath,
-    assistantConfigurationPath,
-    correctionConfigurationPath;
-  let correctionSetup, correctionScenario, correctionWorkspaceManifest;
-  let zeroArtifactSetup, zeroArtifactScenario, zeroArtifactObservation, zeroArtifactWorkspaceManifest;
-  let zeroArtifactConfigurationPath, zeroArtifactSuffix;
+  let tempRoot, installDir, userData, workspace, fixtureBin, fixtureProgram, fixtureKey, installer;
   let server, browser, browserServer, electronApp, page, appExe, ownerCookie;
-  let liveReportPath, executionError, observeAssistantCleanup;
-  let dmgMount;
+  let liveReportPath, executionError;
   let liveActive = false;
   let uninstalled = false;
   let rendererCrashed = false;
@@ -274,54 +218,9 @@ export async function runPackagedSmoke(platform, { macDistribution, macViewport 
   };
   function uninstall() {
     if (!appExe || !existsSync(appExe)) return;
-    if (isMac) {
-      rmSync(join(installDir, "Artoo.app"), { recursive: true, force: true });
-      return;
-    }
     const uninstaller = findFirst(installDir, (name) => /^Uninstall .*\.exe$/i.test(name));
     assert.ok(uninstaller, "Installed app has no uninstaller");
     run(uninstaller, ["/S"], 120_000);
-  }
-  async function retainCorrectionEvidence() {
-    if (!correctionScenario || report.correction_evidence_directory) return;
-    const evidence = join(artifactDir, "history", `${label}-${runId}-correction`);
-    mkdirSync(evidence, { recursive: true });
-    report.correction_evidence_directory = evidence;
-    writeFileSync(join(evidence, "checkpoints.json"), JSON.stringify(correctionScenario.evidence(), null, 2));
-    writeFileSync(
-      join(evidence, "final-observation.json"),
-      JSON.stringify(await correctionScenario.observe(), null, 2),
-    );
-    // Workspace/receipt copying happens after owned writers stop in finally.
-    // Capture observer reads now, while its authenticated server is available.
-    for (const path of report.macCorrection?.download_paths ?? []) {
-      assert.ok(resolve(path).startsWith(`${correctionSetup.directory}${sep}`));
-      cpSync(path, join(evidence, path.slice(path.lastIndexOf(sep) + 1)));
-    }
-  }
-  async function retainZeroArtifactEvidence() {
-    if (!zeroArtifactScenario || report.zero_artifact_evidence_directory) return;
-    const evidence = join(artifactDir, "history", `${label}-${runId}-zero-artifact`);
-    mkdirSync(evidence, { recursive: true });
-    report.zero_artifact_evidence_directory = evidence;
-    zeroArtifactObservation = await zeroArtifactScenario.observe();
-    writeFileSync(
-      join(evidence, "observation.json"),
-      JSON.stringify(
-        {
-          fields: zeroArtifactScenario.fields,
-          configuration: zeroArtifactSetup.configuration,
-          baseHead: zeroArtifactSetup.baseHead,
-          baseIndex: zeroArtifactSetup.baseIndex,
-          baseRepo: zeroArtifactSetup.baseRepo,
-          baseCommonDirectory: zeroArtifactSetup.baseCommonDirectory,
-          checkpoints: report.macZeroArtifact?.observations ?? {},
-          final: zeroArtifactObservation,
-        },
-        null,
-        2,
-      ),
-    );
   }
   const ownerApi = async (route) => {
     const response = await fetch(`${baseUrl}${route}`, { headers: { Cookie: ownerCookie } });
@@ -348,27 +247,6 @@ export async function runPackagedSmoke(platform, { macDistribution, macViewport 
       ),
     );
     await page.waitForLoadState("domcontentloaded");
-    if (macViewport) {
-      assert.ok(
-        isMac &&
-          Number.isSafeInteger(macViewport.width) &&
-          macViewport.width >= 360 &&
-          Number.isSafeInteger(macViewport.height) &&
-          macViewport.height >= 540,
-        "Valid native Mac viewport required",
-      );
-      // Establish the profile through the real window before any workflow or
-      // capture. A relaunch establishes the same size and records it again.
-      const native = await electronApp.evaluate(({ BrowserWindow }, target) => {
-        const window = BrowserWindow.getAllWindows()[0];
-        const before = window.getContentSize();
-        window.setContentSize(target.width, target.height);
-        return { before, after: window.getContentSize() };
-      }, macViewport);
-      assert.deepEqual(native.after, [macViewport.width, macViewport.height]);
-      await expect.poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight }))).toEqual(macViewport);
-      (report.native_viewport_launches ??= []).push({ requested: { ...macViewport }, ...native });
-    }
   }
   async function captureScene(filename, caption) {
     const path = join(artifactDir, filename);
@@ -493,142 +371,38 @@ export async function runPackagedSmoke(platform, { macDistribution, macViewport 
   await withWorkflowCleanup(
     async () => {
       try {
-        assert.equal(process.platform, platform, `The packaged smoke must run on ${platformName}`);
-        assert.ok(["darwin", "win32"].includes(platform), "Unsupported desktop platform");
-        assert.ok(
-          macDistribution === undefined || (isMac && fromDmg),
-          "DMG installation is available only in the Mac DMG smoke",
-        );
-        if (fromDmg)
-          assert.notEqual(
-            process.env.ARTOO_SMOKE_SKIP_BUILD,
-            "1",
-            "DMG smoke must build a fresh distribution; ARTOO_SMOKE_SKIP_BUILD is not permitted",
-          );
+        assert.equal(process.platform, "win32", "The packaged smoke must run on Windows");
+        assert.equal(platform, "win32", "Unsupported desktop platform");
         runNpm(["run", "build", "--workspace", "@artoo/server"]);
-        if (!fromDmg && process.env.ARTOO_SMOKE_SKIP_BUILD !== "1")
-          runNpm(["run", isMac ? "pack:mac" : "dist:win", "--workspace", "@artoo/desktop"]);
-        if (isMac) {
-          if (fromDmg) {
-            const distribution = buildMacDistribution({ mode: "preview" });
-            const artifact = distribution.files.find((file) => file.kind === "dmg");
-            report.distribution_artifacts = distribution.files;
-            report.distribution_manifest = distribution.manifestPath;
-            dmgMount = mountPreviewDmg(artifact, {
-              onCreated: (mount) => {
-                dmgMount = mount;
-                report.dmg_installation = {
-                  artifact_sha256: artifact.sha256,
-                  mounted_read_only: false,
-                  mountpoint: mount.mountpoint,
-                };
-              },
-            });
-            packagedApp = dmgMount.app;
-            report.dmg_installation = {
-              artifact_sha256: artifact.sha256,
-              mounted_read_only: true,
-              mountpoint: dmgMount.mountpoint,
-            };
-            check("This invocation built DMG/ZIP; the exact DMG hash is verified and mounted read-only");
-          } else {
-            const candidates = [
-              join(desktopDir, "release", process.arch === "arm64" ? "mac-arm64" : "mac", "Artoo.app"),
-            ];
-            packagedApp = candidates.find((candidate) => existsSync(join(candidate, "Contents", "MacOS", "Artoo")));
-            assert.ok(packagedApp, "Build pack:mac for this architecture before using ARTOO_SMOKE_SKIP_BUILD=1");
-          }
-          report.package = packagedApp;
-          report.packageAsarSha256 = createHash("sha256")
-            .update(readFileSync(join(packagedApp, "Contents", "Resources", "app.asar")))
-            .digest("hex");
-          report.packageDaemonSha256 = createHash("sha256")
-            .update(
-              readFileSync(join(packagedApp, "Contents", "Resources", "app.asar.unpacked", "daemon", "artood.mjs")),
-            )
-            .digest("hex");
-          report.packageJournalWorkerSha256 = createHash("sha256")
-            .update(
-              readFileSync(
-                join(packagedApp, "Contents", "Resources", "app.asar.unpacked", "daemon", "journal-worker.js"),
-              ),
-            )
-            .digest("hex");
-        } else {
-          const { version } = JSON.parse(readFileSync(join(desktopDir, "package.json"), "utf8"));
-          installer = join(desktopDir, "release", `Artoo Setup ${version}.exe`);
-          assert.ok(
-            existsSync(installer),
-            "Build the current version's NSIS installer before using ARTOO_SMOKE_SKIP_BUILD=1",
-          );
-          report.installer = installer;
-          report.installerSha256 = createHash("sha256").update(readFileSync(installer)).digest("hex");
-        }
-        // macOS /var is a symlink to /private/var; use the same canonical roots as
-        // the controller so saved workspace verification compares actual paths.
+        if (process.env.ARTOO_SMOKE_SKIP_BUILD !== "1") runNpm(["run", "dist:win", "--workspace", "@artoo/desktop"]);
+        const { version } = JSON.parse(readFileSync(join(desktopDir, "package.json"), "utf8"));
+        installer = join(desktopDir, "release", `Artoo Setup ${version}.exe`);
+        assert.ok(
+          existsSync(installer),
+          "Build the current version's NSIS installer before using ARTOO_SMOKE_SKIP_BUILD=1",
+        );
+        report.installer = installer;
+        report.installerSha256 = createHash("sha256").update(readFileSync(installer)).digest("hex");
+
         tempRoot = realpathSync(mkdtempSync(join(tmpdir(), "artoo-desktop-smoke-")));
         installDir = join(tempRoot, "install");
         userData = join(tempRoot, "desktop-data");
         workspace = join(tempRoot, "workspace");
         fixtureBin = join(tempRoot, "fixture-bin");
         fixtureKey = randomBytes(24).toString("hex");
-        fixtureProgram = join(fixtureBin, isMac ? "codex" : "codex.cmd");
-        if (isMac) {
-          planningConfigurationPath = join(tempRoot, "mac-planning-process.json");
-          assistantConfigurationPath = join(tempRoot, "mac-assistant-process.json");
-          correctionConfigurationPath = join(tempRoot, "execution-correction", "process.json");
-          zeroArtifactSuffix = `mac-${randomUUID().slice(0, 8)}`;
-          zeroArtifactConfigurationPath = join(tempRoot, `zero-artifact-${zeroArtifactSuffix}`, "process.json");
-        }
+        fixtureProgram = join(fixtureBin, "codex.cmd");
         mkdirSync(workspace);
         mkdirSync(fixtureBin);
-        // Only this absolute CLI fixture is selected. On macOS the shell launcher
-        // uses the installed Electron in Node mode; no Node or model CLI needs PATH.
         const fixtureEntry = join(fixtureBin, "fixture-codex.mjs");
-        if (isMac) {
-          const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
-          writeFileSync(fixtureProgram, `#!/bin/sh\nexec "$ARTOO_SMOKE_EXECUTABLE" ${quote(fixtureEntry)} "$@"\n`);
-          chmodSync(fixtureProgram, 0o755);
-        } else writeFileSync(fixtureProgram, '@ECHO off\r\n"%_prog%" "%dp0%\\fixture-codex.mjs" %*\r\n');
+        writeFileSync(fixtureProgram, '@ECHO off\r\n"%_prog%" "%dp0%\\fixture-codex.mjs" %*\r\n');
         writeFileSync(
           fixtureEntry,
-          `import {existsSync,readFileSync,writeFileSync} from 'node:fs';
+          `import {writeFileSync} from 'node:fs';
 if (process.env.ARTOO_CODEX_PROVIDER_KEY !== ${JSON.stringify(fixtureKey)}) throw new Error('Configured fixture key did not reach CLI');
-${
-  isMac
-    ? `const {isAbsolute} = await import('node:path');
-// Discussion contexts live outside cwd. Follow the actual production prompt for every route.
-const prompt = process.argv.at(-1), prefix = 'Read the file ';
-const boundary = prompt?.indexOf('. If its payload contains conversation, ');
-if (!prompt?.startsWith(prefix) || boundary < prefix.length) throw new Error('Installed fixture requires the production context prompt');
-const contextPath = prompt.slice(prefix.length, boundary);
-if (!isAbsolute(contextPath)) throw new Error('Installed fixture requires an absolute context path');
-const source = readFileSync(contextPath, 'utf8'), marker = '## Raw Payload\\n';
-if (!source.includes(marker)) throw new Error('Installed fixture is missing its actual context pack');
-const pack = JSON.parse(source.slice(source.indexOf(marker) + marker.length));
-if (pack.conversation) {
-  if (pack.policy.execution_mode === 'discussion') {
-    const {runMacPlanningFixture} = await import(${JSON.stringify(pathToFileURL(join(desktopDir, "scripts/mac-planning-fixture.mjs")).href)});
-    runMacPlanningFixture({contextPath,configurationPath:${JSON.stringify(planningConfigurationPath)}});
-  } else {
-    const {runAssistantConversationFixture} = await import(${JSON.stringify(pathToFileURL(join(desktopDir, "../../scripts/fixtures/assistant-conversation.mjs")).href)});
-    await runAssistantConversationFixture({contextPath,configurationPath:${JSON.stringify(assistantConfigurationPath)}});
-  }
-} else if (existsSync(${JSON.stringify(correctionConfigurationPath)}) && pack.task.title === JSON.parse(readFileSync(${JSON.stringify(correctionConfigurationPath)}, 'utf8')).task_title) {
-  const {runExecutionCorrectionFixture} = await import(${JSON.stringify(pathToFileURL(join(repoRoot, "scripts/fixtures/execution-correction.mjs")).href)});
-  await runExecutionCorrectionFixture({contextPath,configurationPath:${JSON.stringify(correctionConfigurationPath)}});
-} else if (existsSync(${JSON.stringify(zeroArtifactConfigurationPath)}) && pack.task.title === JSON.parse(readFileSync(${JSON.stringify(zeroArtifactConfigurationPath)}, 'utf8')).task_title) {
-  if (process.env.ARTOO_REPORT_ARTIFACTS !== 'none') throw new Error('The installed zero-artifact worker must disable report collection explicitly');
-  const {runZeroArtifactWorkspace} = await import(${JSON.stringify(pathToFileURL(join(repoRoot, "scripts/fixtures/zero-artifact-workspace.mjs")).href)});
-  runZeroArtifactWorkspace({contextPath,configurationPath:${JSON.stringify(zeroArtifactConfigurationPath)}});
-} else {`
-    : ""
-}
 writeFileSync('changes.patch', ${JSON.stringify(fixturePatch)});
 writeFileSync('fixture-execution.json', JSON.stringify({argv:process.argv.slice(2), executable:process.execPath, cwd:process.cwd(), apiKeyConfigured:true}));
 console.error('Diagnostic key: ' + process.env.ARTOO_CODEX_PROVIDER_KEY);
 console.log('Packaged Codex adapter fixture completed');
-${isMac ? "}" : ""}
 `,
         );
         const port = await freePort();
@@ -646,7 +420,7 @@ ${isMac ? "}" : ""}
           GOOGLE_CLIENT_ID: "smoke-oidc-client",
           GOOGLE_CLIENT_SECRET: "smoke-unused-secret",
           GOOGLE_REDIRECT_URI: `${baseUrl}/auth/google/callback`,
-          AUTH_ALLOWED_EMAILS: isMac ? "owner@preview.test,sender@mentions-ui.test" : "owner@preview.test",
+          AUTH_ALLOWED_EMAILS: "owner@preview.test",
           AUTH_OWNER_EMAILS: "owner@preview.test",
         };
         appEnv = Object.fromEntries(
@@ -660,7 +434,6 @@ ${isMac ? "}" : ""}
           ARTOO_SERVER_URL: baseUrl,
           ARTOO_CODEX_PROVIDER_KEY: "inherited-fixture-key-must-not-win",
         });
-        delete appEnv.ARTOO_REPORT_ARTIFACTS; // The separate zero-artifact phase opts in explicitly later.
         ({ startServer } = await import(pathToFileURL(join(repoRoot, "apps/server/dist/main.js")).href));
         ({ createSession } = await import(pathToFileURL(join(repoRoot, "apps/server/dist/auth/auth-service.js")).href));
         server = await startServer(serverEnv);
@@ -687,46 +460,18 @@ ${isMac ? "}" : ""}
         const ownerPage = await owner.newPage();
         await ownerPage.goto(`${baseUrl}/settings`);
         await ownerPage.getByText("Pair a desktop or mobile app", { exact: true }).click();
-        await ownerPage.getByLabel("Device platform").selectOption(isMac ? "macos" : "windows");
+        await ownerPage.getByLabel("Device platform").selectOption("windows");
         await ownerPage.getByRole("button", { name: "Generate pairing code" }).click();
         const pairingRegion = ownerPage.getByRole("region", { name: "Device pairing" });
         await expect(pairingRegion.getByLabel("Pairing code", { exact: true })).toBeVisible();
         const pairingCode = await pairingRegion.getByLabel("Pairing code", { exact: true }).textContent();
         check("Production auth required; owner creates a real one-use pairing code");
 
-        if (isMac) {
-          mkdirSync(installDir);
-          cpSync(packagedApp, join(installDir, "Artoo.app"), { recursive: true, verbatimSymlinks: true });
-          appExe = join(installDir, "Artoo.app", "Contents", "MacOS", "Artoo");
-          appEnv.ARTOO_SMOKE_EXECUTABLE = appExe;
-          if (dmgMount) {
-            for (const [path, hash] of [
-              ["app.asar", report.packageAsarSha256],
-              ["app.asar.unpacked/daemon/artood.mjs", report.packageDaemonSha256],
-              ["app.asar.unpacked/daemon/journal-worker.js", report.packageJournalWorkerSha256],
-            ]) {
-              assert.equal(
-                createHash("sha256")
-                  .update(readFileSync(join(installDir, "Artoo.app", "Contents", "Resources", path)))
-                  .digest("hex"),
-                hash,
-                "Installed app bytes differ from the mounted DMG",
-              );
-            }
-            dmgMount.detach();
-            report.dmg_installation.detached_before_launch = true;
-            check(
-              "Installed app, daemon and journal worker match the DMG; its volume is detached before the complete business workflow starts",
-            );
-          }
-        } else {
-          run(installer, ["/S", `/D=${installDir}`], 180_000);
-          appExe = findFirst(installDir, (name) => /^Artoo\.exe$/i.test(name));
-          assert.ok(appExe, "NSIS did not install Artoo.exe");
-        }
-        const resources = isMac
-          ? join(installDir, "Artoo.app", "Contents", "Resources")
-          : join(installDir, "resources");
+        run(installer, ["/S", `/D=${installDir}`], 180_000);
+        appExe = findFirst(installDir, (name) => /^Artoo\.exe$/i.test(name));
+        assert.ok(appExe, "NSIS did not install Artoo.exe");
+
+        const resources = join(installDir, "resources");
         assert.ok(existsSync(join(resources, "app.asar.unpacked/daemon/artood.mjs")), "Bundled daemon missing");
         assert.ok(
           existsSync(join(resources, "app.asar.unpacked/daemon/journal-worker.js")),
@@ -814,39 +559,6 @@ ${isMac ? "}" : ""}
         );
         assert.equal(JSON.stringify(savedCodex).includes(fixtureKey), false, "Provider key exposed in native status");
         await expect(page.getByLabel("Model API key", { exact: true })).toHaveValue("");
-        if (isMac) {
-          const beforePreparation = await page.evaluate(() => window.artooDesktop.daemonStatus());
-          assert.equal(beforePreparation.managedWorkspace.state, "unprepared");
-          assert.equal(beforePreparation.config.allowNewAllocations, false);
-          assert.ok(
-            !beforePreparation.config.worktreeBaseRepo,
-            "Initial opt-out preparation must not need a Git repository",
-          );
-          await page.getByRole("button", { name: "Prepare separate workspaces", exact: true }).click();
-          const ready = page.getByText("Ready for separate task workspaces", { exact: true });
-          await expect(ready).toBeVisible();
-          const prepared = await page.evaluate(() => window.artooDesktop.daemonStatus());
-          assert.equal(prepared.state, "stopped");
-          assert.equal(prepared.configurationLocked, false);
-          assert.deepEqual(prepared.managedWorkspace, { state: "ready" });
-          assert.equal(prepared.config.allowNewAllocations, false);
-          assert.ok(!prepared.config.worktreeBaseRepo);
-          report.managedPreparation = {
-            state: prepared.managedWorkspace.state,
-            allow_new_allocations: prepared.config.allowNewAllocations,
-            repository_configured: Boolean(prepared.config.worktreeBaseRepo),
-            worker_state_after_provision: prepared.state,
-            configuration_locked: prepared.configurationLocked,
-          };
-          await ready.scrollIntoViewIfNeeded();
-          await captureScene(
-            `${label}-desktop-managed-ready.png`,
-            "Installed Mac journal preparation completed; new allocations remain disabled and no Git repository is required",
-          );
-          check(
-            "Installed Mac prepares its real journal through Settings while stopped, without enabling allocations or requiring a repository",
-          );
-        }
         await page.getByRole("button", { name: "Start worker", exact: true }).click();
         await workerState("running");
         const firstPid = (await page.evaluate(() => window.artooDesktop.daemonStatus())).pid;
@@ -1048,237 +760,12 @@ ${isMac ? "}" : ""}
           (await page.evaluate(() => window.artooDesktop.daemonStatus())).config.allowedRoots.includes(workspace),
         );
         assert.deepEqual((await page.evaluate(() => window.artooDesktop.daemonStatus())).config.codex, savedCodex);
-        if (isMac) {
-          const restored = await page.evaluate(() => window.artooDesktop.daemonStatus());
-          assert.deepEqual(restored.managedWorkspace, { state: "ready" });
-          assert.equal(restored.config.allowNewAllocations, false);
-          report.managedPreparation.restored_after_app_restart = restored.managedWorkspace.state;
-        }
         await downloadPatch(`${label}-artifact-after-restart.patch`);
         check("App/server restart preserve device identity, worker settings, reviewed task, and downloadable artifact");
         await captureScene(
           `${label}-desktop-restored.png`,
           "Completed task and downloadable artifact restored after app and server restart",
         );
-        if (isMac) {
-          await runInstalledMacPlanning({
-            page,
-            workspace,
-            configurationPath: planningConfigurationPath,
-            baseUrl,
-            ownerCookie,
-            artifactDir,
-            onEvidence: (evidence) => {
-              report.macPlanning = evidence;
-            },
-            onScreenshot: (screenshot) => screenshots.push(screenshot),
-          });
-          check(
-            "Installed Mac UI verifies three worker planning contributions, summarized/exact coordinator instructions, and human acceptance of two dependent tasks",
-          );
-          await runInstalledMacAssistant({
-            page,
-            workspace,
-            configurationPath: assistantConfigurationPath,
-            baseUrl,
-            ownerCookie,
-            artifactDir,
-            onEvidence: (evidence) => {
-              report.macAssistant = evidence;
-            },
-            onScreenshot: (screenshot) => screenshots.push(screenshot),
-            onCleanupObserver: (observe) => {
-              observeAssistantCleanup = observe;
-            },
-          });
-          check(
-            "Installed Mac direct requests verify automatic worker recovery, explicit failed-turn Retry, two context-linked answers, and running-process cancellation",
-          );
-          await runInstalledMacMentions({
-            page,
-            root: repoRoot,
-            server,
-            browser,
-            baseUrl,
-            ownerCookie,
-            artifactDir,
-            onEvidence: (evidence) => {
-              report.macMentions = evidence;
-            },
-            onScreenshot: (screenshot) => screenshots.push(screenshot),
-          });
-          check(
-            "Installed Mac opens late-created project mentions, retries one failed read through UI, preserves both drafts and leaves an unrelated notification unread",
-          );
-          correctionSetup = createCorrectionWorkspaces({
-            temporary: tempRoot,
-            projectId: "proj_artoo",
-            platform: "macos",
-          });
-          assert.equal(correctionSetup.configurationPath, correctionConfigurationPath);
-          const nativeIdentityResponse = await fetch(`${baseUrl}/auth/session`, {
-            headers: { Authorization: `Bearer ${nativeToken}` },
-            signal: AbortSignal.timeout(15_000),
-          });
-          assert.equal(nativeIdentityResponse.status, 200);
-          const nativeIdentity = await nativeIdentityResponse.json();
-          const fixtureRequest = async (route, body) => {
-            const response = await fetch(`${baseUrl}${route}`, {
-              method: body === undefined ? "GET" : "POST",
-              headers: {
-                Cookie: ownerCookie,
-                ...(body === undefined ? {} : { "Content-Type": "application/json", "Idempotency-Key": randomUUID() }),
-              },
-              ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-              signal: AbortSignal.timeout(15_000),
-            });
-            assert.ok(response.ok, `Correction fixture ${route}: HTTP ${response.status}`);
-            return response.json();
-          };
-          correctionScenario = await createCorrectionObserver({
-            root: repoRoot,
-            setup: correctionSetup,
-            server,
-            origin: baseUrl,
-            request: fixtureRequest,
-            userId: nativeIdentity.user.id,
-            computerId: connection.computerId,
-            runtimeId: "codex",
-            recipientDeviceId: nativeIdentity.device_id,
-            readArtifact: async (artifact) => {
-              const response = await fetch(`${baseUrl}${artifact.uri}`, {
-                headers: { Cookie: ownerCookie },
-                redirect: "error",
-                signal: AbortSignal.timeout(15_000),
-              });
-              assert.equal(response.status, 200);
-              return Buffer.from(await response.arrayBuffer());
-            },
-          });
-          await correctionScenario.registerInstances();
-          const correctionApi = async (route) => {
-            assert.ok(route.startsWith("/") && !route.startsWith("//"));
-            const path = route.startsWith("/api/v1/") ? route : `/api/v1${route}`;
-            const response = await fetch(`${baseUrl}${path}`, {
-              headers: { Authorization: `Bearer ${nativeToken}` },
-              signal: AbortSignal.timeout(15_000),
-            });
-            assert.equal(response.status, 200);
-            return response.json();
-          };
-          await runInstalledMacCorrection({
-            page,
-            electronApp,
-            api: correctionApi,
-            scenario: correctionScenario,
-            fixture: correctionScenario.fields,
-            check,
-            onEvidence: (evidence) => {
-              report.macCorrection = evidence;
-            },
-            snapshot: async (filename, caption) => {
-              assert.ok(macCorrectionImageNames.includes(filename));
-              const path = join(artifactDir, filename);
-              await page.screenshot({ path, fullPage: false, animations: "disabled", timeout: 30_000 });
-              const image = { path, caption };
-              screenshots.push(image);
-              return image;
-            },
-            restartWithSystemPath: async () => {
-              await electronApp.close();
-              electronApp = undefined;
-              page = undefined;
-              appEnv.PATH =
-                Object.entries(process.env).find(([key]) => /^path$/i.test(key))?.[1] ??
-                "/usr/bin:/bin:/usr/sbin:/sbin";
-              await launchApp();
-              // firstWindow can initially expose about:blank. Wait for the actual
-              // authenticated renderer before invoking its bridge after restart.
-              await waitForInstalledShell(page);
-              assert.deepEqual(
-                await page.evaluate(() => window.artooDesktop.getConnection()),
-                connection,
-                "Git correction restart must retain the same installed paired computer",
-              );
-              report.correction_environment = {
-                baseline_path_empty: true,
-                git_stage_uses_system_path: true,
-                executable: appExe,
-                computer_id: connection.computerId,
-              };
-              return { page, electronApp };
-            },
-          });
-          await retainCorrectionEvidence();
-          check(
-            "Installed Mac correction retains all four real worktrees, persists both reviews and verifies historical recovery plus exact Copy values before confirming only the captured run",
-          );
-          zeroArtifactSetup = createZeroArtifactWorkspaceSetup({
-            temporary: tempRoot,
-            projectId: "proj_artoo",
-            suffix: zeroArtifactSuffix,
-            runtimeId: "codex",
-          });
-          assert.equal(zeroArtifactSetup.configurationPath, zeroArtifactConfigurationPath);
-          const zeroInstance = (
-            await fixtureRequest(`/api/v1/computers/${connection.computerId}/instances`, {
-              runtime: "codex",
-              project_id: zeroArtifactSetup.fields.project_id,
-              workspace_root: zeroArtifactSetup.fields.workspace_root,
-              display_name: zeroArtifactSetup.fields.instance_name,
-              capabilities: ["code.modify"],
-            })
-          ).agent_instance;
-          assert.equal(zeroInstance.computer_id, connection.computerId);
-          assert.equal(zeroInstance.project_id, zeroArtifactSetup.fields.project_id);
-          zeroArtifactScenario = createZeroArtifactWorkspaceObserver({
-            setup: zeroArtifactSetup,
-            request: correctionApi,
-            computerId: connection.computerId,
-            instanceId: zeroInstance.id,
-          });
-          const restartArtifactConfiguration = async (value) => {
-            await electronApp.close();
-            electronApp = undefined;
-            page = undefined;
-            if (value === "none") appEnv.ARTOO_REPORT_ARTIFACTS = "none";
-            else delete appEnv.ARTOO_REPORT_ARTIFACTS;
-            await launchApp();
-            await waitForInstalledShell(page);
-            assert.deepEqual(await page.evaluate(() => window.artooDesktop.getConnection()), connection);
-            return { page, electronApp };
-          };
-          await runInstalledMacZeroArtifact({
-            page,
-            electronApp,
-            api: correctionApi,
-            scenario: zeroArtifactScenario,
-            check,
-            restartWithoutArtifacts: () => restartArtifactConfiguration("none"),
-            onEvidence: (evidence) => {
-              report.macZeroArtifact = evidence;
-            },
-            snapshot: async (filename, caption) => {
-              assert.ok(macZeroArtifactImageNames.includes(filename));
-              const path = join(artifactDir, filename);
-              await page.screenshot({ path, fullPage: false, animations: "disabled", timeout: 30_000 });
-              const image = { path, caption };
-              screenshots.push(image);
-              return image;
-            },
-          });
-          await retainZeroArtifactEvidence();
-          assert.deepEqual(
-            await correctionScenario.verify(),
-            report.macCorrection.verification,
-            "The separate zero-artifact task must leave the four-run correction evidence unchanged",
-          );
-          await restartArtifactConfiguration("default");
-          report.macZeroArtifact.default_artifact_collection_restored = await electronApp.evaluate(
-            () => process.env.ARTOO_REPORT_ARTIFACTS === undefined,
-          );
-          assert.equal(report.macZeroArtifact.default_artifact_collection_restored, true);
-        }
         const live = await runOptionalInstalledLiveProvider({
           platform,
           page,
@@ -1343,9 +830,7 @@ ${isMac ? "}" : ""}
         uninstall();
         await until(() => !existsSync(appExe), "Package removal left the app executable", 30_000);
         uninstalled = true;
-        check(
-          `Sign out clears credentials and revokes access; ${isMac ? "isolated .app removal" : "NSIS uninstall"} removes the app`,
-        );
+        check("Sign out clears credentials and revokes access; NSIS uninstall removes the app");
         Object.assign(report, {
           result: "pass",
           screenshot: join(artifactDir, `${label}-desktop-smoke.png`),
@@ -1384,20 +869,6 @@ ${isMac ? "}" : ""}
       if (executionError) throw executionError;
     },
     async () => {
-      try {
-        await retainCorrectionEvidence();
-      } catch {
-        report.result = "fail";
-        report.correction_evidence_retention_failed = true;
-        executionError ??= new Error("Correction evidence could not be retained before cleanup");
-      }
-      try {
-        await retainZeroArtifactEvidence();
-      } catch {
-        report.result = "fail";
-        report.zero_artifact_evidence_retention_failed = true;
-        executionError ??= new Error("Zero-artifact observation could not be retained before cleanup");
-      }
       const cleanup = {
         app_closed: !electronApp,
         browser_closed: !browserServer,
@@ -1405,27 +876,6 @@ ${isMac ? "}" : ""}
         uninstalled: uninstalled || !appExe,
         temporary_directory_removed: !tempRoot,
       };
-      if (correctionScenario) {
-        try {
-          await correctionScenario.close();
-          cleanup.correction_observer_closed = true;
-        } catch {
-          cleanup.correction_observer_closed = false;
-        }
-      }
-      if (zeroArtifactScenario) {
-        zeroArtifactScenario.close();
-        cleanup.zero_artifact_observer_closed = true;
-      }
-      if (fromDmg) {
-        try {
-          dmgMount?.detach();
-          cleanup.dmg_detached = !dmgMount || dmgMount.detached;
-        } catch {
-          cleanup.dmg_detached = false;
-          console.warn("[smoke] Owned DMG detach failed");
-        }
-      }
       for (const [key, resource] of [
         ["app_closed", electronApp],
         ["server_closed", server],
@@ -1437,110 +887,6 @@ ${isMac ? "}" : ""}
         } catch {
           console.warn(`[smoke] Cleanup failed: ${key}`);
         }
-      }
-      if (observeAssistantCleanup) {
-        try {
-          report.mac_assistant_cleanup = await observeAssistantCleanup();
-        } catch {
-          report.mac_assistant_cleanup = { closed: false, error: "Assistant PID observation failed" };
-        }
-        cleanup.assistant_processes_closed = report.mac_assistant_cleanup.closed === true;
-      }
-      if (correctionSetup) {
-        cleanup.correction_workspace_export_verified = false;
-        try {
-          const launches = readdirSync(correctionSetup.receiptsDirectory)
-            .filter((name) => name.startsWith("launch-") && name.endsWith(".json"))
-            .map((name) => JSON.parse(readFileSync(join(correctionSetup.receiptsDirectory, name), "utf8")));
-          await until(
-            () => launches.every((launch) => !correctionSetup.processAlive(launch)),
-            "Correction child remained live after worker shutdown",
-            10_000,
-          );
-          cleanup.correction_processes_closed = true;
-        } catch {
-          cleanup.correction_processes_closed = false;
-        }
-        if (cleanup.correction_processes_closed)
-          try {
-            const evidence = report.correction_evidence_directory;
-            assert.ok(evidence);
-            cpSync(correctionSetup.receiptsDirectory, join(evidence, "process-receipts"), { recursive: true });
-            const destination = join(evidence, "retained-workspaces");
-            correctionWorkspaceManifest = exportCorrectionWorkspaceEvidence({ setup: correctionSetup, destination });
-            report.correction_workspace_export = verifyMacCorrectionWorkspaceExport({
-              setup: correctionSetup,
-              manifest: correctionWorkspaceManifest,
-              manifestPath: join(destination, "manifest.json"),
-              complete: report.macCorrection?.passed === true,
-            });
-          } catch {
-            report.result = "fail";
-            report.correction_evidence_retention_failed = true;
-            executionError ??= new Error(
-              "Correction workspace bytes could not be exported after owned writers stopped",
-            );
-          }
-      }
-      if (zeroArtifactSetup) {
-        cleanup.zero_artifact_evidence_saved = false;
-        try {
-          const launches = readdirSync(zeroArtifactSetup.receipts)
-            .filter((name) => name.startsWith("launch-") && name.endsWith(".json"))
-            .map((name) => JSON.parse(readFileSync(join(zeroArtifactSetup.receipts, name), "utf8")));
-          await until(
-            () => launches.every(({ pid }) => !correctionProcessAlive(pid)),
-            "Zero-artifact child remained live after installed worker shutdown",
-            10_000,
-          );
-          cleanup.zero_artifact_processes_closed = true;
-        } catch {
-          cleanup.zero_artifact_processes_closed = false;
-        }
-        if (cleanup.zero_artifact_processes_closed)
-          try {
-            const evidence = report.zero_artifact_evidence_directory;
-            assert.ok(evidence);
-            cpSync(zeroArtifactSetup.receipts, join(evidence, "process-receipts"), { recursive: true });
-            try {
-              const destination = join(evidence, "retained-workspace");
-              zeroArtifactWorkspaceManifest = zeroArtifactScenario.exportEvidence(destination, zeroArtifactObservation);
-              report.zero_artifact_workspace_export = verifyZeroArtifactWorkspaceExport({
-                manifest: zeroArtifactWorkspaceManifest,
-                manifestPath: join(destination, "manifest.json"),
-                workspaceRoot: zeroArtifactSetup.fields.workspace_root,
-                temporary: tempRoot,
-              });
-              cleanup.zero_artifact_workspace_export_verified = false;
-            } catch (error) {
-              if (report.macZeroArtifact?.passed) throw error;
-              // A failed UI attempt still preserves available owned bytes without
-              // promoting them into a completed-workspace proof.
-              const partial = join(evidence, "incomplete-workspace");
-              mkdirSync(partial);
-              report.zero_artifact_incomplete_files = [];
-              for (const name of [...ZERO_ARTIFACT_FILES, "context_pack.md"]) {
-                const source = join(zeroArtifactSetup.fields.workspace_root, name);
-                if (!existsSync(source) || !lstatSync(source).isFile() || lstatSync(source).isSymbolicLink()) continue;
-                const bytes = readFileSync(source),
-                  copy = join(partial, name);
-                writeFileSync(copy, bytes, { flag: "wx", mode: 0o600 });
-                report.zero_artifact_incomplete_files.push({
-                  source,
-                  copy,
-                  sha256: zeroArtifactHash(bytes),
-                  bytes: bytes.length,
-                });
-              }
-            }
-            cleanup.zero_artifact_evidence_saved = true;
-          } catch {
-            report.result = "fail";
-            report.zero_artifact_evidence_retention_failed = true;
-            executionError ??= new Error(
-              "Zero-artifact fixture evidence could not be saved after owned writers stopped",
-            );
-          }
       }
       if (browserServer) {
         report.browser_cleanup = await closeOwnedBrowser(browserServer);
@@ -1559,14 +905,7 @@ ${isMac ? "}" : ""}
         }
       }
       try {
-        if (
-          [
-            cleanup.app_closed,
-            cleanup.assistant_processes_closed,
-            cleanup.correction_processes_closed,
-            cleanup.zero_artifact_processes_closed,
-          ].includes(false)
-        ) {
+        if (!cleanup.app_closed) {
           cleanup.temporary_directory_removed = false;
           report.retained_failure_temporary = tempRoot;
         } else {
@@ -1576,36 +915,6 @@ ${isMac ? "}" : ""}
       } catch {
         console.warn("[smoke] Smoke temporary directory cleanup failed");
       }
-      if (correctionWorkspaceManifest)
-        try {
-          report.correction_workspace_export = verifyMacCorrectionWorkspaceExport({
-            setup: correctionSetup,
-            manifest: correctionWorkspaceManifest,
-            manifestPath: report.correction_workspace_export.manifest_path,
-            complete: report.macCorrection?.passed === true,
-            afterCleanup: true,
-          });
-          cleanup.correction_workspace_export_verified = true;
-        } catch {
-          report.result = "fail";
-          report.correction_evidence_retention_failed = true;
-          executionError ??= new Error("Retained correction copies did not verify after disposable-fixture cleanup");
-        }
-      if (zeroArtifactWorkspaceManifest)
-        try {
-          report.zero_artifact_workspace_export = verifyZeroArtifactWorkspaceExport({
-            manifest: zeroArtifactWorkspaceManifest,
-            manifestPath: report.zero_artifact_workspace_export.manifest_path,
-            workspaceRoot: zeroArtifactSetup.fields.workspace_root,
-            temporary: tempRoot,
-            afterCleanup: true,
-          });
-          cleanup.zero_artifact_workspace_export_verified = true;
-        } catch {
-          report.result = "fail";
-          report.zero_artifact_evidence_retention_failed = true;
-          executionError ??= new Error("Zero-artifact copies did not verify after disposable-fixture cleanup");
-        }
       report.cleanup = cleanup;
       report.cleanup_complete = Object.values(cleanup).every(Boolean);
       if (!report.cleanup_complete) {

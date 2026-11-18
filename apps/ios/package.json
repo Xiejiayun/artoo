@@ -1,7 +1,0 @@
-{
-  "name": "@artoo/ios",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Native SwiftUI client. Xcode build and XCTest require macOS; static API contracts can be checked on Windows.",
-  "scripts": { "verify:contracts": "node scripts/verify-contracts.mjs" }
-}

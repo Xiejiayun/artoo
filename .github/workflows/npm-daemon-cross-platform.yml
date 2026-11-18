@@ -29,15 +29,10 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Exact universal candidate version to build on main
+        description: Exact Windows candidate version to build on main
         required: true
         default: 0.1.0-rc.9
         type: string
-      mac_platforms:
-        description: Run optional Mac package checks (does not qualify Mac for release)
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -133,8 +128,7 @@ jobs:
             nativeManifestSha256 = $nativeManifestSha
             runtimeManifestSha256 = $metadata.artoo.runtimeManifestSha256
             platforms = $metadata.artoo.platforms
-            requiredPlatforms = @('linux-arm64', 'linux-x64', 'win32-x64')
-            optionalPlatforms = @('darwin-arm64', 'darwin-x64')
+            requiredPlatforms = @('win32-x64')
           } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $artifactRoot 'release-metadata.json') -Encoding utf8
           "CANDIDATE_ARTIFACT=$artifactRoot" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
           @(
@@ -162,12 +156,6 @@ jobs:
         include:
           - runner: windows-latest
             platform: win32-x64
-            qualification: required
-          - runner: ubuntu-24.04
-            platform: linux-x64
-            qualification: required
-          - runner: ubuntu-24.04-arm
-            platform: linux-arm64
             qualification: required
     defaults:
       run:
@@ -210,10 +198,6 @@ jobs:
             --version "$PACKAGE_VERSION" --platform "$EXPECTED_PLATFORM" \
             --source-commit "$PACKAGE_SOURCE_COMMIT" \
             --evidence-directory "$EVIDENCE_DIRECTORY"
-      - name: Verify POSIX process behavior separately against built source
-        if: runner.os != 'Windows'
-        timeout-minutes: 15
-        run: node --test --test-concurrency=1 apps/artood/test-fixtures/verification-real.test.mjs > "$RUNNER_TEMP/posix-verification.log" 2>&1
       - name: Upload safe package evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -224,109 +208,26 @@ jobs:
             ${{ runner.temp }}/artoo-npm-package-evidence/*.log
           if-no-files-found: warn
           retention-days: 14
-      - name: Upload separate POSIX fixture log
-        if: always() && runner.os != 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-daemon-posix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.qualification }}-${{ matrix.platform }}
-          path: |
-            ${{ runner.temp }}/posix-verification.log
-          if-no-files-found: warn
-          retention-days: 14
 
-  browser-verification:
-    name: Required sandboxed browser (Ubuntu 22.04)
-    needs: build
-    # Keep package/POSIX qualification on Ubuntu 24.04. Downloaded Chromium
-    # needs a compatible user-namespace policy; never disable its sandbox or
-    # change the runner's security policy to obtain browser fixture results.
-    runs-on: ubuntu-22.04
-    timeout-minutes: 20
-    env:
-      PACKAGE_SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.build.outputs.source_commit }}
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - name: Bind browser source fixtures to the candidate source
-        run: |
-          test "$(git rev-parse HEAD)" = "$PACKAGE_SOURCE_COMMIT"
-          export EVIDENCE_DIRECTORY="$RUNNER_TEMP/artoo-browser-verification"
-          mkdir "$EVIDENCE_DIRECTORY"
-          printf '%s\n' "$PACKAGE_SOURCE_COMMIT" > "$EVIDENCE_DIRECTORY/source-commit.txt"
-          printf 'EVIDENCE_DIRECTORY=%s\n' "$EVIDENCE_DIRECTORY" >> "$GITHUB_ENV"
-      - name: Install fixture dependencies
-        run: npm ci --no-audit --no-fund
-      - name: Build the server, daemon and referenced packages
-        run: npm run build --workspace @artoo/server
-      - name: Install and identify pinned Chromium
-        run: |
-          npx playwright install --with-deps chromium
-          # Keep the protected executable-size bound. Record full Chrome and
-          # the pinned distribution's smaller official headless executable.
-          browser="$(node --input-type=module -e 'import { registry } from "playwright-core/lib/coreBundle"; console.log(registry.registry.findExecutable("chromium-headless-shell").executablePath())')"
-          stat --format='browser path=%n bytes=%s links=%h type=%F' "$(node --input-type=module -e 'import { chromium } from "playwright"; console.log(chromium.executablePath())')" "$browser"
-          test -x "$browser"
-          printf 'ARTOO_TEST_CHROMIUM=%s\n' "$browser" >> "$GITHUB_ENV"
-      - name: Diagnose sandboxed blank-page startup with owned process closure
-        run: node scripts/npm-daemon/browser-sandbox-probe.mjs "$EVIDENCE_DIRECTORY"
-      - name: Verify protected CLI browser measurements and node evidence sealing
-        timeout-minutes: 10
-        run: node --test --test-concurrency=1 apps/artood/test-fixtures/verification-capabilities-real.test.mjs > "$EVIDENCE_DIRECTORY/posix-browser-verification.log" 2>&1
-      - name: Upload browser source qualification and bounded startup diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-daemon-browser-${{ github.run_id }}-${{ github.run_attempt }}-ubuntu-22.04
-          path: ${{ env.EVIDENCE_DIRECTORY }}/*
-          if-no-files-found: warn
-          retention-days: 30
-
-  mac-platforms:
-    name: Optional Mac package (${{ matrix.platform }})
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mac_platforms }}
-    needs: build
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15-intel
-            platform: darwin-x64
-            qualification: optional
-          - runner: macos-15
-            platform: darwin-arm64
-            qualification: optional
+  cross-platform:
+    name: Required Windows aggregate
+    if: always()
+    needs: [build, platforms]
+    runs-on: windows-latest
     defaults:
       run:
         shell: bash
-    # Same immutable candidate and checks, but this job is not a dependency of
-    # the Windows/Linux release aggregate. Its result is separate evidence.
-    env: *platform-environment
-    steps: *platform-steps
-
-  cross-platform:
-    name: Required Windows/Linux aggregate
-    if: always()
-    needs: [build, platforms, browser-verification]
-    runs-on: ubuntu-24.04
     permissions:
       contents: read
     env:
       BUILD_RESULT: ${{ needs.build.result }}
       PLATFORM_RESULT: ${{ needs.platforms.result }}
-      BROWSER_RESULT: ${{ needs.browser-verification.result }}
       PACKAGE_VERSION: ${{ needs.build.outputs.version }}
       PACKAGE_SHA256: ${{ needs.build.outputs.sha256 }}
       PACKAGE_SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
     steps:
-      - name: Require build, all three package legs and sandboxed browser verification
-        run: test "$BUILD_RESULT" = success && test "$PLATFORM_RESULT" = success && test "$BROWSER_RESULT" = success
+      - name: Require build and Windows x64 package leg
+        run: test "$BUILD_RESULT" = success && test "$PLATFORM_RESULT" = success
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -334,7 +235,7 @@ jobs:
         with:
           pattern: npm-daemon-smoke-${{ github.run_id }}-${{ github.run_attempt }}-required-*
           path: ${{ runner.temp }}/artoo-npm-platform-reports
-      - name: Match the three required reports to the same candidate
+      - name: Match the required Windows report to the same candidate
         env:
           REPORTS_ROOT: ${{ runner.temp }}/artoo-npm-platform-reports
         run: |
@@ -342,11 +243,11 @@ jobs:
           import assert from 'node:assert/strict';
           import { appendFileSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
           import { join } from 'node:path';
-          const expected = ['linux-arm64', 'linux-x64', 'win32-x64'];
+          const expected = ['win32-x64'];
           const reports = readdirSync(process.env.REPORTS_ROOT, { withFileTypes: true })
             .filter(entry => entry.isDirectory())
             .map(entry => JSON.parse(readFileSync(join(process.env.REPORTS_ROOT, entry.name, 'result.json'), 'utf8')));
-          assert.equal(reports.length, 3);
+          assert.equal(reports.length, 1);
           assert.deepEqual(reports.map(report => report.platform).sort(), expected);
           for (const report of reports) {
             assert.equal(report.status, 'passed');
@@ -367,14 +268,9 @@ jobs:
             runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
             name: '@jiayunxie/artood', version: process.env.PACKAGE_VERSION,
             sha256: process.env.PACKAGE_SHA256, platforms: expected, requiredPlatforms: expected,
-            browserSourceVerification: { status: process.env.BROWSER_RESULT, runner: 'ubuntu-22.04',
-              sourceCommit: process.env.PACKAGE_SOURCE_COMMIT, chromiumSandbox: 'enabled',
-              scope: 'Protected CLI/browser fixture qualification against built source; not Ubuntu 24.04 browser qualification or live-provider acceptance.' },
-            optionalMac: { platforms: ['darwin-arm64', 'darwin-x64'], requiredForRelease: false,
-              qualification: 'deferred', validation: 'Separate optional jobs; not evaluated by this aggregate.' },
-            scope: 'Windows x64 and Linux x64/arm64 release scope: one tarball installed without force or ignored scripts on three real OS/architecture pairs; managed connection/status/stop/restart, controlled CLI tasks and separate POSIX source fixtures. Mac implementation remains in the package but release qualification is deferred. No publication or live-provider qualification.' };
+            scope: 'Windows x64 release scope: one tarball installed without force or ignored scripts on Windows x64; managed connection/status/stop/restart and controlled CLI tasks. No publication or live-provider qualification.' };
           writeFileSync(join(process.env.REPORTS_ROOT, 'cross-platform-summary.json'), JSON.stringify(summary, null, 2) + '\n');
-          appendFileSync(process.env.GITHUB_STEP_SUMMARY, 'All three required Windows/Linux platforms passed for the same tarball. Optional Mac jobs are separate and do not establish Mac release qualification here.\n\n'
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, 'Required Windows x64 platform passed for the same tarball.\n\n'
             + JSON.stringify(summary, null, 2) + '\n\nPR merge-ref artifacts are validation only; deliver candidates built and validated from main.\n');
           NODE
       - uses: actions/upload-artifact@v4

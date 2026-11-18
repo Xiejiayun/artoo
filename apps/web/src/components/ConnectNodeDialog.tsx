@@ -23,8 +23,7 @@ export function daemonConnectCommand(origin: string, code: string, platform: Dev
   ) {
     throw new Error("This connection command needs a trusted server address and a valid pairing code.");
   }
-  if (!["windows", "linux", "macos", "npm"].includes(platform))
-    throw new Error("Choose Windows, Linux or macOS for a local node.");
+  if (!["windows", "npm"].includes(platform)) throw new Error("Choose Windows for a local node.");
   return `npx -y @jiayunxie/artood@${DAEMON_CONNECT_VERSION} connect --server ${origin} --code ${code}`;
 }
 
@@ -139,8 +138,6 @@ export function ConnectNodeDialog({
               onChange={(event) => setPlatform(event.target.value as DevicePlatform)}
             >
               <option value="windows">Windows</option>
-              <option value="linux">Linux</option>
-              <option value="macos">macOS</option>
             </Select>
             <p className="connect-node__hint">
               Requires Node.js 24+ and npm 11+. The command installs the official npm package, discovers your Codex and
@@ -166,7 +163,7 @@ export function ConnectNodeDialog({
               <header>
                 <span>
                   <Terminal size={15} />
-                  {platform === "windows" ? "PowerShell" : "Terminal"}
+                  PowerShell
                 </span>
                 <Button size="sm" iconLeft={copied ? Check : Copy} onClick={() => void copy()}>
                   {copied ? "Copied" : "Copy command"}
