@@ -13,7 +13,7 @@ export const releaseName = "@jiayunxie/artood",
 export const registry = "https://registry.npmjs.org/";
 export const metadataUrl = `${registry}@jiayunxie%2fartood/${releaseVersion}`;
 export const tarballUrl = `${registry}@jiayunxie/artood/-/artood-${releaseVersion}.tgz`;
-const platforms = ["win32-x64", "linux-x64", "linux-arm64"];
+const platforms = ["win32-x64"];
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const safe = (value) =>
   String(value)
@@ -44,7 +44,7 @@ export function parseRegistryArguments(args) {
   assert.equal(sha512.length, 64);
   assert.equal(`sha512-${sha512.toString("base64")}`, values.integrity);
   assert.match(values.sourceCommit ?? "", /^[a-f0-9]{40}$/);
-  assert.ok(platforms.includes(values.platform), "Use a real Windows x64 or Linux x64/arm64 runner");
+  assert.ok(platforms.includes(values.platform), "Use a real Windows x64 runner");
   assert.ok(isAbsolute(values.evidenceDirectory ?? ""), "Evidence directory must be a new absolute path");
   return values;
 }

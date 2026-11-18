@@ -28,7 +28,7 @@ const args = [
   "--source-commit",
   source,
   "--platform",
-  "linux-x64",
+  "win32-x64",
   "--evidence-directory",
   evidence,
 ];
@@ -68,7 +68,7 @@ test("candidate smoke keeps local tarball installation by default and registry m
     "--version",
     releaseVersion,
     "--platform",
-    "linux-x64",
+    "win32-x64",
     "--source-commit",
     source,
     "--evidence-directory",

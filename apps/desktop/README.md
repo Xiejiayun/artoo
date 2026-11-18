@@ -1,4 +1,4 @@
-# Artoo desktop trusted-team preview
+# Artoo Windows desktop client
 
 The Electron app provides the Web workspace and a managed local `artood`
 execution worker. It connects to a separately deployed Artoo server; the
@@ -7,7 +7,7 @@ installer does not include a local server or database.
 ## Connect and execute work
 
 1. Sign in to the Web app with your own account and generate a pairing code for
-   Windows or macOS in Settings.
+   Windows in Settings.
 2. Install the app and enter the server origin, device name, and single-use code.
    Remote origins must use HTTPS; loopback HTTP is supported for local testing.
 3. Install and authenticate the Codex or Claude Code CLI on the computer.
@@ -71,50 +71,7 @@ it does not intercept arbitrary commands in a running CLI. See the
 [operations guide](../../docs/preview-operations.md) for approval, cancellation,
 goal, backup, and deployment behavior.
 
-## Build and verify
-
-On macOS:
-
-```sh
-npm ci
-npm run verify:mac
-```
-
-The Mac release gate builds fresh unsigned preview DMG/ZIP artifacts, installs
-the app from the verified read-only DMG into an isolated directory, and runs the
-complete packaged workflow after detaching the image. Its HTML report is
-`release/mac-dmg-smoke-artifacts/macos-dmg-desktop-smoke.html`. See
-[macOS distribution](MAC-DISTRIBUTION.md) for signing gates, artifact manifests
-and CI evidence retention.
-
-The separate directory-package smoke remains available:
-
-```sh
-VITE_AUTH_ENABLED=true npm run smoke:mac --workspace @artoo/desktop
-```
-
-`pack:mac` produces `release/mac-arm64/Artoo.app` on Apple silicon or
-`release/mac/Artoo.app` on Intel. The smoke builds the current architecture,
-copies the packaged `.app` into an isolated installation, and launches its
-actual executable through Playwright Electron. It verifies packaged JS/CSS,
-the `darwin` bridge, production authentication and pairing, OS-encrypted
-credentials, worker start/stop/restart, deterministic Codex execution, artifact
-bytes, task review, and app/server restart recovery. It then signs out, removes
-the isolated installation, and verifies cleanup. `ARTOO_SMOKE_SKIP_BUILD=1`
-reuses an existing package; the report records its `app.asar` SHA-256.
-
-Mac evidence is written to `release/mac-smoke-artifacts`: JSON, screenshots,
-downloaded patches and `macos-desktop-smoke.html`. The HTML embeds each screenshot
-and records source revision, checked behavior, errors and cleanup. Every run
-also keeps a timestamped HTML/JSON copy under `history/`, including build or
-preflight failures. `ARTOO_DESKTOP_REPORT_DIR` can select another evidence
-directory. This smoke verifies an unsigned directory app; use `verify:mac` for
-DMG installation. Signing, notarization, live provider quality and automatic
-updates remain separate gates.
-Set `ARTOO_CHROMIUM_CHANNEL=chrome` to use an installed Chrome for the owner Web
-session when Playwright Chromium is unavailable; the report records the actual
-browser channel and version. The packaged Electron app is always the client
-under test.
+## Build and verify on Windows
 
 Run from the repository root on Windows:
 
@@ -171,9 +128,7 @@ uninstall completed, and the temporary data directory was removed. Cleanup
 failure makes the gate fail.
 
 `windows-desktop-smoke.html` includes the same checks and embedded screenshots;
-timestamped HTML/JSON copies remain in `history/` after subsequent runs. Windows
-and macOS use the same workflow implementation with platform-specific install,
-CLI-launcher and removal steps.
+timestamped HTML/JSON copies remain in `history/` after subsequent runs.
 
 The optional installed-worker verification runs two real chat turns and a
 three-contribution planning discussion through Aerial / GitHub Copilot after
@@ -197,10 +152,6 @@ The native shell uses context isolation, disabled renderer Node integration,
 sandboxing, restricted IPC senders, and server-enforced explicit desktop CORS.
 `ARTOO_DESKTOP_CORS=1` allows the packaged `file://` origin, represented as `null`;
 wildcard desktop origins are rejected.
-
-macOS package evidence requires a successful `smoke:mac` run on a Mac. Windows
-tests do not establish that result, and unsigned Mac tests do not establish
-signing or notarization. iOS is a separate native client under `apps/ios`.
 
 ## Toolchain notes
 

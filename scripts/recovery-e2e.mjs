@@ -224,11 +224,11 @@ async function main() {
     }
     await start(data);
     ownerToken = (await createSession(server.ctx, { ttlMs: 3_600_000 }, { userId: "user_owner" })).raw;
-    const code = await request("/api/v1/devices/pairings", { body: { intended_platform: "macos" }, status: 201 });
+    const code = await request("/api/v1/devices/pairings", { body: { intended_platform: "windows" }, status: 201 });
     const claimed = await request("/api/v1/devices/claim", {
       body: {
         code: code.code,
-        platform: "macos",
+        platform: "windows",
         app_version: "recovery-fixture",
         display_name: "Recovery execution computer",
       },

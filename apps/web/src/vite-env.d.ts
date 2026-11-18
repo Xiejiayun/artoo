@@ -20,9 +20,14 @@ interface Window {
     configureServer?(serverUrl: string): Promise<void>;
     pairDevice?(input: { code: string; displayName: string }): Promise<DesktopConnection>;
     logout?(): Promise<void>;
-    daemonStatus?(): Promise<{ state: string; pid?: number; lastError?: string; config: DesktopDaemonConfig; configurationLocked?: boolean; managedWorkspace?: DesktopManagedWorkspaceStatus }>;
+    daemonStatus?(): Promise<{
+      state: string;
+      pid?: number;
+      lastError?: string;
+      config: DesktopDaemonConfig;
+      configurationLocked?: boolean;
+    }>;
     configureDaemon?(config: DesktopDaemonInput): Promise<void>;
-    prepareManagedWorkspace?(): Promise<void>;
     startDaemon?(): Promise<void>;
     stopDaemon?(): Promise<void>;
     restartDaemon?(): Promise<void>;
@@ -35,7 +40,12 @@ interface Window {
   };
 }
 
-interface DesktopConnection { serverUrl: string; paired: boolean; deviceId: string | null; computerId: string | null }
+interface DesktopConnection {
+  serverUrl: string;
+  paired: boolean;
+  deviceId: string | null;
+  computerId: string | null;
+}
 interface DesktopCodexConfig {
   mode: "default" | "responses";
   binaryPath?: string;
@@ -44,8 +54,23 @@ interface DesktopCodexConfig {
   authMode: "none" | "api-key";
   hasKey: boolean;
 }
-interface DesktopManagedWorkspaceStatus { state: "unsupported" | "unprepared" | "preparing" | "incomplete" | "ready"; lastError?: string }
-interface DesktopNativeVerificationConfig { version: 1; profilesFile: string }
-interface DesktopNativePublicationConfig { version: 1; profilesFile: string }
-interface DesktopDaemonConfig { allowedRoots: string[]; runtimes: string[]; worktreeBaseRepo?: string; trustedExecution: boolean; allowNewAllocations?: boolean; codex?: DesktopCodexConfig; nativeVerification?: DesktopNativeVerificationConfig; nativePublication?: DesktopNativePublicationConfig }
-type DesktopDaemonInput = Omit<DesktopDaemonConfig, "codex"> & { codex?: Omit<DesktopCodexConfig, "hasKey"> & { apiKey?: string } };
+interface DesktopNativeVerificationConfig {
+  version: 1;
+  profilesFile: string;
+}
+interface DesktopNativePublicationConfig {
+  version: 1;
+  profilesFile: string;
+}
+interface DesktopDaemonConfig {
+  allowedRoots: string[];
+  runtimes: string[];
+  worktreeBaseRepo?: string;
+  trustedExecution: boolean;
+  codex?: DesktopCodexConfig;
+  nativeVerification?: DesktopNativeVerificationConfig;
+  nativePublication?: DesktopNativePublicationConfig;
+}
+type DesktopDaemonInput = Omit<DesktopDaemonConfig, "codex"> & {
+  codex?: Omit<DesktopCodexConfig, "hasKey"> & { apiKey?: string };
+};

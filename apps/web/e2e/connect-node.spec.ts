@@ -1,9 +1,9 @@
 import { expect, test } from "@playwright/test";
 
-test("computer connection uses the official npm package on every platform", async ({ page, context }, testInfo) => {
+test("computer connection uses the official npm package on Windows", async ({ page, context }, testInfo) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto("/computers");
-  for (const platform of ["windows", "linux", "macos"]) {
+  for (const platform of ["windows"]) {
     await page
       .getByRole("region", { name: "Computers", exact: true })
       .getByRole("button", { name: "Connect Local Node", exact: true })

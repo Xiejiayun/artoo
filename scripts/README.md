@@ -28,7 +28,7 @@
 | --- | --- |
 | `npm run build:preview` → [build-preview.mjs](build-preview.mjs) | 构建预览所需的服务端、Web、daemon/桌面相关输入 |
 | `npm run start:preview` → [start-preview.mjs](start-preview.mjs) | 启动预览；先按[共享服务](../docs/shared-server.md)和[预览运维](../docs/preview-operations.md)配置 |
-| `npm run verify:preview -- --list` → [preview-gate.mjs](preview-gate.mjs) | 只列出默认 shared 门禁；`--suite=shared-checks|ios|mac|desktop` 选择对应入口，去掉 `--list` 才执行 |
+| `npm run verify:preview -- --list` → [preview-gate.mjs](preview-gate.mjs) | 只列出默认 shared 门禁；`--suite=shared-checks|desktop` 选择对应入口，去掉 `--list` 才执行 |
 | `npm run verify:v1` → [v1-gate.mjs](v1-gate.mjs) | 历史 v1 自动门禁；完整发布条件见 [v1 release gates](../docs/v1-release-gates.md) |
 | `npm run e2e:auth` → [auth-e2e.mjs](auth-e2e.mjs) | 认证浏览器工作流 |
 | `npm run demo:v1` → [v1-demo.mjs](v1-demo.mjs) | v1 演示流程，不能替代真实 Provider 产品验收 |
@@ -37,27 +37,15 @@
 CI 的 `preview.yml` 将完整 Vitest 分为两个 parallel 分片和一个串行 windows-process 分区，
 并在 shared 聚合实际文件覆盖；`shared-checks` 单独运行实际 Web/认证浏览器等检查。
 不能用任一子入口的成功代表全部发布门禁通过。
-暂停的 iOS 与 Mac desktop UI 套件仅在手动 `workflow_dispatch` 显式选择
-`apple_clients: true` 时运行，默认关闭；必需的 macOS `scheduler-journal`、
-shared 聚合和 Web/Windows 门禁仍随 PR 与 main push 完整运行。
+`windows_desktop` 仅在手动 `workflow_dispatch` 显式开启并在自托管 Windows runner 上运行；
+shared 聚合与 Web/Windows 检查仍随 PR 与 main push 完整运行。
 
-## Apple 与桌面验收
-
-主入口是 [ios-ui-suites-e2e.mjs](ios-ui-suites-e2e.mjs)。
-例如 `npm run verify:ios:suites -- --suites=core,mentions` 一次构建后依次执行所选 suite，
-统一准备 Xcode 工程；各 suite 仍保留独立构建、证据与清理。
-独立 `verify:ios:core|assistant|mentions|correction|retention` 入口仍可用。
-原生执行需要 macOS/Xcode/Simulator，详见 [Apple E2E](../docs/apple-client-e2e.md)。
+## 桌面与专项验收
 
 | 脚本组 | 定位 |
 | --- | --- |
-| [ios-ui-e2e.mjs](ios-ui-e2e.mjs)、[assistant](ios-ui-assistant-e2e.mjs)、[mentions](ios-ui-mentions-e2e.mjs)、[correction](ios-ui-correction-e2e.mjs)、[retention](ios-ui-retention-e2e.mjs) | suite 包装入口，由聚合器按选择调用 |
-| `ios-ui-*-fixture.mjs`、`ios-ui-*-evidence.mjs`、[ios-ui-suite-evidence.mjs](ios-ui-suite-evidence.mjs) | 受控场景及证据支持模块，不能一概当作独立 CLI 或真实 Provider |
-| [ios-ui-simulator.mjs](ios-ui-simulator.mjs)、[ios-simulator-clipboard.mjs](ios-simulator-clipboard.mjs)、[ios-ui-session.test.mjs](ios-ui-session.test.mjs) | Simulator 所有权、剪贴板及认证边界回归 |
-| [ios-ai-data-sharing-e2e.mjs](ios-ai-data-sharing-e2e.mjs)、[ios-content-moderation-e2e.mjs](ios-content-moderation-e2e.mjs) | 专项原生 harness，按各自配置运行 |
 | [ai-data-sharing-e2e.mjs](ai-data-sharing-e2e.mjs)、[content-moderation-e2e.mjs](content-moderation-e2e.mjs) | 对应专项 Web/服务端流程 |
-| [apps/ios/scripts/](../apps/ios/scripts/) | 原生契约检查、工具链、归档、XCTest 和分发脚本 |
-| [apps/desktop/scripts/](../apps/desktop/scripts/) | 打包、安装与桌面验收；`verify:mac` / `verify:desktop` 由 preview gate 调用 |
+| [apps/desktop/scripts/](../apps/desktop/scripts/) | 打包、安装与 Windows 桌面验收；`verify:desktop` 由 preview gate 调用 |
 
 ## 运维、发布与离线工具
 
@@ -76,12 +64,9 @@ shared 聚合和 Web/Windows 门禁仍随 PR 与 main push 完整运行。
 
 [benchmarks/](benchmarks/) 包含 presence 索引、消息对账、搜索与预算扫描的可复现测量入口；
 方法、基线和局限见[文档测量记录](../docs/INDEX.md#版本化验证与测量记录)。
-[fixtures/](fixtures/)是受控场景、协议与结果断言模块。
-[owned-browser.mjs](owned-browser.mjs)、[owned-process-group.mjs](owned-process-group.mjs)、
-[workflow-cleanup.mjs](workflow-cleanup.mjs)、[e2e-report.mjs](e2e-report.mjs)、
-[png-evidence.mjs](png-evidence.mjs)和[native-single-case.mjs](native-single-case.mjs)是所有权、报告和证据支持层。
+[owned-browser.mjs](owned-browser.mjs)、[workflow-cleanup.mjs](workflow-cleanup.mjs)与
+[e2e-report.mjs](e2e-report.mjs)是所有权、清理与报告支持层。
 
-新增脚本先选择职责目录：门禁放 `scripts/gates/`，iOS 编排放 `scripts/ios/`，
-受控场景放 `scripts/fixtures/`，测量放现有 `scripts/benchmarks/`。
+新增脚本先选择职责目录：门禁放 `scripts/gates/`，测量放现有 `scripts/benchmarks/`。
 按实际需要创建目录，不创建空目录。已有文件保持路径，避免破坏 npm、CI、指南与相对导入；
 迁移时须单独更新全部调用并验证。新增 CLI 应有明确参数契约和平台条件，支持模块与测试不要伪装成用户入口。

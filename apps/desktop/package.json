@@ -10,13 +10,8 @@
     "bundle-daemon": "node scripts/bundle-daemon.mjs",
     "prepare-renderer": "npm run build --workspace @artoo/web && node scripts/prepare-renderer.mjs",
     "pack:win": "npm run prepare-renderer && npm run bundle-daemon && electron-builder --win dir --publish never",
-    "pack:mac": "npm run prepare-renderer && npm run bundle-daemon && install-electron && electron-builder --mac dir --publish never --config.electronDist=../../node_modules/electron/dist",
     "dist:win": "npm run prepare-renderer && npm run bundle-daemon && electron-builder --win nsis --publish never",
-    "dist:mac:preview": "node scripts/mac-distribution.mjs --preview",
-    "dist:mac:release": "node scripts/mac-distribution.mjs --release",
-    "smoke:win": "node scripts/windows-e2e-smoke.mjs",
-    "smoke:mac": "node scripts/macos-e2e-smoke.mjs",
-    "smoke:mac:dmg": "node scripts/macos-dmg-e2e-smoke.mjs"
+    "smoke:win": "node scripts/windows-e2e-smoke.mjs"
   },
   "devDependencies": {
     "electron": "44.4.3",
@@ -29,11 +24,30 @@
     "electronVersion": "44.4.3",
     "asar": true,
     "npmRebuild": false,
-    "files": ["main.cjs", "preload.cjs", "connection-store.cjs", "atomic-store.cjs", "managed-profile-store.cjs", "desktop-controller.cjs", "codex-settings.cjs", "resources/AppIcon.ico", "renderer/**", "daemon/**"],
-    "asarUnpack": ["daemon/**"],
-    "directories": { "output": "release" },
-    "mac": { "target": "dir", "category": "public.app-category.developer-tools", "icon": "resources/AppIcon.icns" },
-    "win": { "target": "nsis", "icon": "resources/AppIcon.ico" },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "connection-store.cjs",
+      "atomic-store.cjs",
+      "desktop-controller.cjs",
+      "codex-settings.cjs",
+      "resources/AppIcon.ico",
+      "renderer/**",
+      "daemon/**"
+    ],
+    "asarUnpack": [
+      "daemon/**"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "resources/AppIcon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

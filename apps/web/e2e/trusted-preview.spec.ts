@@ -193,22 +193,22 @@ test("project management, device pairing/revocation and reviewed skill installat
   await expect(page.getByRole("article", { name: skillName })).toBeVisible();
 });
 
-test("Linux pairing, computer enrollment and revocation persist through Settings", async ({ page, request }) => {
+test("Windows pairing, computer enrollment and revocation persist through Settings", async ({ page, request }) => {
   await page.goto("/settings");
   await page.getByText("Pair a desktop or mobile app", { exact: true }).click();
-  await page.getByLabel("Device platform").selectOption("linux");
+  await page.getByLabel("Device platform").selectOption("windows");
   await page.getByRole("button", { name: "Generate pairing code" }).click();
   const code = await page
     .getByRole("region", { name: "Device pairing" })
     .getByLabel("Pairing code", { exact: true })
     .textContent();
-  const deviceName = unique("Preview Linux");
+  const deviceName = unique("Preview Windows Enroll");
   const claim = await request.post("/api/v1/devices/claim", {
-    data: { code, platform: "linux", display_name: deviceName, app_version: "e2e" },
+    data: { code, platform: "windows", display_name: deviceName, app_version: "e2e" },
   });
   expect(claim.status()).toBe(201);
   const claimed = await claim.json();
-  expect(claimed.device.platform).toBe("linux");
+  expect(claimed.device.platform).toBe("windows");
   await page.reload();
   const row = page.getByRole("article").filter({ hasText: deviceName });
   await row.getByRole("button", { name: "Enroll computer", exact: true }).click();
@@ -219,7 +219,7 @@ test("Linux pairing, computer enrollment and revocation persist through Settings
   const registered = devices.find((device: { id: string }) => device.id === claimed.device.id);
   expect(registered.computer_id).toBeTruthy();
   const { computers } = await (await request.get("/api/v1/bootstrap")).json();
-  expect(computers.find((computer: { id: string }) => computer.id === registered.computer_id)?.os).toBe("linux");
+  expect(computers.find((computer: { id: string }) => computer.id === registered.computer_id)?.os).toBe("windows");
   await page.reload();
   await expect(row).toContainText("Computer:");
   await row.getByRole("button", { name: "Revoke device", exact: true }).click();

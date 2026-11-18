@@ -6,7 +6,7 @@ into one auditable workflow.
 
 ## Status
 
-This repository includes the Web + Windows + iOS trusted-team preview.
+This repository includes the Web + Windows trusted-team preview.
 Current acceptance evidence is tracked in
 [the collaboration milestone record](docs/cross-client-sync.md). Shared-server
 deployment and validation instructions are in
@@ -24,11 +24,6 @@ the official npm package `@jiayunxie/artood` and the command in Web; see the
 published and registry-verified before rolling out its Web connection command.
 Publication status is separate from local checks and experimental autonomous
 application publication.
-
-Mac and iOS verification commands and screenshot-report locations are in
-[the Apple client E2E guide](docs/apple-client-e2e.md). Remaining commercial
-distribution and deployment requirements are tracked in
-[Apple release readiness](docs/apple-release-readiness.md).
 
 v0.1 has been accepted on `origin/main` at `eec68d8`. It proves the core loop:
 
@@ -62,9 +57,7 @@ Release gates and the local self-host runbook are tracked in
 candidate decision audit is tracked in
 [docs/v1-release-candidate.md](docs/v1-release-candidate.md).
 
-The v2 multi-client workstream is tracked in
-[docs/v2-roadmap.md](docs/v2-roadmap.md). The Android control-surface plan is
-tracked in [docs/v2-android-plan.md](docs/v2-android-plan.md).
+The v2 workstream is tracked in [docs/v2-roadmap.md](docs/v2-roadmap.md).
 
 ## Development
 
@@ -103,7 +96,7 @@ production dependency audit (`npm audit --omit=dev`), and `git diff --check`.
 Before starting agent work, configure the team's actual AI recipients using
 [the AI data sharing guide](docs/ai-data-sharing.md). Missing disclosure blocks
 agent execution while workspace browsing remains available. Users review the
-providers and explicitly allow sharing in the iOS or Web/Mac client.
+providers and explicitly allow sharing in the Web or Windows client.
 
 Run the server after building:
 

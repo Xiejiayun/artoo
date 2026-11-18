@@ -32,14 +32,11 @@ const device: Device = {
 };
 
 describe("one-command machine connection", () => {
-  it.each(["windows", "linux", "macos", "npm"] as const)(
-    "uses the same pinned official npm package on %s",
-    (platform) => {
-      expect(daemonConnectCommand("https://artoo.example.com", "ABCD-1234", platform)).toBe(
-        "npx -y @jiayunxie/artood@0.1.0-rc.9 connect --server https://artoo.example.com --code ABCD-1234",
-      );
-    },
-  );
+  it.each(["windows", "npm"] as const)("uses the same pinned official npm package on %s", (platform) => {
+    expect(daemonConnectCommand("https://artoo.example.com", "ABCD-1234", platform)).toBe(
+      "npx -y @jiayunxie/artood@0.1.0-rc.9 connect --server https://artoo.example.com --code ABCD-1234",
+    );
+  });
 
   it("rejects unsafe command origins and codes", () => {
     expect(daemonConnectCommand("https://artoo.example.com", "ABCD-1234")).toContain(
@@ -55,7 +52,9 @@ describe("one-command machine connection", () => {
       expect(() => daemonConnectCommand(origin, "ABCD-1234")).toThrow();
     }
     expect(() => daemonConnectCommand("https://artoo.example.com", "ABCD-1234;echo")).toThrow();
-    expect(() => daemonConnectCommand("https://artoo.example.com", "ABCD-1234", "ios")).toThrow();
+    for (const unsupported of ["ios", "macos", "linux"] as const) {
+      expect(() => daemonConnectCommand("https://artoo.example.com", "ABCD-1234", unsupported)).toThrow();
+    }
   });
 
   it("generates only on request, tracks the exact pairing, and copies a short-lived command", async () => {
@@ -69,16 +68,16 @@ describe("one-command machine connection", () => {
     });
     expect(createPairing).not.toHaveBeenCalled();
     expect(screen.getByText(/Requires Node.js 24\+ and npm 11\+/)).toHaveTextContent("official npm package");
-    await user.selectOptions(screen.getByLabelText("Target operating system"), "linux");
+    await user.selectOptions(screen.getByLabelText("Target operating system"), "windows");
     await user.click(screen.getByRole("button", { name: "Generate connection command" }));
     expect(await screen.findByLabelText("Connection command")).toHaveTextContent(
-      daemonConnectCommand(window.location.origin, "ABCD-1234", "linux"),
+      daemonConnectCommand(window.location.origin, "ABCD-1234", "windows"),
     );
-    expect(createPairing).toHaveBeenCalledWith("linux", expect.any(String));
+    expect(createPairing).toHaveBeenCalledWith("windows", expect.any(String));
     await waitFor(() => expect(getPairingStatus).toHaveBeenCalledWith("pairing_exact"));
     expect(listDaemons).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Copy command" }));
-    expect(copy).toHaveBeenCalledWith(daemonConnectCommand(window.location.origin, "ABCD-1234", "linux"));
+    expect(copy).toHaveBeenCalledWith(daemonConnectCommand(window.location.origin, "ABCD-1234", "windows"));
     expect((await screen.findByText("Connection command copied.")).closest('[role="status"]')).toBeInTheDocument();
     copy.mockRestore();
   });
