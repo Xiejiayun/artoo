@@ -1,12 +1,11 @@
 # Trusted-team preview operations
 
-For concrete systemd/Caddy templates and shared Windows/macOS gates, see
+For concrete systemd/Caddy templates and shared Web/Windows gates, see
 [Shared preview server](shared-server.md).
 
 This release targets one trusted organization per server. Windows computers
 execute under the local OS account; install and sign into Codex CLI or Claude
-Code before enabling a worker. Web/iOS control the server remotely. iOS source
-requires the separate Mac/Xcode validation described in `apps/ios`.
+Code before enabling a worker. Use Web to control the server remotely.
 
 ## Install and start
 

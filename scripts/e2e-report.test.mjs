@@ -16,6 +16,8 @@ test("failure reports retain provenance, escape markup, redact credentials and e
   try {
     const screenshot = join(directory, "screen.png");
     writeFileSync(screenshot, pixels);
+    const truncated = join(directory, "truncated.png");
+    writeFileSync(truncated, pixels.subarray(0, -1));
     const output = writeE2EReport({
       outputPath: join(directory, "report.html"),
       title: "A <script>alert(1)</script>",
@@ -34,6 +36,7 @@ test("failure reports retain provenance, escape markup, redact credentials and e
       },
       screenshots: [
         { path: screenshot, caption: "<img onerror=alert(1)>" },
+        { path: truncated, caption: "Truncated capture" },
         { path: join(directory, "missing.png"), caption: "Missing evidence" },
       ],
     });
@@ -47,6 +50,7 @@ test("failure reports retain provenance, escape markup, redact credentials and e
       "Fixture workflow only",
       "working tree changes",
       "Screenshot unavailable: Missing evidence",
+      "Screenshot unavailable: Truncated capture",
     ])
       assert.ok(html.includes(value));
     assert.ok(html.includes(`data:image/png;base64,${pixels.toString("base64")}`));

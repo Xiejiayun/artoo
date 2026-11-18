@@ -56,7 +56,7 @@ jobs:
           run-id: ${{ inputs.candidate_run_id }}
           name: ${{ env.SUMMARY_ARTIFACT }}
           path: ${{ env.RELEASE_DIRECTORY }}/summary
-      - name: Verify the identical bytes and pin both bootstrap installers
+      - name: Verify the identical bytes and pin the Windows bootstrap installer
         run: node scripts/azure-release/daemon-publication.mjs render
       - name: Require unchanged main, matrix attempt and an unused version tag
         run: node scripts/azure-release/daemon-publication.mjs finalize

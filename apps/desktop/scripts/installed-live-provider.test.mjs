@@ -16,7 +16,7 @@ import { writeE2EReport } from "../../../scripts/e2e-report.mjs";
 // Routing/evidence unit tests only. No CLI, browser, provider or credentials are
 // used; deliberately injected runner responses never create a passing live report.
 const png = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==",
+  "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGP8KuTxn4GBgYGJAQoAI8UCUpBcPuMAAAAASUVORK5CYII=",
   "base64",
 );
 function temporary(t) {

@@ -34,6 +34,7 @@ const suites = {
     runNode("Fixed application service host packaging", "apps/artood/scripts/build-application-service-host.test.mjs"),
     runNode("Fixed application runtime packaging", "apps/artood/scripts/build-application-runtime.test.mjs"),
     runNode("E2E report integrity", "scripts/e2e-report.test.mjs"),
+    runNode("PNG evidence integrity", "scripts/png-evidence.test.mjs"),
     runNode("E2E owned browser cleanup", "scripts/owned-browser.test.mjs"),
     runNpm("browser workflows", "run", "test:e2e", "--workspace", "@artoo/web"),
     runNpm("enabled scheduler mirror workflows", "run", "test:e2e:scheduler", "--workspace", "@artoo/web"),

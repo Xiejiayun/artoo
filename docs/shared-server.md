@@ -1,6 +1,6 @@
 # Shared preview server and repeatable gates
 
-One server is the authority for Web, iOS and paired Windows workers. This
+One server is the authority for Web and paired Windows workers. This
 template targets one trusted team on one Linux host running Node 24+, npm 11+,
 systemd and Caddy 2. PGlite permits one server process per data directory;
 replicas, shared network storage and rolling concurrent instances are unsupported.
@@ -65,8 +65,8 @@ curl --fail https://your-team-host/health/ready
 ```
 
 Validate the actual hostname/callback before distributing it: real Google login,
-unauthenticated API rejection, Windows pairing, iOS pairing, and simultaneous
-Web/iOS message receipt over WebSocket. Interrupt and restore connectivity,
+unauthenticated API rejection, Windows pairing and message receipt in two signed-in
+Web sessions over WebSocket. Interrupt and restore connectivity,
 restart the server, and verify message catch-up and daemon reconciliation.
 An HTTP health response alone does not verify WebSockets or Google login.
 
@@ -104,25 +104,12 @@ Install with `npm ci`; install the Playwright Chromium browser using
 
 ```text
 npm run verify:preview
-npm run verify:ios
 npm run verify:desktop
 ```
 
 - `verify:preview`: TypeScript, production preview build, unit/integration tests,
-  native API static contracts, browser workflows, local test-provider auth E2E,
+  browser workflows, local test-provider auth E2E,
   production dependency audit and whitespace. It runs on Windows CI.
-- `verify:ios`: production server/Web build, native contracts, XcodeGen,
-  simulator build/XCTest, and Release-app XCUITests against the shared server
-  with an independent Chromium client. The UI flow pairs through onboarding,
-  exchanges channel/thread messages with the Web composer, reconciles a reply
-  written while backgrounded and restores Keychain/history after app relaunch.
-  Independent scenarios stop/restart a real authenticated execution node and
-  start a two-agent discussion, review its dependent proposal and accept it.
-  The discussion uses deterministic subprocesses, not provider model responses.
-  Requires macOS, full Xcode with an installed iOS simulator, and XcodeGen.
-  The script selects an available iPhone; `ARTOO_IOS_SIMULATOR_UDID` can select
-  another installed iPhone. Simulator tests use ad-hoc signing with local
-  Keychain entitlements; no Apple account or developer certificate is required.
 - `verify:desktop`: installed NSIS/Electron smoke. Requires a logged-in Windows
   desktop and `ARTOO_DESKTOP_INTERACTIVE=1`. It is an explicit local/operator
   gate; a headless hosted runner is not claimed to verify installation/UI.
@@ -136,9 +123,8 @@ The rest of the Vitest inventory runs in two shards, each with two workers.
 All three jobs retain the 75-minute job limit. This separates execution
 conditions; it does not establish the cause of earlier process-observation failures.
 
-The local shared suite has 37 checks; `shared-checks` runs the 36 checks outside
-Vitest, including the fixed application host/runtime packaging fixtures, both
-browser suites, partition coverage validation and the production audit.
+The local shared suite includes Vitest; `shared-checks` runs the other checks,
+including host/runtime packaging, browser workflows and the production audit.
 Packaging fixtures do not qualify native runtime execution. The aggregate
 `shared` check requires all three Vitest jobs and `shared-checks` to succeed,
 then compares their actual JSON reporter file sets with complete
@@ -147,34 +133,12 @@ mismatched commits fail the aggregate. Discovery alone is not evidence of
 shard execution; existing skipped or opt-in cases remain skipped. Local
 `npm run verify:preview` and `npm test` still run the complete inventory once.
 
-The unified script also accepts `--suite=shared|shared-checks|ios|desktop|mac` and `--list`.
-It writes the selected suite's pass/fail record to `artifacts/preview-gate`;
-native runs retain `.xcresult` bundles and UI evidence under `artifacts/ios`. A passed suite
-does not imply that another suite ran. `.github/workflows/preview.yml` runs the
-shared Web/Windows gates and the required macOS-hosted scheduler journal checks
-on main pushes and pull requests. The paused iOS and Mac desktop UI suites run
-only through `workflow_dispatch` with `apple_clients: true` (default: false).
-Their individual checks and evidence remain required when explicitly selected.
-Installed Windows
-smoke is opt-in on a separately configured isolated interactive self-hosted
-runner labeled `artoo-desktop`; no such runner is provisioned by these files.
-
-For `bf2813f`, the complete local shared gate passed all eight checks, including
-1,172 unit/integration tests with 18 skips, 14 browser workflows and six
-authentication workflows; the production dependency audit found no vulnerabilities.
-Two bundled-worker cases ran locally using the existing Windows bundle and were
-skipped in hosted CI. The separately scoped macOS native job passed at `f3358c4`:
-Debug and Release builds, all 77 unit XCTest cases and all three Release UI
-scenarios, using Xcode 16.4 and an iPhone 17 Pro simulator running iOS 26.2.
-Native product code, tests and workflow are unchanged between these revisions.
-That workflow's shared job failed on the Web test race fixed by `bf2813f`; the
-later passing local shared gate completes this validation. The UI scenarios cover
-pairing,
-channel/thread exchange with Chromium, foreground catch-up, Keychain/history
-restoration after relaunch, real daemon stop/recovery, and discussion with
-plan-card/original-response review, proposal and acceptance. CI links, retained
-evidence and earlier results are
-listed in [the collaboration milestone record](cross-client-sync.md).
+Use `node scripts/preview-gate.mjs --suite=shared-checks --list` for the current inventory.
+Available suites are `shared`, `shared-checks` and `desktop`; results are written to
+`artifacts/preview-gate`. Main pushes and pull requests run the shared Web/Windows
+checks. Installed Windows smoke requires a separate manual dispatch with
+`windows_desktop: true` and a logged-in, isolated runner labeled `artoo-desktop`.
+A passing shared check does not attest to an installed-desktop run.
 
 CI uses deterministic subprocess fixtures. Separate local real Codex conversation
 and discussion gates passed through Aerial's GitHub Copilot route, as described
@@ -189,24 +153,9 @@ one passing five-turn run. The owner cookie is still test-provisioned and the
 server is on loopback. See [Windows verification](windows-copilot-verification.md)
 for the procedure and [the acceptance record](cross-client-sync.md) for exact
 source, hashes and hosted results.
-Live Claude execution, real Google OAuth, public TLS/WebSockets, physical iOS devices,
-distribution signing, provisioning and TestFlight remain separate checks.
-Deployment templates still require an actual host run.
-
-The native UI fixture runs an isolated persistent server on loopback with
-production authentication, no development credentials and no model execution.
-Its two execution runtimes are actual process adapters that emit deterministic
-answers after checking the supplied discussion context and read-only policy.
-The server still dispatches each turn, stores responses, creates the proposal
-and materializes tasks only after acceptance through the native/Web UI. Node
-stop/start controls live on a separate authenticated loopback test service;
-they never override production presence or add routes to the production server.
-Only the fixture Web owner's session is provisioned directly; the native app
-claims its credential through the normal one-time pairing screen. Temporary
-codes, API peer credentials and test-runner manifests are removed after the
-run. No fixture endpoint or authentication shortcut is added to the app/server.
-On Windows, `node scripts/ios-ui-e2e.mjs --self-check` checks only this fixture
-and the real Web composer using an API peer. It does not execute or certify iOS.
+Live Claude execution, real Google OAuth, public TLS/WebSockets and Windows
+distribution signing remain separate checks. Deployment templates still require
+an actual host run.
 
 ### Optional live conversation gate
 

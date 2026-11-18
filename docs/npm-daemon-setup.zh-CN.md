@@ -1,26 +1,26 @@
 # artood 一键接入指南
 
-`0.1.0-rc.9` 提供安装、配对、登记和后台启动的一条命令，并保留受保护的本地团队配置入口。标准安装来源是官方 npm 包 [`@jiayunxie/artood`](https://www.npmjs.com/package/@jiayunxie/artood)。支持 Windows x64、Linux x64/arm64；macOS 实现保留，但本次发布资格延期。Windows arm64 不支持。上线连接入口前，须确认页面指定的精确版本已发布到官方 registry 并通过安装验证；本文本身不表示发布或生产验收已经完成。
+`0.1.0-rc.9` 提供安装、配对、登记和后台启动的一条命令，并保留受保护的本地团队配置入口。标准安装来源是官方 npm 包 [`@jiayunxie/artood`](https://www.npmjs.com/package/@jiayunxie/artood)。当前分支仅为 Windows x64 构建和验证客户端；不支持 Windows arm64。上线连接入口前，须确认页面指定的精确版本已发布到官方 registry 并通过安装验证；本文本身不表示发布或生产验收已经完成。
 
 ## 从 Web 连接电脑
 
 1. 用实际操作这台电脑的账号登录 Artoo，打开 **Machines → Connect Local Node**。
-2. 选择本机平台，复制页面上的完整命令，在本机终端运行。命令内只有短期单次配对码，不需要手工复制 node token、computer ID 或配置数据库。
+2. 选择 Windows，复制页面上的完整命令，在本机终端运行。命令内只有短期单次配对码，不需要手工复制 node token、computer ID 或配置数据库。
 3. 等待 Web 显示电脑在线，选择该电脑已有的 Agent 创建实例。运行模型任务前，在同一个本地账号下安装并登录 Codex 或 Claude CLI。
 
-Windows PowerShell、Linux 和 macOS 终端使用相同命令，需要先安装 Node.js 24+ 和 npm 11+：
+在 Windows PowerShell 中运行以下命令，先安装 Node.js 24+ 和 npm 11+：
 
-```sh
+```powershell
 npx -y @jiayunxie/artood@0.1.0-rc.9 connect --server https://artoo.example.com --code XXXX-XXXX
 ```
 
 请复制 Web 生成的实际地址和配对码。`npx -y` 从 npm 安装指定版本并运行 `connect`，不需要仓库或 .NET。本机网络或组织 npm feed 无法访问官方包，只能说明本机的访问限制；不要据此把所有用户的安装入口改成 GitHub tarball 或下载脚本。先检查本机 npm registry 设置及网络权限，保持 TLS 校验开启。
 
-默认任务目录是当前用户主目录下的 `ArtooWorkspaces`。Windows 可附加 `--workspace 'C:\ArtooWorkspaces'`，Linux 可附加 `--workspace '/home/user/ArtooWorkspaces'`。目录不能包含 Artoo 凭据或安装文件。Web 的 workspace roots 来自节点上报，执行时仍由节点本地检查允许范围。
+默认任务目录是当前用户主目录下的 `ArtooWorkspaces`。Windows 可附加 `--workspace 'C:\ArtooWorkspaces'`。目录不能包含 Artoo 凭据或安装文件。Web 的 workspace roots 来自节点上报，执行时仍由节点本地检查允许范围。
 
 经常管理节点时，可选择一次全局安装，之后直接使用 `artood`：
 
-```sh
+```powershell
 npm install --global @jiayunxie/artood@0.1.0-rc.9
 artood connect --server https://artoo.example.com --code XXXX-XXXX
 ```
@@ -39,19 +39,11 @@ Windows：
 & "$env:USERPROFILE\.artoo\daemon\artood.cmd" start
 ```
 
-Linux：
-
-```sh
-"$HOME/.artoo/daemon/artood" status
-"$HOME/.artoo/daemon/artood" stop
-"$HOME/.artoo/daemon/artood" start
-```
-
 `start` 在后台运行；`start --foreground` 在当前终端运行，Ctrl+C 正常停止。`stop` 等待任务按 daemon 原有退出流程停止，保留连接配置。无法认证或无响应的未知进程不会被强制杀死。受管理的启动使用同一份本地锁，避免重复 daemon。
 
 当前实现不注册系统服务、计划任务或登录自启；重启电脑后再次运行 `start`。`npx` 不会创建全局 PATH 命令，请使用终端打印的完整 launcher 路径。已全局安装同一版本时，可直接运行 `artood status`、`artood stop` 和 `artood start`。
 
-Windows 使用 DPAPI CurrentUser 加密凭据，并限制目录 ACL；POSIX 使用 0700 目录和 0600 文件。受管理的 daemon 不把长期 node token 放进命令行或模型子进程继承的环境变量。不要把状态目录发给别人、提交到 Git 或复制到另一台电脑。高级隔离配置可使用绝对路径 `ARTOO_HOME`。
+Windows 使用 DPAPI CurrentUser 加密凭据，并限制目录 ACL。受管理的 daemon 不把长期 node token 放进命令行或模型子进程继承的环境变量。不要把状态目录发给别人、提交到 Git 或复制到另一台电脑。高级隔离配置可使用绝对路径 `ARTOO_HOME`。
 
 ## 已有手动 daemon 的迁移
 
@@ -63,7 +55,7 @@ Windows 使用 DPAPI CurrentUser 加密凭据，并限制目录 ACL；POSIX 使�
 
 ## 服务器与高级执行
 
-客户端需要匹配的 server/Web。Linux 设备支持依赖历史迁移 `0056_linux_devices.sql`；管理员升级前按部署手册备份并确认恢复方案，daemon 安装不会替服务器迁移数据库。本次一键接入复用既有配对和登记接口，不新增数据库迁移。
+客户端需要匹配的 server/Web。历史设备数据与迁移保持兼容；管理员升级前按部署手册备份并确认恢复方案，daemon 安装不会替服务器迁移数据库。本次一键接入复用既有配对和登记接口，不新增数据库迁移。
 
 所有节点连接由本机主动发起出站 WebSocket，不需要开放电脑公网入站端口或配置路由器转发。生产连接使用 HTTPS/WSS，不能关闭 TLS 校验。电脑在线只是连接成功，应使用一项小任务验证实际模型登录和工作目录。未检测到模型 CLI 时，节点会在线但不注册模型 runtime；安装并登录后，运行 `stop` 和 `start` 重新发现。
 
@@ -80,7 +72,7 @@ Agent Team 还需要不同 Agent 身份、同项目的专用工作目录、真�
 }
 ```
 
-先准备已存在的空目录，放在所有 Agent 工作目录之外，并设置私有权限。Windows 必须使用本地固定磁盘；目录、内容及祖先权限须满足 [npm 包说明](../scripts/npm-daemon/README.md) 的检查。Linux 目录用 0700、文件用 0600，祖先不能允许其他用户写入。Artoo 只检查，不修改所选目录的权限，也不复制任何原有 Codex 配置或凭据。首次选择非空目录会被拒绝；已经保存的同一个目录可以保留 Codex 生成的状态，重启时仍检查权限、链接和有界目录结构。超过限制或检查失败会阻止启动。
+先准备已存在的空目录，放在所有 Agent 工作目录之外，并设置私有权限。Windows 必须使用本地固定磁盘；目录、内容及祖先权限须满足 [npm 包说明](../scripts/npm-daemon/README.md) 的检查。Artoo 只检查，不修改所选目录的权限，也不复制任何原有 Codex 配置或凭据。首次选择非空目录会被拒绝；已经保存的同一个目录可以保留 Codex 生成的状态，重启时仍检查权限、链接和有界目录结构。超过限制或检查失败会阻止启动。
 
 把字段合并进已有团队配置后运行 `configure --file`，再正常 `stop`、`start`；不要仅保存上面的示例覆盖需要保留的研究、验证器或 provider 配置。后台重启和 `--foreground` 都会把这个目录作为实际模型子进程的 `CODEX_HOME`。原有 provider key 文件仍通过环境认证，不复制到该目录。未配置此字段时，保留原来的 Codex home 继承行为。
 
@@ -95,10 +87,10 @@ Agent Team 还需要不同 Agent 身份、同项目的专用工作目录、真�
 }
 ```
 
-先在所有 Agent 工作目录之外准备已存在的空目录，并设置私有权限；该目录也不能包含任何 Agent 工作目录。Windows 需要本地固定 NTFS 磁盘，目录树及祖先均须通过权限检查；不要为了通过检查放宽验证规则或修改整个 AppData 的权限。Linux 使用当前用户所有的私有目录和安全祖先。Artoo 只检查权限，不替用户修改 ACL。首次选择非空目录会被拒绝；已保存的同一路径可保留安全且有界的临时状态，每次配置和启动仍重新检查。
+先在所有 Agent 工作目录之外准备已存在的空目录，并设置私有权限；该目录也不能包含任何 Agent 工作目录。Windows 需要本地固定 NTFS 磁盘，目录树及祖先均须通过权限检查；不要为了通过检查放宽验证规则或修改整个 AppData 的权限。Artoo 只检查权限，不替用户修改 ACL。首次选择非空目录会被拒绝；已保存的同一路径可保留安全且有界的临时状态，每次配置和启动仍重新检查。
 
 运行 `configure --file` 后正常 `stop`、`start`。后台和前台受管理运行都会将所选目录设置为实际 daemon 及其子进程的 `TEMP`、`TMP`、`TMPDIR`，从而涵盖浏览器验证等运行时临时文件；停止或启动失败时恢复启动进程原有的环境。未配置时保留原来的系统临时目录行为。临时目录与 `codex.home_directory` 分别配置，不能以配置成功代替真实任务和浏览器验收。
 
 `start --windows-supervised` 仍仅支持 Windows x64，需要显式配置配对身份、绝对路径 Codex binary、受保护的 source/verifier/release profiles 以及原生执行资格，不由一键普通接入自动启用。详见 [Windows 原生运行手册](windows-native-development.md)。普通连接、受监督执行、真实模型验收和产品发布各自验证，不能互相代替。
 
-发布维护者须按 [npm 包说明](../scripts/npm-daemon/README.md) 和 GitHub release 工作流保存精确 source commit、tarball hash、Windows/Linux 必需平台报告。受控 CLI 或 loopback server 的测试不等于生产 OAuth、真实模型、原生 supervisor 或已部署产品健康验收。
+发布维护者须按 [npm 包说明](../scripts/npm-daemon/README.md) 和 GitHub release 工作流保存精确 source commit、tarball hash、Windows x64 必需平台报告。受控 CLI 或 loopback server 的测试不等于生产 OAuth、真实模型、原生 supervisor 或已部署产品健康验收。
