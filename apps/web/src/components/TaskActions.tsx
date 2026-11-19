@@ -5,12 +5,38 @@ import { ArrowRight, Bot, Monitor, RotateCcw, ShieldCheck, Sparkles } from "luci
 import { isSingleTurnTextRuntime, type Approval, type Task } from "@artoo/domain";
 
 import { newIdempotencyKey } from "../api/idempotency.js";
+import type { DaemonPresence } from "../api/types.js";
 import { useApi, useCommands } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { useDaemons } from "../app/useDaemons.js";
 import { useProjectSquad } from "../app/useProjectSquad.js";
 import { Button, PresenceBadge, Select, Textarea } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
 import "../ui/work-management.css";
+
+function singleTurnUnavailableReason(
+  instance: { runtime: string; computer_id: string },
+  computers: readonly { id: string; status: string }[] | undefined,
+  daemons: readonly DaemonPresence[] | undefined,
+): string | undefined {
+  if (!isSingleTurnTextRuntime(instance.runtime)) return undefined;
+  if (daemons) {
+    const daemon = daemons.find((item) => item.computer_id === instance.computer_id);
+    if (!daemon || !daemon.connected || daemon.status !== "online") {
+      return "节点已离线";
+    }
+    const entry = daemon.cli_discovery?.entries.find((item) => item.id === instance.runtime);
+    if (!entry || !entry.can_dispatch) {
+      return "未验证或执行资格已失效";
+    }
+    return undefined;
+  }
+  const computer = computers?.find((item) => item.id === instance.computer_id);
+  if (computer && computer.status !== "online") {
+    return "节点已离线";
+  }
+  return undefined;
+}
 
 function executionApprovalBlockReason(taskId: string, approvals: readonly Approval[]): string | undefined {
   // Match assertExecutionApprovalGranted: history without exactly one current
@@ -62,6 +88,7 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
   const approvalReasonId = useId();
   const worktreeHelpId = useId();
   const availabilityReasonId = useId();
+  const singleTurnAvailabilityReasonId = useId();
   const approvalBlockReason = executionApprovalBlockReason(task.id, approvals);
   const bootstrap = useQuery({
     queryKey: queryKeys.bootstrap,
@@ -72,12 +99,15 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
   const instances = squad.instances.filter(
     (instance) => instance.status !== "disabled" && instance.config.enabled !== false,
   );
+  const hasSingleTurnInstance = instances.some((instance) => isSingleTurnTextRuntime(instance.runtime));
+  const daemons = useDaemons({ enabled: task.status === "ready" && hasSingleTurnInstance });
   const assigneeUnavailable = !!assignee && !!bootstrap.data && !instances.some((instance) => instance.id === assignee);
-  const assignmentLabel = (instance: (typeof instances)[number]): string => {
+  const assignmentLabel = (instance: (typeof instances)[number], unavailableReason?: string): string => {
     const computer = bootstrap.data?.computers.find((item) => item.id === instance.computer_id);
     const agent = bootstrap.data?.agents.find((item) => item.id === instance.agent_id);
     const suffix = isSingleTurnTextRuntime(instance.runtime) ? " (仅手动单轮)" : "";
-    return `${agent?.display_name ?? instance.id} · ${computer?.display_name ?? instance.computer_id} · ${instance.runtime}${suffix}${computer ? ` · ${computer.status}` : ""}`;
+    const unavailableSuffix = unavailableReason ? ` · 不可用（${unavailableReason}）` : "";
+    return `${agent?.display_name ?? instance.id} · ${computer?.display_name ?? instance.computer_id} · ${instance.runtime}${suffix}${computer ? ` · ${computer.status}` : ""}${unavailableSuffix}`;
   };
 
   const invalidate = async (): Promise<void> => {
@@ -92,9 +122,13 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
     },
     onSuccess: invalidate,
   });
+  const selectedInstance = bootstrap.data?.agent_instances.find((instance) => instance.id === assignee);
+  const selectedSingleTurnUnavailableReason = selectedInstance
+    ? singleTurnUnavailableReason(selectedInstance, bootstrap.data?.computers, daemons.data?.daemons)
+    : undefined;
   const assign = useMutation({
     mutationFn: () => {
-      if (assigneeUnavailable)
+      if (assigneeUnavailable || selectedSingleTurnUnavailableReason)
         throw new Error("Choose an available agent or Automatic selection before assigning work.");
       const key = newIdempotencyKey();
       const body = {
@@ -128,7 +162,6 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
   });
 
   const busy = ready.isPending || assign.isPending || retry.isPending || requestApproval.isPending;
-  const selectedInstance = bootstrap.data?.agent_instances.find((instance) => instance.id === assignee);
   const selectedAgent = bootstrap.data?.agents.find((agent) => agent.id === selectedInstance?.agent_id);
   const selectedComputer = bootstrap.data?.computers.find((computer) => computer.id === selectedInstance?.computer_id);
   const selectedSingleTurn = selectedInstance ? isSingleTurnTextRuntime(selectedInstance.runtime) : false;
@@ -194,11 +227,18 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
                   {assigneeLabel || "Selected agent"} · no longer available
                 </option>
               ) : null}
-              {instances.map((instance) => (
-                <option key={instance.id} value={instance.id}>
-                  {assignmentLabel(instance)}
-                </option>
-              ))}
+              {instances.map((instance) => {
+                const unavailableReason = singleTurnUnavailableReason(
+                  instance,
+                  bootstrap.data?.computers,
+                  daemons.data?.daemons,
+                );
+                return (
+                  <option key={instance.id} value={instance.id} disabled={!!unavailableReason}>
+                    {assignmentLabel(instance, unavailableReason)}
+                  </option>
+                );
+              })}
             </Select>
             <div className="work-assignment__summary">
               {assignee ? (
@@ -262,6 +302,12 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
                 {singleTurnTaskBlockedReason}
               </p>
             )}
+            {selectedSingleTurnUnavailableReason && (
+              <p className="work-assignment__approval" id={singleTurnAvailabilityReasonId} role="status">
+                该单轮运行时实例当前不可用（{selectedSingleTurnUnavailableReason}
+                ）。请确认节点在线并重新验证连接，或选择其他实例。
+              </p>
+            )}
             <div className="assignment-worktree u-stack-sm">
               <label>
                 <input
@@ -284,9 +330,19 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
               className="work-assignment__submit"
               iconRight={ArrowRight}
               loading={assign.isPending}
-              disabled={busy || !!approvalBlockReason || assigneeUnavailable || !!singleTurnTaskBlockedReason}
+              disabled={
+                busy ||
+                !!approvalBlockReason ||
+                assigneeUnavailable ||
+                !!singleTurnTaskBlockedReason ||
+                !!selectedSingleTurnUnavailableReason
+              }
               aria-describedby={
-                [approvalBlockReason ? approvalReasonId : "", assigneeUnavailable ? availabilityReasonId : ""]
+                [
+                  approvalBlockReason ? approvalReasonId : "",
+                  assigneeUnavailable ? availabilityReasonId : "",
+                  selectedSingleTurnUnavailableReason ? singleTurnAvailabilityReasonId : "",
+                ]
                   .filter(Boolean)
                   .join(" ") || undefined
               }

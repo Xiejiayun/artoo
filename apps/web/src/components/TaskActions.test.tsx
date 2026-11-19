@@ -382,4 +382,187 @@ describe("execution approval assignment gate", () => {
     expect(screen.getByRole("status")).toHaveTextContent(/仅支持无关联 Goal、无能力要求的独立纯文本任务/);
     expect(screen.getByRole("button", { name: "Assign" })).toBeDisabled();
   });
+
+  it("disables single-turn instances when the node is offline or loses can_dispatch eligibility", async () => {
+    const bootstrap = bootstrapFixture();
+    bootstrap.agents.push({
+      id: "agent_copilot",
+      organization_id: "org_default",
+      display_name: "Copilot Plain",
+      kind: "coding",
+      status: "idle",
+      capabilities: [],
+      created_at: "2026-06-13T00:00:00Z",
+    });
+    bootstrap.agent_instances.push({
+      ...bootstrap.agent_instances[0]!,
+      id: "instance_copilot",
+      agent_id: "agent_copilot",
+      runtime: "copilot",
+    });
+    const plainTask = taskFixture({
+      id: "task_plain_gate",
+      title: "Plain gate",
+      status: "ready",
+      required_capabilities: [],
+      goal_id: null,
+    });
+
+    // 1) Daemon offline disables the single-turn option.
+    const offlineView = renderWithProviders(<TaskActions task={plainTask} approvals={[]} />, {
+      client: fakeApi({
+        bootstrap: async () => bootstrap,
+        listDaemons: async () => ({
+          daemons: [
+            {
+              computer_id: "computer_local_mock",
+              display_name: "Local Mock",
+              status: "offline",
+              connected: false,
+              last_heartbeat_at: null,
+              heartbeat_age_ms: null,
+              active_runs: 0,
+              runtimes: [],
+              cli_discovery: null,
+            },
+          ],
+        }),
+      }),
+    });
+    const offlineOpt = await screen.findByRole("option", { name: /Copilot Plain.*不可用（节点已离线）/ });
+    expect(offlineOpt).toBeDisabled();
+    offlineView.unmount();
+
+    // 2) Online daemon with unverified / can_dispatch: false disables the single-turn option.
+    const unverifiedView = renderWithProviders(<TaskActions task={plainTask} approvals={[]} />, {
+      client: fakeApi({
+        bootstrap: async () => bootstrap,
+        listDaemons: async () => ({
+          daemons: [
+            {
+              computer_id: "computer_local_mock",
+              display_name: "Local Mock",
+              status: "online",
+              connected: true,
+              last_heartbeat_at: "2026-11-18T00:00:00.000Z",
+              heartbeat_age_ms: 1000,
+              active_runs: 0,
+              runtimes: [],
+              cli_discovery: {
+                version: 1,
+                observed_at: "2026-11-18T00:00:00.000Z",
+                entries: [
+                  {
+                    id: "copilot",
+                    display_name: "GitHub Copilot CLI",
+                    install_status: "installed",
+                    execution_status: "installed_unverified",
+                    version: "1.0.109",
+                    reason_code: "verification_required",
+                    reason: "已安装，未验证",
+                    can_verify: true,
+                    can_dispatch: false,
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      }),
+    });
+    const unverifiedOpt = await screen.findByRole("option", {
+      name: /Copilot Plain.*不可用（未验证或执行资格已失效）/,
+    });
+    expect(unverifiedOpt).toBeDisabled();
+    unverifiedView.unmount();
+
+    // 3) Ready single-turn instance can be selected, and if eligibility is later revoked, Assign is blocked.
+    const queryClient = createTestQueryClient();
+    const assignTask = vi.fn();
+    renderWithProviders(<TaskActions task={plainTask} approvals={[]} />, {
+      queryClient,
+      client: fakeApi({
+        assignTask,
+        bootstrap: async () => bootstrap,
+        listDaemons: async () => ({
+          daemons: [
+            {
+              computer_id: "computer_local_mock",
+              display_name: "Local Mock",
+              status: "online",
+              connected: true,
+              last_heartbeat_at: "2026-11-18T00:00:00.000Z",
+              heartbeat_age_ms: 1000,
+              active_runs: 0,
+              runtimes: [],
+              cli_discovery: {
+                version: 1,
+                observed_at: "2026-11-18T00:00:00.000Z",
+                entries: [
+                  {
+                    id: "copilot",
+                    display_name: "GitHub Copilot CLI",
+                    install_status: "installed",
+                    execution_status: "ready_single_turn",
+                    version: "1.0.109",
+                    reason_code: "single_turn_no_tools_only",
+                    reason: "已就绪 · 仅手动单轮",
+                    can_verify: true,
+                    can_dispatch: true,
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      }),
+    });
+    const readyOpt = await screen.findByRole("option", { name: /Copilot Plain.*仅手动单轮/ });
+    expect(readyOpt).toBeEnabled();
+    await userEvent.selectOptions(screen.getByLabelText("Assignment"), "instance_copilot");
+    expect(screen.getByRole("button", { name: "Assign" })).toBeEnabled();
+
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.daemons, {
+        daemons: [
+          {
+            computer_id: "computer_local_mock",
+            display_name: "Local Mock",
+            status: "online",
+            connected: true,
+            last_heartbeat_at: "2026-11-18T00:00:10.000Z",
+            heartbeat_age_ms: 1000,
+            active_runs: 0,
+            runtimes: [],
+            cli_discovery: {
+              version: 1,
+              observed_at: "2026-11-18T00:00:10.000Z",
+              entries: [
+                {
+                  id: "copilot",
+                  display_name: "GitHub Copilot CLI",
+                  install_status: "installed",
+                  execution_status: "unavailable",
+                  version: "1.0.109",
+                  reason_code: "verification_required",
+                  reason: "资格已失效",
+                  can_verify: true,
+                  can_dispatch: false,
+                },
+              ],
+            },
+          },
+        ],
+      });
+    });
+
+    expect(
+      await screen.findByRole("option", { name: /Copilot Plain.*不可用（未验证或执行资格已失效）/ }),
+    ).toBeDisabled();
+    const assign = screen.getByRole("button", { name: "Assign" });
+    expect(assign).toBeDisabled();
+    expect(assign).toHaveAccessibleDescription(/该单轮运行时实例当前不可用/);
+    await userEvent.click(assign);
+    expect(assignTask).not.toHaveBeenCalled();
+  });
 });

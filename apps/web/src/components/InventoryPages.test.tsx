@@ -411,6 +411,17 @@ describe("Inventory pages", () => {
     expect(refreshComputerCliDiscovery).toHaveBeenCalledWith("computer_local_mock");
 
     await userEvent.click(screen.getByRole("button", { name: "验证连接" }));
+    expect(verifyComputerCliConnection).not.toHaveBeenCalled();
+    const confirmRegion = screen.getByRole("region", { name: "确认验证连接" });
+    expect(confirmRegion).toHaveTextContent(/固定、不含项目数据的请求/);
+    expect(confirmRegion).toHaveTextContent(/可能产生费用/);
+
+    await userEvent.click(within(confirmRegion).getByRole("button", { name: "取消" }));
+    expect(screen.queryByRole("region", { name: "确认验证连接" })).not.toBeInTheDocument();
+    expect(verifyComputerCliConnection).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "验证连接" }));
+    await userEvent.click(screen.getByRole("button", { name: "确认验证" }));
     expect(verifyComputerCliConnection).toHaveBeenCalledWith("computer_local_mock", "copilot");
     expect(await screen.findByText("已就绪 · 仅手动单轮")).toBeInTheDocument();
     expect(screen.getByText(/验证结果：连接验证通过/)).toBeInTheDocument();

@@ -206,6 +206,7 @@ function CliDiscoveryPanel({
   const api = useApi();
   const query = useQueryClient();
   const [lastOutcome, setLastOutcome] = useState<CliConnectionVerificationOutcomeV1 | null>(null);
+  const [pendingVerify, setPendingVerify] = useState<SingleTurnTextRuntimeId | null>(null);
   const refreshMutation = useMutation({
     mutationFn: () => api.refreshComputerCliDiscovery(computerId),
     onSuccess: async (data) => {
@@ -242,6 +243,7 @@ function CliDiscoveryPanel({
       : verifyMutation.error instanceof Error
         ? verifyMutation.error.message
         : null;
+  const pendingEntry = pendingVerify ? cliDiscovery?.entries.find((entry) => entry.id === pendingVerify) : undefined;
 
   return (
     <section className="resource-runtimes" aria-label={`${computerName} CLI discovery`}>
@@ -253,7 +255,10 @@ function CliDiscoveryPanel({
             size="sm"
             iconLeft={RefreshCw}
             loading={refreshMutation.isPending}
-            onClick={() => refreshMutation.mutate()}
+            onClick={() => {
+              setPendingVerify(null);
+              refreshMutation.mutate();
+            }}
           >
             刷新发现
           </Button>
@@ -268,6 +273,31 @@ function CliDiscoveryPanel({
         <p className="resource-muted" role="status">
           {lastOutcome.runtime} 验证结果：{lastOutcome.message}
         </p>
+      )}
+      {isAdmin && pendingVerify && (
+        <div className="agent-selection" style={{ flex: "1 0 100%" }} role="region" aria-label="确认验证连接">
+          <p>
+            即将验证 <strong>{pendingEntry?.display_name ?? pendingVerify}</strong>
+            ：该操作会向 Provider 发送一条固定、不含项目数据的请求，可能产生费用。验证通过不代表授予读写代码权限。
+          </p>
+          <div className="action-row">
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={verifyMutation.isPending}
+              onClick={() => {
+                const runtime = pendingVerify;
+                setPendingVerify(null);
+                verifyMutation.mutate(runtime);
+              }}
+            >
+              确认验证
+            </Button>
+            <Button size="sm" onClick={() => setPendingVerify(null)}>
+              取消
+            </Button>
+          </div>
+        </div>
       )}
       {!isLoading && !cliDiscovery ? (
         <p className="resource-muted">未上报本机 CLI 发现信息（旧版节点或尚未收到本次会话心跳）</p>
@@ -288,7 +318,8 @@ function CliDiscoveryPanel({
                   <Button
                     size="sm"
                     loading={verifyMutation.isPending && verifyMutation.variables === entry.id}
-                    onClick={() => verifyMutation.mutate(entry.id as SingleTurnTextRuntimeId)}
+                    disabled={verifyMutation.isPending}
+                    onClick={() => setPendingVerify(entry.id as SingleTurnTextRuntimeId)}
                   >
                     {entry.execution_status === "ready_single_turn" ? "重新验证" : "验证连接"}
                   </Button>
