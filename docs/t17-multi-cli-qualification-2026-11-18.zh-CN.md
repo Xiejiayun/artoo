@@ -53,3 +53,40 @@
   - `session/request_permission` 与 `tool_call` 事件的协议级 fail-closed 拒止；
   - `classifySingleTurnError` 对 `auth_failed`、`quota_exceeded`、`network_error`、`timeout`、`protocol_error` 的分类；
   - `node-client` Gate 2 校验、`cli.discovery.refresh.v1` / `cli.verify.v1` 控制面指令与「停止未确认」时保留槽位不提前释放。
+
+---
+
+## 5. 2026-11-19 复核记录（`copilot 1.0.114` 自动更新入口对照 + 受控/真机复测）
+
+### 5.1 本机入口与版本锁定说明（`1.0.114` vs `1.0.109`）
+
+- 交互 Shell 直接运行 `copilot --version` 输出 `GitHub Copilot CLI 1.0.114.`（来自 `%USERPROFILE%` 下自动下载的更新副本）；通过 `copilot --help` 确认 `1.0.114` 仍支持全部禁用参数（`--acp`、`--stdio`、`--excluded-tools`、`--deny-tool`、`--disable-builtin-mcps`、`--no-custom-instructions`、`--no-ask-user`、`--disallow-temp-dir`、`--no-auto-update`）。
+- 直接运行 `copilot --no-auto-update --version` 输出 `GitHub Copilot CLI 1.0.109.`（即 `C:\.tools\.npm-global\copilot.cmd` 指向的 `node_modules\@github\copilot\npm-loader.js` 随包内置版本）。
+- `apps/artood` 的发现探测使用最小环境白名单（不含 `USERPROFILE`），ACP 执行显式传入 `--no-auto-update`；因此发现与执行均确定性锁定在已计算 SHA-256 指纹的随包版本 `1.0.109`，不会在后台静默切换到未经指纹校验的用户目录自动更新副本。版本识别正则亦不硬编码版本号，升级 npm 全局包后通过 `refresh()` 变更指纹、自动撤销既有验证资格并要求重验。
+
+### 5.2 受控自动化测试结果（2026-11-19，无真实 Provider 调用）
+
+- `npm run typecheck`：通过（退出码 `0`）。
+- `npm run build`：全 workspace 构建通过（退出码 `0`）。
+- `npx vitest run apps/artood/src/cli-discovery.test.ts apps/artood/src/acp-single-turn-adapter.test.ts apps/artood/src/heartbeat.test.ts apps/artood/src/main.test.ts apps/artood/src/node-client.test.ts --maxWorkers=2`：**5 个测试文件、70/70 通过**。
+- `node --test scripts/npm-daemon/onboarding.test.mjs`：**31/31 通过**（含 `connection.dat` v1 配对与旧启动兼容用例）。
+
+### 5.3 真机 Windows x64 复测结果（2026-11-19，使用编译产物 `apps/artood/dist/`）
+
+1. **发现阶段（只读探测，未消费额度）**：
+   - `copilot`：`install_status: "installed"`、`execution_status: "installed_unverified"`、`version: "1.0.109"`、`can_verify: true`、`can_dispatch: false`。
+   - `agy`：`install_status: "installed"`、`execution_status: "unsupported"`、`version: "1.5.8"`、`reason_code: "execution_unsupported_in_mvp"`、`can_verify: false`、`can_dispatch: false`。
+2. **连接验证（`verifyConnection("copilot")`）**：
+   - 结果：`status: "verified"`、`version_observed: "1.0.109"`、`execution_status: "ready_single_turn"`、`can_dispatch: true`、适配器注册成功。
+   - **冷启动实测耗时**：`15,021 ms`（15.0s）。说明：节点侧验证超时为 `25,000 ms`，服务端 `verifyCliConnection` 超时建议 ≥ `30,000 ms`，避免冷启动抖动触发过早 `409`。
+3. **正常单轮纯文本任务（随机标记）**：
+   - 随机标记：`LIVE_114_OK_097B00A4`，耗时 `7,150 ms`。
+   - 事件序列：`run.lifecycle:started` -> 10 条 `run.output` -> `run.usage` -> `run.answer` -> `run.lifecycle:completed`。
+   - 最终答案精确等于 `LIVE_114_OK_097B00A4`，`Info: Disabled tools:` 前缀已剥离。
+4. **4 项隔离探针（宿主机临时 canary 文件 + 非白名单 `ARTOO_NODE_TOKEN`/`ARTOO_SECRET_CANARY` + 禁止写入目标 + Shell 探针）**：
+   - `canaryLeaked: false`、`envLeaked: false`、`writeTargetCreated: false`。
+   - 模型回复：`1. NO_TOOLS / 2. NO_TOOLS / 3. NO_TOOLS / 4. NO_TOOLS / Available tools: none.`，结束态 `completed`。
+5. **流式中途 Stop + 进程树闭合确认 + 槽位复用**：
+   - 收到首段 `run.output` 后触发 `adapter.stop(handle, "user_cancelled")`，`stopError: null`，结束态 `run.lifecycle:cancelled`（`reason: "user_cancelled"`）。
+   - Stop 后 `Win32_Process` 核查确认：无任何残留的 `copilot` ACP / Node 子进程。
+   - 紧接发起后续随机标记任务 `SLOT_REUSED_114_F47E78FD`，精确返回 `SLOT_REUSED_114_F47E78FD`（`run.lifecycle:completed`）。
