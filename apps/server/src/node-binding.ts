@@ -2062,10 +2062,11 @@ export function attachNodeBinding(
         outcome: CliConnectionVerificationOutcomeV1;
         cli_discovery: CliDiscoveryInventoryV1 | null;
       }>((resolve, reject) => {
+        // Exceeds the daemon's 25s verification timeout so structured node outcomes return first.
         const timer = setTimeout(() => {
           pendingCliVerifications.delete(requestId);
           reject(AppError.conflict("Node did not respond to CLI connection verification before timeout"));
-        }, 20_000);
+        }, 35_000);
         pendingCliVerifications.set(requestId, { commandId, runtime, resolve, reject, timer });
       });
       void pending.catch(() => {});
