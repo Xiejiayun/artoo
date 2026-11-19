@@ -59,6 +59,8 @@ interface Generation {
   schedulerLease?: ReturnType<typeof createSchedulerLeaseClientChannel>;
   schedulerRun?: ReturnType<typeof createSchedulerRunClientChannel>;
   schedulerClaim?: ReturnType<typeof createSchedulerClaimClientChannel>;
+  dependencyInputSession?: Readonly<{ id: string; identity: WebSocket; signal: AbortSignal }>;
+  dependencyInputController?: AbortController;
   commands: Array<{ message: ServerToNodeMessage; bytes: number }>;
   commandBytes: number;
 }
@@ -109,6 +111,7 @@ export interface ManagedWebSocketTransport {
   readonly ready: Promise<void>;
   readonly connected: boolean;
   readonly currentSession: ManagedSession | undefined;
+  currentDependencyInputSession(): Readonly<{ id: string; identity: WebSocket; signal: AbortSignal }> | undefined;
   readonly diagnostics: Readonly<{
     receiptObservers: number;
     receiptBytes: number;
@@ -332,6 +335,9 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
     g.schedulerLease?.close(error);
     g.schedulerRun?.close(error);
     g.schedulerClaim?.close(error);
+    g.dependencyInputController?.abort(error);
+    g.dependencyInputController = undefined;
+    g.dependencyInputSession = undefined;
     clearTimeout(g.handshakeTimer);
     clearTimeout(g.probeTimer);
     clearTimeout(g.probe?.timer);
@@ -634,6 +640,28 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
       settleReceipt(identity, message.payload.status);
       return;
     }
+    if (message.type === "node.dependency-inputs.session.v1") {
+      const session = message.payload;
+      if (
+        hello.dependency_inputs?.version !== 1 ||
+        session.node_id !== hello.node_id ||
+        g.socket.readyState !== WS.OPEN
+      )
+        return;
+      if (g.dependencyInputSession && g.dependencyInputSession.id !== session.session_id) {
+        lose(g, new DeliveryStopped("dependency input session changed on its original connection"), true);
+        return;
+      }
+      if (!g.dependencyInputSession) {
+        g.dependencyInputController = new AbortController();
+        g.dependencyInputSession = Object.freeze({
+          id: session.session_id,
+          identity: g.socket,
+          signal: g.dependencyInputController.signal,
+        });
+      }
+      return;
+    }
     if (message.type === "scheduler.start.response.v1") {
       if (g.usable) g.scheduler?.receive(message);
       return; // Never dispatch an exchange reply as an executable command.
@@ -929,6 +957,9 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
     },
     get currentSession() {
       return current && isCurrent(current) && current.usable ? current.session : undefined;
+    },
+    currentDependencyInputSession() {
+      return current && isCurrent(current) && current.usable ? current.dependencyInputSession : undefined;
     },
     get diagnostics() {
       return Object.freeze({

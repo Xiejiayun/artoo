@@ -984,4 +984,38 @@ describe("ordinary and managed lanes on one qualified socket", () => {
     socket.receipt("managed", 0, "rejected");
     expect(await sent.result).toBe("rejected");
   });
+
+  it("tracks node.dependency-inputs.session.v1 on managed connections and revokes on disconnect or conflict", async () => {
+    const firstSession = randomUUID();
+    const conflictSession = randomUUID();
+    const { link, socket } = harness({
+      hello: {
+        ...hello,
+        dependency_inputs: { version: 1 },
+      },
+    });
+    expect(link.currentDependencyInputSession()).toBeUndefined();
+    socket.server(
+      command("node.dependency-inputs.session.v1", {
+        version: 1,
+        node_id: hello.node_id,
+        session_id: firstSession,
+      }),
+    );
+    const announced = link.currentDependencyInputSession();
+    expect(announced?.id).toBe(firstSession);
+    expect(announced?.signal.aborted).toBe(false);
+
+    // Conflicting session_id on the same connection loses the generation and revokes the session.
+    socket.server(
+      command("node.dependency-inputs.session.v1", {
+        version: 1,
+        node_id: hello.node_id,
+        session_id: conflictSession,
+      }),
+    );
+    expect(announced?.signal.aborted).toBe(true);
+    expect(link.currentDependencyInputSession()).toBeUndefined();
+    await link.close();
+  });
 });

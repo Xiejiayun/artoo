@@ -161,6 +161,7 @@ type Operation = "clock" | "create-directory" | "flush-directory";
 function invoke(
   operation: Operation,
   input: { directory?: string; dev?: string; ino?: string } = {},
+  timeoutMs = 2500,
 ): Record<string, unknown> {
   assertNativeWindows();
   if (input.directory !== undefined) assertCanonicalWindowsPath(input.directory);
@@ -185,7 +186,7 @@ function invoke(
       windowsHide: true,
       input: JSON.stringify(request),
       encoding: "utf8",
-      timeout: 2500,
+      timeout: timeoutMs,
       maxBuffer: 8192,
       env: {
         SystemRoot: root,
@@ -230,8 +231,8 @@ export function readWindowsJournalBootSample(): { readonly id: string; readonly 
   };
 }
 
-export function createWindowsJournalDirectory(directory: string): void {
-  if (invoke("create-directory", { directory }).created !== true)
+export function createWindowsJournalDirectory(directory: string, timeoutMs = 2500): void {
+  if (invoke("create-directory", { directory }, timeoutMs).created !== true)
     throw new Error("Windows journal exclusive private creation was not confirmed");
 }
 
@@ -245,10 +246,14 @@ export function assertWindowsJournalProtectedDirectory(
     throw new Error("Windows journal directory DACL or node SID continuity failed");
 }
 
-function flush(directory: string, identity: { readonly dev: string; readonly ino: string }): Record<string, unknown> {
+function flush(
+  directory: string,
+  identity: { readonly dev: string; readonly ino: string },
+  timeoutMs = 2500,
+): Record<string, unknown> {
   if (!/^\d{1,20}$/u.test(identity.dev) || !/^\d{1,20}$/u.test(identity.ino))
     throw new Error("Windows journal directory identity is invalid");
-  const result = invoke("flush-directory", { directory, dev: identity.dev, ino: identity.ino });
+  const result = invoke("flush-directory", { directory, dev: identity.dev, ino: identity.ino }, timeoutMs);
   if (result.flushed !== true) {
     throw new Error("Windows journal directory durability was not confirmed");
   }
@@ -258,6 +263,7 @@ function flush(directory: string, identity: { readonly dev: string; readonly ino
 export function flushWindowsJournalDirectory(
   directory: string,
   identity: { readonly dev: string; readonly ino: string },
+  timeoutMs = 2500,
 ): void {
-  flush(directory, identity);
+  flush(directory, identity, timeoutMs);
 }

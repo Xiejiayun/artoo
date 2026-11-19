@@ -7,7 +7,7 @@ import { isOwnedRunAdapter } from "../process-adapter.js";
 import { createRegistryHeartbeat } from "../heartbeat.js";
 import { readOwnedResultProfileDescriptors } from "../owned-worktree-verification.js";
 import { createSchedulerClaimLoop } from "./scheduler-claim-loop.js";
-import { createDependencyArtifactInputLoader } from "../dependency-artifact-inputs.js";
+import { createDependencyArtifactInputLoader, hasTransferableDependencyInputs } from "../dependency-artifact-inputs.js";
 
 export interface ManagedNodeRunnerOptions
   extends Omit<NodeClientOptions, "transport" | "managedJournal" | "nodeId" | "scheduler"> {
@@ -82,9 +82,7 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
   const descriptors = options.ownedResultProfiles
     ? readOwnedResultProfileDescriptors(options.ownedResultProfiles, options.hello.node_id)
     : undefined;
-  const dependencyInputs = options.scheduler
-    ? createDependencyArtifactInputLoader(options.url, options.hello.node_id)
-    : undefined;
+  const dependencyInputs = createDependencyArtifactInputLoader(options.url, options.hello.node_id);
   if (
     descriptors &&
     (options.journal.ownedResultFinalizationVersion !== 1 ||
@@ -97,6 +95,7 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
   const { owned_result_profiles: _untrustedProfiles, ...ordinaryHello } = options.hello;
   const hello: NodeHello = {
     ...ordinaryHello,
+    dependency_inputs: Object.freeze({ version: 1 as const }),
     execution_features:
       options.mixed?.allowNewAllocations === false
         ? []
@@ -177,6 +176,19 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
     ...options,
     nodeId: hello.node_id,
     transport: link.transport,
+    prepareDependencyInputs: async (payload, signal) => {
+      if (!hasTransferableDependencyInputs(payload)) return;
+      const original = link.currentDependencyInputSession();
+      if (!original || stopping || failure)
+        throw new Error("Dependency inputs require the current announced paired connection");
+      await dependencyInputs(
+        payload,
+        { nodeId: hello.node_id, sessionId: original.id },
+        AbortSignal.any([signal, original.signal]),
+      );
+      if (stopping || failure || link.currentDependencyInputSession() !== original)
+        throw new Error("Dependency input preparation lost its original paired connection");
+    },
     scheduler: options.scheduler
       ? {
           open: () => ({

@@ -1114,7 +1114,9 @@ export async function runDaemonEntrypoint(
         roots = splitList(env.ARTOO_ALLOWED_ROOTS);
       if (!path || !nodeId || !roots.length)
         throw new Error("Result initialization requires local profiles file, node ID and coding roots");
-      const profiles = await initializeOwnedResultProfilesFile(path, nodeId, roots);
+      const windowsProcessBackend =
+        process.platform === "win32" ? windowsProcessBackendFromEnv(env, roots, false) : undefined;
+      const profiles = await initializeOwnedResultProfilesFile(path, nodeId, roots, windowsProcessBackend);
       console.log(
         JSON.stringify({
           kind: "owned-result-profiles.initialized",

@@ -276,4 +276,10 @@ describe("managed runner failure notification and cleanup joining", () => {
     await expect(f.runner.stop()).rejects.toBe(closeError);
     expect(f.client.stop).toHaveBeenCalledWith();
   });
+
+  it("advertises dependency_inputs alongside per-run allocation and wires prepareDependencyInputs", () => {
+    const f = fixture();
+    expect(f.transportOptions.hello.dependency_inputs).toEqual({ version: 1 });
+    expect(f.transportOptions.hello.execution_features).toContain("workspace-allocation.per-run-v1");
+  });
 });

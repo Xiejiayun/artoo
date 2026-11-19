@@ -462,6 +462,7 @@ export function assertOwnedWindowsWorktreeBoundary(worktree: MaterializedWorktre
   assertWindowsOwnedWorkspacePaths([
     { path: worktree.root, directory: true },
     { path: worktree.commonDirectory, directory: true },
-    ...state!.boundaries.map((item) => ({ path: item.path, directory: true })),
+    { path: state!.validation.canonicalSource, directory: true },
+    ...state!.allowedPaths.map((path) => ({ path, directory: true })),
   ]);
 }
