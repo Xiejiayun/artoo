@@ -10,11 +10,23 @@ import { bootstrapFixture, createTestQueryClient, fakeApi, renderWithProviders }
 import { AgentsPage } from "./InventoryPages.js";
 
 const instanceId = "instance_mock_coder";
-const initialSetting = { version: 1, strategy: "per-run", basePath: "/Approved//Existing runs /" } as const;
-async function setup({ role = "owner", os = "darwin", setting }: { role?: string; os?: string; setting?: WorktreeBaseConfiguration } = {}) {
+const initialSetting = { version: 1, strategy: "per-run", basePath: "C:\\Approved\\Existing runs" } as const;
+async function setup({
+  role = "owner",
+  os = "win32",
+  executionFeatures = ["workspace-allocation.per-run-v1"],
+  setting,
+}: {
+  role?: string;
+  os?: string;
+  executionFeatures?: string[];
+  setting?: WorktreeBaseConfiguration;
+} = {}) {
   let data = bootstrapFixture();
-  data.user.role = role; data.computers[0]!.os = os;
-  data.agent_instances[0]!.workspace_root = "/Users/team/project";
+  data.user.role = role;
+  data.computers[0]!.os = os;
+  data.computers[0]!.execution_features = executionFeatures;
+  data.agent_instances[0]!.workspace_root = "C:\\Users\\team\\project";
   if (setting) data.agent_instances[0]!.config = { worktree_workspace_base: setting };
   const snapshot = () => structuredClone(data);
   const update = (setting: WorktreeBaseConfiguration | null): { agent_instance: AgentInstance } => {
@@ -31,19 +43,40 @@ async function setup({ role = "owner", os = "darwin", setting }: { role?: string
   const registerAgent = vi.fn(async () => ({}));
   const user = userEvent.setup();
   const queryClient = createTestQueryClient();
-  const rendered = renderWithProviders(<AgentsPage />, { queryClient, route: "/agents", client: fakeApi({ bootstrap, setAgentWorktreeBase, clearAgentWorktreeBase,
-    registerAgent, listDaemons: async () => ({ daemons: [] }),
-    listSkillInstalls: async () => ({ skills: [] }), listComputerRuntimes: async () => ({ runtimes: [] }) }) });
+  const rendered = renderWithProviders(<AgentsPage />, {
+    queryClient,
+    route: "/agents",
+    client: fakeApi({
+      bootstrap,
+      setAgentWorktreeBase,
+      clearAgentWorktreeBase,
+      registerAgent,
+      listDaemons: async () => ({ daemons: [] }),
+      listSkillInstalls: async () => ({ skills: [] }),
+      listComputerRuntimes: async () => ({ runtimes: [] }),
+    }),
+  });
   const card = await screen.findByRole("article", { name: "Mock Coder" });
   await user.click(within(card).getByText("Workspace & configuration"));
   await waitFor(() => expect(queryClient.isFetching({ queryKey: queryKeys.bootstrap })).toBe(0));
-  return { ...rendered, user, card, bootstrap, setAgentWorktreeBase, clearAgentWorktreeBase, registerAgent, snapshot, update };
+  return {
+    ...rendered,
+    user,
+    card,
+    bootstrap,
+    setAgentWorktreeBase,
+    clearAgentWorktreeBase,
+    registerAgent,
+    snapshot,
+    update,
+  };
 }
 async function editBase(f: Awaited<ReturnType<typeof setup>>, path: string) {
   const checkbox = within(f.card).getByRole("checkbox", { name: "Separate workspace for each task" });
   if (!(checkbox as HTMLInputElement).checked) await f.user.click(checkbox);
   const field = within(f.card).getByLabelText("Task workspace base folder");
-  await f.user.clear(field); await f.user.type(field, path);
+  await f.user.clear(field);
+  await f.user.type(field, path);
   return field;
 }
 
@@ -61,7 +94,8 @@ describe("per-agent task workspace setting", () => {
     const f = await setup({ role, setting: initialSetting });
     expect(within(f.card).queryByRole("form", { name: "Task workspace configuration" })).toBeNull();
     expect(within(f.card).queryByRole("checkbox", { name: "Separate workspace for each task" })).toBeNull();
-    expect(f.setAgentWorktreeBase).not.toHaveBeenCalled(); expect(f.clearAgentWorktreeBase).not.toHaveBeenCalled();
+    expect(f.setAgentWorktreeBase).not.toHaveBeenCalled();
+    expect(f.clearAgentWorktreeBase).not.toHaveBeenCalled();
   });
 
   it("renders the exact saved setting in the existing workspace details", async () => {
@@ -74,7 +108,8 @@ describe("per-agent task workspace setting", () => {
   });
 
   it("sends only version, strategy and the exact base path, then reloads committed settings", async () => {
-    const f = await setup(); const basePath = "/Users/team/Task runs /";
+    const f = await setup();
+    const basePath = "C:\\Users\\team\\Task runs";
     await editBase(f, basePath);
     await f.user.click(within(f.card).getByRole("button", { name: "Save task workspace setting" }));
     await within(f.card).findByText("Task workspace setting saved.");
@@ -97,11 +132,19 @@ describe("per-agent task workspace setting", () => {
   });
 
   it("does not show saved before both the write and the new bootstrap read finish", async () => {
-    const f = await setup(); const path = "/Users/team/New runs";
+    const f = await setup();
+    const path = "C:\\Users\\team\\New runs";
     let resolveWrite!: () => void, resolveRead!: (value: BootstrapResponse) => void;
-    const writeWait = new Promise<void>((resolve) => { resolveWrite = resolve; });
-    const readWait = new Promise<BootstrapResponse>((resolve) => { resolveRead = resolve; });
-    f.setAgentWorktreeBase.mockImplementationOnce(async (_id, setting) => { await writeWait; return f.update(setting); });
+    const writeWait = new Promise<void>((resolve) => {
+      resolveWrite = resolve;
+    });
+    const readWait = new Promise<BootstrapResponse>((resolve) => {
+      resolveRead = resolve;
+    });
+    f.setAgentWorktreeBase.mockImplementationOnce(async (_id, setting) => {
+      await writeWait;
+      return f.update(setting);
+    });
     f.bootstrap.mockImplementationOnce(() => readWait);
     const callsBefore = f.bootstrap.mock.calls.length;
     await editBase(f, path);
@@ -121,7 +164,8 @@ describe("per-agent task workspace setting", () => {
     new ApiClientError("invalid_state", "Stop the active run before changing this agent instance", 409),
     new ApiClientError("network_error", "Network request failed: offline", 0),
   ])("retains input and the actual error on a failed write: $message", async (error) => {
-    const f = await setup(); const path = "/Users/team/Retained edit";
+    const f = await setup();
+    const path = "C:\\Users\\team\\Retained edit";
     f.setAgentWorktreeBase.mockRejectedValueOnce(error);
     await editBase(f, path);
     await f.user.click(within(f.card).getByRole("button", { name: "Save task workspace setting" }));
@@ -135,11 +179,14 @@ describe("per-agent task workspace setting", () => {
   });
 
   it("preserves the mounted draft when the write commits but bootstrap refresh fails", async () => {
-    const f = await setup(); const path = "/Users/team/Keep through refresh";
+    const f = await setup();
+    const path = "C:\\Users\\team\\Keep through refresh";
     f.bootstrap.mockRejectedValueOnce(new Error("Connection lost during refresh"));
     await editBase(f, path);
     await f.user.click(within(f.card).getByRole("button", { name: "Save task workspace setting" }));
-    expect(await within(f.card).findByRole("alert")).toHaveTextContent("The server accepted the workspace setting, but refreshing agent settings failed.");
+    expect(await within(f.card).findByRole("alert")).toHaveTextContent(
+      "The server accepted the workspace setting, but refreshing agent settings failed.",
+    );
     expect(within(f.card).getByRole("alert")).toHaveTextContent("Connection lost during refresh");
     expect(within(f.card).getByLabelText("Task workspace base folder")).toHaveValue(path);
     expect(within(f.card).queryByText("Task workspace setting saved.")).toBeNull();
@@ -147,7 +194,9 @@ describe("per-agent task workspace setting", () => {
   });
 
   it("does not declare success if refreshed config differs from the accepted write", async () => {
-    const f = await setup(); const before = f.snapshot(); const path = "/Users/team/Requested runs";
+    const f = await setup();
+    const before = f.snapshot();
+    const path = "C:\\Users\\team\\Requested runs";
     f.bootstrap.mockResolvedValueOnce(before);
     await editBase(f, path);
     await f.user.click(within(f.card).getByRole("button", { name: "Save task workspace setting" }));
@@ -156,24 +205,24 @@ describe("per-agent task workspace setting", () => {
     expect(within(f.card).queryByText("Task workspace setting saved.")).toBeNull();
   });
 
-  it("requires a Mac absolute folder without normalizing a relative entry", async () => {
+  it("requires an absolute Windows folder without normalizing a relative entry", async () => {
     const f = await setup();
-    const field = await editBase(f, "relative/runs");
-    expect(field).toHaveValue("relative/runs");
+    const field = await editBase(f, "relative\\runs");
+    expect(field).toHaveValue("relative\\runs");
     expect(within(f.card).getByRole("alert")).toHaveTextContent("absolute folder path");
     expect(within(f.card).getByRole("button", { name: "Save task workspace setting" })).toBeDisabled();
     expect(f.setAgentWorktreeBase).not.toHaveBeenCalled();
   });
 
-  it("blocks a new setting on a non-Mac execution computer", async () => {
-    const f = await setup({ os: "windows" });
+  it("blocks a new setting when the computer does not advertise per-run workspace allocation", async () => {
+    const f = await setup({ os: "win32", executionFeatures: [] });
     expect(within(f.card).getByRole("checkbox", { name: "Separate workspace for each task" })).toBeDisabled();
-    expect(within(f.card).getByText(/require a Mac execution computer/)).toBeVisible();
+    expect(within(f.card).getByText(/advertising per-run workspace allocation/)).toBeVisible();
     expect(f.setAgentWorktreeBase).not.toHaveBeenCalled();
   });
 
-  it("can clear an existing setting on another OS without granting a new one", async () => {
-    const f = await setup({ os: "windows", setting: initialSetting });
+  it("can clear an existing setting when per-run allocation is unavailable without granting a new one", async () => {
+    const f = await setup({ os: "win32", executionFeatures: [], setting: initialSetting });
     expect(within(f.card).getByLabelText("Task workspace base folder")).toBeDisabled();
     await f.user.click(within(f.card).getByRole("checkbox", { name: "Separate workspace for each task" }));
     await f.user.click(within(f.card).getByRole("button", { name: "Save task workspace setting" }));

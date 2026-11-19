@@ -255,6 +255,7 @@ export function createManagedBootstrap(options: ManagedBootstrapOptions): Manage
               ownedResultProfilesFile,
               binding.nodeId,
               runnerOptions.workspace?.allowedRoots ?? [],
+              runnerOptions.ownedGit?.windowsProcessBackend,
             )
           : runnerOptions.ownedResultProfiles;
         if (stopping) return;

@@ -718,7 +718,7 @@ async function assignTaskInTransaction(
     if (
       !ownedProfile ||
       instance.runtime === "mock" ||
-      !["linux", "darwin"].includes(computer.os) ||
+      !["linux", "darwin", "win32", "windows"].includes(computer.os) ||
       ownedProfile.node_id !== instance.computerId ||
       ownedProfile.project_id !== row.projectId
     ) {

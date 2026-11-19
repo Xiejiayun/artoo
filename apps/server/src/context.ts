@@ -73,6 +73,7 @@ export interface ServerContext {
   onRunQueued?: (runId: string) => Promise<void>;
   /** Query an exact execution contract on the current accepted node session. */
   supportsExecutionFeature?: (computerId: string, feature: string) => boolean;
+  executionFeaturesForComputer?: (computerId: string) => readonly string[];
   /** Exact public verifier binding from the current authenticated node session. */
   supportsVerificationProfile?: (
     computerId: string,

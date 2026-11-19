@@ -119,6 +119,7 @@ export async function bootstrap(
   const runtimes = await db.select().from(agentRuntimes).where(eq(agentRuntimes.organizationId, ctx.organizationId));
   const mappedComputers = computerRows.map((row) => ({
     ...mapComputer(row),
+    execution_features: [...(ctx.executionFeaturesForComputer?.(row.id) ?? [])],
     lifecycle: deriveResourceLifecycle(row.lastHeartbeatAt, row.createdAt, now, isLive(row.id), timeoutMs),
   }));
   const mappedInstances = instanceRows.map((row) => {

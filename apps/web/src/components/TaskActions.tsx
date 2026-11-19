@@ -324,6 +324,14 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
                   ? "单轮纯文本运行时固定在隔离空目录中无工具运行，不支持 Git 工作树或文件修改。"
                   : "Requires a Git repository configured on the execution computer and an unused workspace path. Completed, failed and stopped work stays there. Use a new workspace for each isolated execution."}
               </p>
+              {branchBacked &&
+              selectedComputer &&
+              !selectedComputer.execution_features?.includes("workspace-allocation.per-run-v1") ? (
+                <p className="work-help" role="status">
+                  This computer is not currently advertising per-run workspace allocation; isolated execution will use
+                  the agent’s configured workspace path unless managed per-run workspaces are enabled on the node.
+                </p>
+              ) : null}
             </div>
             <Button
               variant="primary"

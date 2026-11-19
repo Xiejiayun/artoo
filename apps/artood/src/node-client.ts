@@ -1212,6 +1212,18 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       if (!materialized) throw new Error("Owned workspace materialization did not return its genuine handle");
       preparationComplete = true;
       await record.scheduler?.beforeStart();
+      if (!record.scheduler && options.prepareDependencyInputs && hasTransferableDependencyInputs(payload)) {
+        const inputPreparation = new AbortController();
+        dependencyInputPreparations.set(payload.run_id, inputPreparation);
+        try {
+          await options.prepareDependencyInputs(payload, AbortSignal.any([inputPreparation.signal, controller.signal]));
+          inputPreparation.signal.throwIfAborted();
+          controller.signal.throwIfAborted();
+        } finally {
+          if (dependencyInputPreparations.get(payload.run_id) === inputPreparation)
+            dependencyInputPreparations.delete(payload.run_id);
+        }
+      }
       record.recovery.phase = "adapter_startup";
       adapterInvoked = true;
       let handle: AgentInstanceHandle;

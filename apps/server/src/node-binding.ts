@@ -186,6 +186,7 @@ export interface NodeBinding {
   dispatchImportedValidationReview?(reviewId: string, control: "start" | "stop" | "status"): Promise<void>;
   /** Exact feature support from this current accepted hello; false once disposed. */
   supportsExecutionFeature(feature: string): boolean;
+  executionFeatures(): readonly string[];
   /** Exact node-local profile routing, valid only for this active authenticated session. */
   supportsVerificationProfile(profileId: string, projectId: string, workspaceRoot: string): boolean;
   /** Unique current advertisement, preserving its exact spelling; Windows comparison is lexical only. */
@@ -1992,6 +1993,10 @@ export function attachNodeBinding(
       )
         return false;
       return !closed && isCurrentBinding() && executionFeatureSet.has(feature);
+    },
+    executionFeatures(): readonly string[] {
+      if (closed || !isCurrentBinding()) return [];
+      return [...executionFeatureSet].filter((feature) => binding.supportsExecutionFeature(feature));
     },
     setCliDiscovery(inventory): void {
       if (closed || !isCurrentBinding()) return;

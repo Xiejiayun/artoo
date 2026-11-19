@@ -42,26 +42,13 @@ export type LeaseStatus = z.infer<typeof LeaseStatusSchema>;
 /** Who owns a lease. Defaults to run/task; agent/system reserved for Phase B. */
 export const LeaseHolderTypeSchema = z.enum(["run", "task", "agent", "system"]);
 export type LeaseHolderType = z.infer<typeof LeaseHolderTypeSchema>;
-export const IntegrationQueueStatusSchema = z.enum([
-  "queued",
-  "integrating",
-  "done",
-  "failed",
-]);
+export const IntegrationQueueStatusSchema = z.enum(["queued", "integrating", "done", "failed"]);
 export type IntegrationQueueStatus = z.infer<typeof IntegrationQueueStatusSchema>;
 
 export const RiskSchema = z.enum(["low", "medium", "high"]);
 export const RoomTypeSchema = z.enum(["dm", "project", "sprint", "task", "agent_team", "incident", "goal"]);
 
-export const AgentKindSchema = z.enum([
-  "coding",
-  "reviewer",
-  "planner",
-  "integrator",
-  "qa",
-  "memory_curator",
-  "mock",
-]);
+export const AgentKindSchema = z.enum(["coding", "reviewer", "planner", "integrator", "qa", "memory_curator", "mock"]);
 export const AgentStatusSchema = z.enum([
   "offline",
   "idle",
@@ -72,14 +59,7 @@ export const AgentStatusSchema = z.enum([
   "failed",
 ]);
 export const ComputerStatusSchema = z.enum(["enrolling", "online", "offline", "disabled"]);
-export const AgentInstanceStatusSchema = z.enum([
-  "idle",
-  "queued",
-  "running",
-  "stopping",
-  "failed",
-  "disabled",
-]);
+export const AgentInstanceStatusSchema = z.enum(["idle", "queued", "running", "stopping", "failed", "disabled"]);
 export const CostTierSchema = z.enum(["low", "medium", "high", "premium"]);
 export const LatencyTierSchema = z.enum(["fast", "normal", "slow"]);
 
@@ -107,6 +87,7 @@ export const ComputerSchema = z.object({
   last_heartbeat_at: z.string().nullish(),
   resources: z.record(z.string(), z.unknown()).default({}),
   capabilities: z.array(CapabilitySchema).default([]),
+  execution_features: z.array(z.string()).optional(),
   created_at: z.string(),
 });
 export type Computer = z.infer<typeof ComputerSchema>;

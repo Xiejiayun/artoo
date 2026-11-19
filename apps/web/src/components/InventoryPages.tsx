@@ -914,7 +914,12 @@ export function AgentsPage(): React.ReactNode {
                       </Row>
                       <Row label="Effort profile">{effort?.name ?? "Not configured"}</Row>
                     </dl>
-                    <AgentWorkspaceAllocation instance={instance} role={role} computerOs={computer?.os} />
+                    <AgentWorkspaceAllocation
+                      instance={instance}
+                      role={role}
+                      computerOs={computer?.os}
+                      executionFeatures={computer?.execution_features}
+                    />
                   </details>
                   <AgentProjectControl
                     key={`${instance.id}:${instance.project_id ?? ""}`}
