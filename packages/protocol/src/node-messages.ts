@@ -96,6 +96,7 @@ import { schedulerLeaseRegistrationSchema, schedulerLeaseResponseCommandSchema }
 import { schedulerRunRegistrationSchema, schedulerRunResponseCommandSchema } from "./scheduler-run.js";
 import { schedulerClaimRegistrationSchema, schedulerClaimResponseCommandSchema } from "./scheduler-claim.js";
 import { dependencyInputsRegistrationSchema, dependencyInputsSessionCommandSchema } from "./dependency-inputs.js";
+import { cliDiscoveryRefreshCommandSchema, cliVerifyConnectionCommandSchema } from "./cli-discovery.js";
 import {
   applicationPublicationStartCommandSchema,
   applicationPublicationStopCommandSchema,
@@ -106,6 +107,7 @@ import {
 } from "./application-publication.js";
 
 import {
+  CliDiscoveryInventoryV1Schema,
   NativeSkillInventoryV1Schema,
   ArtifactPayloadSchema,
   RunAnswerPayloadSchema,
@@ -245,6 +247,9 @@ export const nodeHeartbeatSchema = z.object({
   // Required complete snapshot, also sent by released registry-mode daemons.
   // [] explicitly means no runtimes; absence has never been a delta/no-op frame.
   runtimes: z.array(runtimeStatusSchema),
+  // Optional versioned CLI discovery snapshot, independent of heartbeat.runtimes.
+  // Absent means unreported (legacy daemon), not an empty discovery inventory.
+  cli_discovery: CliDiscoveryInventoryV1Schema.optional(),
   running_instances: z.array(z.string()),
 });
 
@@ -522,6 +527,8 @@ export const productReleaseHealthAckCommandSchema = z.object({
 
 // Name each existing option so declaration emit preserves exact types without expanding the entire graph.
 type CommandSchemaOptions = [
+  typeof cliDiscoveryRefreshCommandSchema,
+  typeof cliVerifyConnectionCommandSchema,
   typeof dependencyInputsSessionCommandSchema,
   typeof schedulerClaimResponseCommandSchema,
   typeof schedulerRunResponseCommandSchema,
@@ -609,6 +616,8 @@ type CommandSchemaOptions = [
 
 /** All Server -> Node commands, discriminated on `type`. */
 export const commandSchema: z.ZodDiscriminatedUnion<CommandSchemaOptions, "type"> = z.discriminatedUnion("type", [
+  cliDiscoveryRefreshCommandSchema,
+  cliVerifyConnectionCommandSchema,
   dependencyInputsSessionCommandSchema,
   schedulerClaimResponseCommandSchema,
   schedulerRunResponseCommandSchema,
