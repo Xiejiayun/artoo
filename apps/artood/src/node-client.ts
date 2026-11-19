@@ -39,22 +39,29 @@ import {
 import { readProductSourceRuntimeCapabilities } from "./product-source-runtime.js";
 import { claimProductResearchRevisionRun, closeProductResearchRevisionRun } from "./product-source-runtime.js";
 import { readProductResearchRevision } from "./product-research-revision.js";
-import type {
-  AgentInstanceHandle,
-  NodeSideTransport,
-  NodeToServerMessage,
-  NodeErrorCode,
-  RunEventMessage,
-  RunStartCommand,
-  RunStartOwnedResultCommand,
-  RunStopCommand,
-  RunResumeCommand,
-  RuntimeAdapter,
-  ServerToNodeMessage,
-  Unsubscribe,
+import {
+  cliDiscoveryRefreshCommandSchema,
+  cliVerifyConnectionCommandSchema,
+  type CliDiscoveryRefreshCommand,
+  type CliVerifyConnectionCommand,
+  type AgentInstanceHandle,
+  type NodeSideTransport,
+  type NodeToServerMessage,
+  type NodeErrorCode,
+  type RunEventMessage,
+  type RunStartCommand,
+  type RunStartOwnedResultCommand,
+  type RunStopCommand,
+  type RunResumeCommand,
+  type RuntimeAdapter,
+  type ServerToNodeMessage,
+  type Unsubscribe,
 } from "@artoo/protocol";
 import { adapterRunEventBodySchema, assertWorkspaceScope, runStartCommandSchema } from "@artoo/protocol";
 import {
+  isSingleTurnTextRuntime,
+  type SingleTurnTextRuntimeId,
+  SingleTurnTextRuntimeIdSchema,
   RunStartPayloadSchema,
   RunWorkspaceRetainedPayloadSchema,
   type OwnedResultRunAdmissionV1,
@@ -62,6 +69,8 @@ import {
   type WorkspaceRetentionOutcome,
   type ProductReleaseHealthReport,
 } from "@artoo/domain";
+import { assertValidSingleTurnRunStart } from "./acp-single-turn-adapter.js";
+import type { SingleTurnRuntimeController } from "./cli-verification.js";
 import { snapshotOwnedResultRunAdmission } from "./owned-result-admission.js";
 import {
   prepareOwnedResultRun,
@@ -314,6 +323,10 @@ export interface NodeClientOptions {
   };
   /** Local bounded observation only; never supplied by a command or used as execution evidence. */
   sourceCommandDiagnostic?: (value: SourceCommandDiagnostic) => unknown;
+  /** Controlled single-turn CLI discovery/verification/isolation controller. */
+  singleTurnRuntime?: SingleTurnRuntimeController;
+  /** Optional hook to push an immediate heartbeat when dynamic runtimes change. */
+  emitHeartbeat?: () => Promise<void>;
 }
 
 export interface NodeClient {
@@ -1742,6 +1755,19 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       )
         throw new Error("Imported research requires its dedicated local operation controller");
       if (sourceRuntime) assertProductSourceWorkspaceBoundary(sourceRuntime, command.payload.workspace.root);
+      if (isSingleTurnTextRuntime(command.payload.runtime)) {
+        const parsedRuntime = SingleTurnTextRuntimeIdSchema.safeParse(command.payload.runtime);
+        if (
+          !parsedRuntime.success ||
+          !options.singleTurnRuntime?.isVerifiedReady(parsedRuntime.data as SingleTurnTextRuntimeId)
+        ) {
+          throw new Error("Single-turn CLI runtime is not verified and ready on this node");
+        }
+        assertValidSingleTurnRunStart(command.payload);
+        if (options.prepareDependencyInputs && hasTransferableDependencyInputs(command.payload)) {
+          throw new Error("Single-turn runtimes do not support artifact dependency inputs");
+        }
+      }
       const configuredAdapter = resolveAdapter(command.payload.runtime);
       releaseExecutor.assertWorkspaceBoundary(command.payload);
       if (releasingWorkspaces.has(command.payload.workspace.root))
@@ -2065,14 +2091,17 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
           outcome: "unconfirmed",
         });
       }
-      assertWorkspaceScope(plan.root, payload.policy_snapshot.filesystem_write_scope);
-      if (workspaceConfig.allowedRoots) {
-        assertRealWorkspaceScope(plan.root, workspaceConfig.allowedRoots);
-        if (plan.kind === "worktree") assertRealWorkspaceScope(plan.baseRepo, workspaceConfig.allowedRoots);
+      const singleTurnRun = isSingleTurnTextRuntime(payload.runtime);
+      if (!singleTurnRun) {
+        assertWorkspaceScope(plan.root, payload.policy_snapshot.filesystem_write_scope);
+        if (workspaceConfig.allowedRoots) {
+          assertRealWorkspaceScope(plan.root, workspaceConfig.allowedRoots);
+          if (plan.kind === "worktree") assertRealWorkspaceScope(plan.baseRepo, workspaceConfig.allowedRoots);
+        }
       }
       const sourceVerification = verificationRuns.get(payload.run_id);
       if (sourceVerification && plan.kind === "worktree") sourceVerification.workspaceProcessInvoked = true;
-      await materializeWorkspace(plan, git);
+      if (!singleTurnRun) await materializeWorkspace(plan, git);
     } catch (err) {
       await rejectStart("process_start_failed", errorMessage(err));
       return;
@@ -3685,11 +3714,56 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         return ackAccepted(message.id);
       case "run.resume":
         return onRunResume(message);
+      case "cli.discovery.refresh.v1":
+        return onCliDiscoveryRefresh(message);
+      case "cli.verify.v1":
+        return onCliVerifyConnection(message);
       case "product.release.health.ack":
         return; // WebSocket transport owns persisted-event acknowledgements.
       case "node.session.ready":
       case "node.session.pong":
         return; // Only the managed transport may establish session usability.
+    }
+  }
+
+  async function onCliDiscoveryRefresh(command: CliDiscoveryRefreshCommand): Promise<void> {
+    try {
+      const parsed = cliDiscoveryRefreshCommandSchema.parse(command);
+      if (!options.singleTurnRuntime) {
+        throw new Error("CLI discovery controller is not enabled on this node");
+      }
+      const cli_discovery = options.singleTurnRuntime.refresh();
+      await transport.send({
+        kind: "cli.discovery.snapshot.v1",
+        node_id: nodeId,
+        request_id: parsed.payload.request_id,
+        cli_discovery,
+      });
+      await options.emitHeartbeat?.().catch(() => {});
+      await ackAccepted(parsed.id);
+    } catch (error) {
+      await ackRejected(command.id, "process_start_failed", errorMessage(error));
+    }
+  }
+
+  async function onCliVerifyConnection(command: CliVerifyConnectionCommand): Promise<void> {
+    try {
+      const parsed = cliVerifyConnectionCommandSchema.parse(command);
+      if (!options.singleTurnRuntime) {
+        throw new Error("Single-turn CLI verification controller is not enabled on this node");
+      }
+      const { outcome, cli_discovery } = await options.singleTurnRuntime.verifyConnection(parsed.payload.runtime);
+      await transport.send({
+        kind: "cli.verify.result.v1",
+        node_id: nodeId,
+        request_id: parsed.payload.request_id,
+        outcome,
+        cli_discovery,
+      });
+      await options.emitHeartbeat?.().catch(() => {});
+      await ackAccepted(parsed.id);
+    } catch (error) {
+      await ackRejected(command.id, "process_start_failed", errorMessage(error));
     }
   }
 

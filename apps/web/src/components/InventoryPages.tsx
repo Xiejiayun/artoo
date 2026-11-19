@@ -1,7 +1,14 @@
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Bot, Laptop, Monitor, Plus, SearchX, type LucideIcon } from "lucide-react";
+import { Bot, Laptop, Monitor, Plus, RefreshCw, SearchX, type LucideIcon } from "lucide-react";
+import {
+  isSingleTurnTextRuntime,
+  type CliConnectionVerificationOutcomeV1,
+  type CliDiscoveryEntryV1,
+  type CliDiscoveryInventoryV1,
+  type SingleTurnTextRuntimeId,
+} from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
 import { useDaemons } from "../app/useDaemons.js";
 import { usePollMs } from "../app/RealtimeContext.js";
@@ -31,8 +38,33 @@ const list = (values: readonly string[] | undefined): string => (values?.length 
 const timestamp = (input: string | null | undefined): string =>
   input && !Number.isNaN(Date.parse(input)) ? new Date(input).toLocaleString() : "Not reported";
 function invTone(status: string): Tone {
-  if (["online", "available", "enabled", "active", "ready", "completed", "low"].includes(status)) return "success";
-  if (["stale", "degraded", "awaiting_input", "paused", "pending", "medium", "queued", "stopping"].includes(status))
+  if (
+    [
+      "online",
+      "available",
+      "enabled",
+      "active",
+      "ready",
+      "ready_single_turn",
+      "existing_runtime",
+      "completed",
+      "low",
+    ].includes(status)
+  )
+    return "success";
+  if (
+    [
+      "stale",
+      "degraded",
+      "awaiting_input",
+      "paused",
+      "pending",
+      "installed_unverified",
+      "medium",
+      "queued",
+      "stopping",
+    ].includes(status)
+  )
     return "warning";
   if (["error", "failed", "revoked", "blocked", "high"].includes(status)) return "danger";
   if (["busy", "running", "starting"].includes(status)) return "info";
@@ -130,6 +162,177 @@ function InventoryLoading({ label }: { label: string }): React.ReactNode {
     </section>
   );
 }
+function cliInstallLabel(status: CliDiscoveryEntryV1["install_status"]): string {
+  switch (status) {
+    case "installed":
+      return "已安装";
+    case "unverified_entrypoint":
+      return "入口未确认";
+    case "missing":
+      return "未安装";
+  }
+}
+
+function cliExecutionLabel(status: CliDiscoveryEntryV1["execution_status"]): string {
+  switch (status) {
+    case "existing_runtime":
+      return "既有运行时";
+    case "ready_single_turn":
+      return "已就绪 · 仅手动单轮";
+    case "installed_unverified":
+      return "已安装，未验证";
+    case "unsupported":
+      return "暂不支持执行";
+    case "disabled":
+      return "未启用";
+    case "unavailable":
+      return "不可用";
+  }
+}
+
+function CliDiscoveryPanel({
+  computerId,
+  computerName,
+  cliDiscovery,
+  isLoading,
+  isAdmin,
+}: {
+  computerId: string;
+  computerName: string;
+  cliDiscovery: CliDiscoveryInventoryV1 | null | undefined;
+  isLoading?: boolean;
+  isAdmin: boolean;
+}): React.ReactNode {
+  const api = useApi();
+  const query = useQueryClient();
+  const [lastOutcome, setLastOutcome] = useState<CliConnectionVerificationOutcomeV1 | null>(null);
+  const [pendingVerify, setPendingVerify] = useState<SingleTurnTextRuntimeId | null>(null);
+  const refreshMutation = useMutation({
+    mutationFn: () => api.refreshComputerCliDiscovery(computerId),
+    onSuccess: async (data) => {
+      query.setQueryData(queryKeys.computerRuntimes(computerId), (prev: unknown) => {
+        if (!prev || typeof prev !== "object") return { runtimes: [], cli_discovery: data.cli_discovery };
+        return { ...(prev as Record<string, unknown>), cli_discovery: data.cli_discovery };
+      });
+      await Promise.all([
+        query.invalidateQueries({ queryKey: queryKeys.computerRuntimes(computerId) }),
+        query.invalidateQueries({ queryKey: queryKeys.daemons }),
+      ]);
+    },
+  });
+  const verifyMutation = useMutation({
+    mutationFn: (runtime: SingleTurnTextRuntimeId) => api.verifyComputerCliConnection(computerId, runtime),
+    onSuccess: async (data) => {
+      setLastOutcome(data.outcome);
+      if (data.cli_discovery) {
+        query.setQueryData(queryKeys.computerRuntimes(computerId), (prev: unknown) => {
+          if (!prev || typeof prev !== "object") return { runtimes: [], cli_discovery: data.cli_discovery };
+          return { ...(prev as Record<string, unknown>), cli_discovery: data.cli_discovery };
+        });
+      }
+      await Promise.all([
+        query.invalidateQueries({ queryKey: queryKeys.computerRuntimes(computerId) }),
+        query.invalidateQueries({ queryKey: queryKeys.daemons }),
+      ]);
+    },
+  });
+
+  const actionError =
+    refreshMutation.error instanceof Error
+      ? refreshMutation.error.message
+      : verifyMutation.error instanceof Error
+        ? verifyMutation.error.message
+        : null;
+  const pendingEntry = pendingVerify ? cliDiscovery?.entries.find((entry) => entry.id === pendingVerify) : undefined;
+
+  return (
+    <section className="resource-runtimes" aria-label={`${computerName} CLI discovery`}>
+      <div className="resource-section-heading">
+        <h3>本机已发现 CLI</h3>
+        {cliDiscovery && <span>{cliDiscovery.entries.length}</span>}
+        {isAdmin && (
+          <Button
+            size="sm"
+            iconLeft={RefreshCw}
+            loading={refreshMutation.isPending}
+            onClick={() => {
+              setPendingVerify(null);
+              refreshMutation.mutate();
+            }}
+          >
+            刷新发现
+          </Button>
+        )}
+      </div>
+      {actionError && (
+        <p className="resource-inline-error" role="alert">
+          {actionError}
+        </p>
+      )}
+      {lastOutcome && (
+        <p className="resource-muted" role="status">
+          {lastOutcome.runtime} 验证结果：{lastOutcome.message}
+        </p>
+      )}
+      {isAdmin && pendingVerify && (
+        <div className="agent-selection" style={{ flex: "1 0 100%" }} role="region" aria-label="确认验证连接">
+          <p>
+            即将验证 <strong>{pendingEntry?.display_name ?? pendingVerify}</strong>
+            ：该操作会向 Provider 发送一条固定、不含项目数据的请求，可能产生费用。验证通过不代表授予读写代码权限。
+          </p>
+          <div className="action-row">
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={verifyMutation.isPending}
+              onClick={() => {
+                const runtime = pendingVerify;
+                setPendingVerify(null);
+                verifyMutation.mutate(runtime);
+              }}
+            >
+              确认验证
+            </Button>
+            <Button size="sm" onClick={() => setPendingVerify(null)}>
+              取消
+            </Button>
+          </div>
+        </div>
+      )}
+      {!isLoading && !cliDiscovery ? (
+        <p className="resource-muted">未上报本机 CLI 发现信息（旧版节点或尚未收到本次会话心跳）</p>
+      ) : null}
+      {cliDiscovery && (
+        <ul className="resource-runtime-list">
+          {cliDiscovery.entries.map((entry) => (
+            <li key={entry.id}>
+              <div>
+                <strong>{entry.display_name}</strong>
+                <span>
+                  {cliInstallLabel(entry.install_status)} · {entry.version || "版本未报告"} · {entry.reason}
+                </span>
+              </div>
+              <div className="action-row">
+                <Badge tone={invTone(entry.execution_status)}>{cliExecutionLabel(entry.execution_status)}</Badge>
+                {isAdmin && entry.can_verify && isSingleTurnTextRuntime(entry.id) && (
+                  <Button
+                    size="sm"
+                    loading={verifyMutation.isPending && verifyMutation.variables === entry.id}
+                    disabled={verifyMutation.isPending}
+                    onClick={() => setPendingVerify(entry.id as SingleTurnTextRuntimeId)}
+                  >
+                    {entry.execution_status === "ready_single_turn" ? "重新验证" : "验证连接"}
+                  </Button>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 export function ComputersPage(): React.ReactNode {
   const api = useApi();
   const [params, setParams] = useSearchParams();
@@ -306,6 +509,13 @@ export function ComputersPage(): React.ReactNode {
                     ))}
                   </ul>
                 </section>
+                <CliDiscoveryPanel
+                  computerId={computer.id}
+                  computerName={computer.display_name}
+                  cliDiscovery={runtimeQuery?.data?.cli_discovery}
+                  isLoading={runtimeQuery?.isLoading}
+                  isAdmin={["owner", "admin"].includes(bootstrap.data!.user.role)}
+                />
                 <section className="machine-instances" aria-label={`${computer.display_name} instances`}>
                   <div className="resource-section-heading">
                     <h3>Agent instances</h3>

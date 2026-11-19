@@ -4,12 +4,15 @@ import type { AuditSignerV1 } from "./audit-signature.js";
 import type { AiDataSharingPolicy } from "./config/ai-data-sharing.js";
 import type { SourceLifecycleRegistry } from "./services/source-clean-lifecycle-service.js";
 import type {
+  CliConnectionVerificationOutcomeV1,
+  CliDiscoveryInventoryV1,
   Clock,
   IdGen,
   VerificationCapabilities,
   ReleaseCapabilitiesV1,
   NodeOwnedResultProfileDescriptorV1,
   ProductSourceRoutingV1,
+  SingleTurnTextRuntimeId,
 } from "@artoo/domain";
 import type { ApplicationPublicationCapabilitiesV1 } from "@artoo/domain";
 import type { ContentAddressedBlobStore, DbClient } from "@artoo/storage";
@@ -155,4 +158,18 @@ export interface ServerContext {
   ) => { computerId: string; deviceId: string; tokenLookup: string; sessionId: string } | undefined;
   /** Current paired node's prepared routing description; never an execution grant. */
   getProductSourceRouting?: (computerId: string) => ProductSourceRoutingV1 | undefined;
+  /** Session-scoped CLI discovery snapshot reported by a connected node. */
+  getCliDiscovery?: (computerId: string) => CliDiscoveryInventoryV1 | undefined;
+  /** Live administrator-triggered CLI catalog refresh on the connected node. */
+  refreshCliDiscovery?: (computerId: string) => Promise<CliDiscoveryInventoryV1>;
+  /** Live administrator-triggered CLI connection verification on the connected node. */
+  verifyCliConnection?: (
+    computerId: string,
+    runtime: SingleTurnTextRuntimeId,
+  ) => Promise<{
+    outcome: CliConnectionVerificationOutcomeV1;
+    cli_discovery: CliDiscoveryInventoryV1 | null;
+  }>;
+  /** Positively verifies whether a single-turn text runtime is ready on the active node session. */
+  isSingleTurnRuntimeReady?: (computerId: string, runtime: string) => boolean;
 }

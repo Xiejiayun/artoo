@@ -62,6 +62,19 @@ export function wireNodeDispatch(
   // Resolve every query through the current binding; never cache by computer.
   ctx.supportsExecutionFeature = (computerId, feature) =>
     nodeRegistry.get(computerId)?.supportsExecutionFeature(feature) ?? false;
+  ctx.getCliDiscovery = (computerId) => nodeRegistry.get(computerId)?.getCliDiscovery?.();
+  ctx.refreshCliDiscovery = async (computerId) => {
+    const binding = nodeRegistry.get(computerId);
+    if (!binding?.refreshCliDiscovery) throw AppError.conflict("Execution node is offline");
+    return binding.refreshCliDiscovery();
+  };
+  ctx.verifyCliConnection = async (computerId, runtime) => {
+    const binding = nodeRegistry.get(computerId);
+    if (!binding?.verifyCliConnection) throw AppError.conflict("Execution node is offline");
+    return binding.verifyCliConnection(runtime);
+  };
+  ctx.isSingleTurnRuntimeReady = (computerId, runtime) =>
+    nodeRegistry.get(computerId)?.isSingleTurnRuntimeReady?.(runtime) ?? false;
   ctx.supportsVerificationProfile = (computerId, profileId, projectId, workspaceRoot) =>
     nodeRegistry.get(computerId)?.supportsVerificationProfile(profileId, projectId, workspaceRoot) ?? false;
   ctx.getVerificationWorkspace = (computerId, profileId, projectId, workspaceRoot) =>

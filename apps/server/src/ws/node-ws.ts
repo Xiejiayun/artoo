@@ -198,7 +198,9 @@ export function registerNodeWsRoute(
                   message.kind !== "product.source.recovery-validation.ack.v1" &&
                   message.kind !== "product.source.recovery-validation.result.v1" &&
                   message.kind !== "product.source.recovery-validation-review.ack.v1" &&
-                  message.kind !== "product.source.recovery-validation-review.result.v1"
+                  message.kind !== "product.source.recovery-validation-review.result.v1" &&
+                  message.kind !== "cli.discovery.snapshot.v1" &&
+                  message.kind !== "cli.verify.result.v1"
                 )
                   return;
                 if (!registered || !managed?.active || registry.get(nodeId!) !== binding) {
@@ -576,9 +578,18 @@ export function registerNodeWsRoute(
           close(1008, "heartbeat from replaced node session");
           return;
         }
+        if (message.cli_discovery !== undefined) binding?.setCliDiscovery?.(message.cli_discovery);
         void touchHeartbeat(ctx, nodeId!);
         void recordHeartbeatRuntimes(ctx, nodeId!, message.runtimes).catch(() => {});
         if (currentAuth.mode === "device") void recordDeviceActivity(ctx, currentAuth.deviceId, "node").catch(() => {});
+        return;
+      }
+      if (message.kind === "cli.discovery.snapshot.v1" || message.kind === "cli.verify.result.v1") {
+        if (!registered || registry.get(nodeId!) !== binding) {
+          close(1008, "cli discovery frame from replaced node session");
+          return;
+        }
+        binding?.receive(message);
       }
     };
     const MAX_PREAUTH_FRAMES = 16;

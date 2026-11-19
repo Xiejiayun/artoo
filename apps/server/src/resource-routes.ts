@@ -1,5 +1,11 @@
 import { agentInstances, agentRuntimes, agents, appendEvent, computers, discussions, projects, runs } from "@artoo/db";
-import { ID_PREFIXES, WorktreeBaseConfigurationSchema, type WorktreeBaseConfiguration } from "@artoo/domain";
+import {
+  ID_PREFIXES,
+  SINGLE_TURN_TEXT_RUNTIME_FEATURE_V1,
+  WorktreeBaseConfigurationSchema,
+  isSingleTurnTextRuntime,
+  type WorktreeBaseConfiguration,
+} from "@artoo/domain";
 import { validateWorktreeBaseConfiguration, WorkspaceAllocationError } from "@artoo/protocol";
 import { and, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
@@ -47,6 +53,9 @@ async function changeWorktreeBase(c: ServerContext, id: string, setting: Worktre
       throw AppError.conflict("Stored agent instance configuration is invalid");
     }
     const currentConfig = instance.config as Record<string, unknown>;
+    if (setting !== undefined && isSingleTurnTextRuntime(instance.runtime)) {
+      throw AppError.validation("Single-turn CLI runtimes do not support per-run worktree allocation");
+    }
     if (setting !== undefined) {
       try {
         validateWorktreeBaseConfiguration(setting, computer.os);
@@ -285,6 +294,20 @@ export function registerResourceRoutes(
         );
       if (!registered || registered.status !== "available")
         throw AppError.conflict("The computer must advertise an available runtime before it can be configured");
+      const singleTurnRuntime = isSingleTurnTextRuntime(runtime);
+      if (singleTurnRuntime) {
+        if (
+          c.supportsExecutionFeature?.(computerId, SINGLE_TURN_TEXT_RUNTIME_FEATURE_V1) !== true ||
+          c.isSingleTurnRuntimeReady?.(computerId, runtime) !== true
+        ) {
+          throw AppError.conflict(
+            "Single-turn CLI runtime must be verified on the connected node before configuring an agent instance",
+          );
+        }
+        if (input[WORKTREE_BASE_KEY] !== undefined) {
+          throw AppError.validation("Single-turn CLI runtimes do not support per-run worktree allocation");
+        }
+      }
       const available = registered.capabilities as string[];
       // Separate workspaces can retain the same logical contributor. Selecting
       // an existing identity never edits its declarations or crosses an org.
@@ -309,6 +332,9 @@ export function registerResourceRoutes(
         capabilities.some((value) => typeof value !== "string" || !available.includes(value))
       ) {
         throw AppError.validation("capabilities must be supported by the advertised runtime");
+      }
+      if (singleTurnRuntime && capabilities.length > 0) {
+        throw AppError.validation("Single-turn CLI runtimes must declare empty capabilities");
       }
       await requireAdministrator(c, tx);
       const now = c.clock.nowIso();

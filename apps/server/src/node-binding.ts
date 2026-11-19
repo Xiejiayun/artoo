@@ -29,6 +29,7 @@ import {
   goals,
   productReleases,
   runs,
+  schedulerDecisions,
   schedulerExecutionRequests,
   tasks,
 } from "@artoo/db";
@@ -40,6 +41,9 @@ import {
   ApplicationPublicationProfileAdvertisementsV1Schema,
   ApplicationPublicationRequestV1Schema,
   type ApplicationPublicationVerificationAckV1,
+  type CliConnectionVerificationOutcomeV1,
+  type CliDiscoveryInventoryV1,
+  CliDiscoveryInventoryV1Schema,
   ContextPackSchema,
   ID_PREFIXES,
   IMPORTED_CLEAN_VALIDATION_FEATURE_V1,
@@ -68,12 +72,18 @@ import {
   type ReleaseProfileAdvertisement,
   ReleaseProfileAdvertisementsSchema,
   SOURCE_CLEAN_RESTART_FEATURE_V1,
+  SINGLE_TURN_TEXT_RUNTIME_FEATURE_V1,
+  type SingleTurnTextRuntimeId,
+  SingleTurnTextRuntimeIdSchema,
+  isSingleTurnTextRuntime,
   type VerificationCapabilities,
   type VerificationProfileAdvertisement,
   VerificationProfileAdvertisementsSchema,
   VerificationRequirementSchema,
 } from "@artoo/domain";
 import type {
+  CliDiscoveryRefreshCommand,
+  CliVerifyConnectionCommand,
   NodeToServerMessage,
   NodeTransport,
   RunResumeCommand,
@@ -145,6 +155,14 @@ export interface NodeBinding {
   /** Current session's folder suggestions, never a substitute for node authorization. */
   workspaceRoots?: { readonly version: 1; readonly paths: readonly string[] };
   getProductSourceRouting?(): ProductSourceRoutingV1 | undefined;
+  setCliDiscovery?(inventory: CliDiscoveryInventoryV1 | undefined): void;
+  getCliDiscovery?(): CliDiscoveryInventoryV1 | undefined;
+  isSingleTurnRuntimeReady?(runtime: string): boolean;
+  refreshCliDiscovery?(): Promise<CliDiscoveryInventoryV1>;
+  verifyCliConnection?(runtime: SingleTurnTextRuntimeId): Promise<{
+    outcome: CliConnectionVerificationOutcomeV1;
+    cli_discovery: CliDiscoveryInventoryV1 | null;
+  }>;
   announceSourceRecoverySession?(): Promise<void>;
   announceApplicationPublicationSession?(): Promise<void>;
   announceDependencyInputsSession?(): Promise<void>;
@@ -307,6 +325,29 @@ export function attachNodeBinding(
   // Only this live binding can rely on its node's in-memory start deduplication.
   // A new connection/server must treat an exposed durable intent as uncertain.
   const exposedAssistantRuns = new Set<string>();
+  let cliDiscoverySnapshot: CliDiscoveryInventoryV1 | undefined;
+  const pendingCliRefreshes = new Map<
+    string,
+    {
+      commandId: string;
+      resolve: (inventory: CliDiscoveryInventoryV1) => void;
+      reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+  const pendingCliVerifications = new Map<
+    string,
+    {
+      commandId: string;
+      runtime: SingleTurnTextRuntimeId;
+      resolve: (result: {
+        outcome: CliConnectionVerificationOutcomeV1;
+        cli_discovery: CliDiscoveryInventoryV1 | null;
+      }) => void;
+      reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
   let closed = false;
   const sourceRecovery =
     importedReviewOptions &&
@@ -610,6 +651,44 @@ export function attachNodeBinding(
   const receive = (message: NodeToServerMessage): void => {
     // The credential-bound identity is authoritative for every inbound frame.
     if (closed || message.node_id !== computerId) return;
+    if (message.kind === "cli.discovery.snapshot.v1") {
+      if (!isCurrentBinding()) return;
+      const snapshot = structuredClone(message.cli_discovery);
+      cliDiscoverySnapshot = snapshot;
+      if (message.request_id) {
+        const pending = pendingCliRefreshes.get(message.request_id);
+        if (pending) {
+          pendingCliRefreshes.delete(message.request_id);
+          clearTimeout(pending.timer);
+          pending.resolve(structuredClone(snapshot));
+        }
+      }
+      return;
+    }
+    if (message.kind === "cli.verify.result.v1") {
+      if (!isCurrentBinding()) return;
+      if (message.cli_discovery !== undefined) {
+        cliDiscoverySnapshot = structuredClone(message.cli_discovery);
+      }
+      const pending = pendingCliVerifications.get(message.request_id);
+      if (pending) {
+        pendingCliVerifications.delete(message.request_id);
+        clearTimeout(pending.timer);
+        if (message.outcome.runtime !== pending.runtime) {
+          pending.reject(AppError.conflict("CLI verification result runtime mismatched the request"));
+        } else {
+          pending.resolve({
+            outcome: structuredClone(message.outcome),
+            cli_discovery: message.cli_discovery
+              ? structuredClone(message.cli_discovery)
+              : cliDiscoverySnapshot
+                ? structuredClone(cliDiscoverySnapshot)
+                : null,
+          });
+        }
+      }
+      return;
+    }
     if (
       message.kind === "product.source.lifecycle.register.v1" ||
       message.kind === "product.source.clean-restart.checkpoint.v1"
@@ -1188,6 +1267,23 @@ export function attachNodeBinding(
         // Only explicit process_exited proves absence. Permission/policy errors
         // and malformed/unsupported requests cannot release write leases.
         enqueue(() => failRunDaemonDisconnect(ctx, resume.runId, computerId, message.error_code === "process_exited"));
+        return;
+      }
+      for (const [requestId, pending] of pendingCliRefreshes.entries()) {
+        if (pending.commandId === message.command_id) {
+          pendingCliRefreshes.delete(requestId);
+          clearTimeout(pending.timer);
+          pending.reject(AppError.conflict(message.message));
+          return;
+        }
+      }
+      for (const [requestId, pending] of pendingCliVerifications.entries()) {
+        if (pending.commandId === message.command_id) {
+          pendingCliVerifications.delete(requestId);
+          clearTimeout(pending.timer);
+          pending.reject(AppError.conflict(message.message));
+          return;
+        }
       }
     } else if (message.kind === "command.ack") {
       // Accepted: no server-side transition (resume just continues the live run).
@@ -1450,6 +1546,7 @@ export function attachNodeBinding(
     const retainSourceStart = sourceStartScope();
     if (previousSourceStart && !retainSourceStart)
       throw AppError.conflict("Pending source startup no longer has its original dispatch scope");
+    const singleTurnRuntime = isSingleTurnTextRuntime(run.runtimeId);
     const commandId = previousSourceStart?.id ?? ctx.idGen.generate("cmd");
     const command: RunStartCommand | RunStartOwnedResultCommand = ownedAssignment
       ? {
@@ -1478,10 +1575,10 @@ export function attachNodeBinding(
             ...(verification ? { verification } : {}),
             // The base is metadata, never a wider write grant.
             policy_snapshot: {
-              filesystem_write_scope: [workspaceRoot],
+              filesystem_write_scope: singleTurnRuntime ? [] : [workspaceRoot],
               requires_approval: ["git.push", "external.post"],
             },
-            artifact_rules: { paths: ["artifacts/**", "*.patch"] },
+            artifact_rules: singleTurnRuntime ? { paths: [] } : { paths: ["artifacts/**", "*.patch"] },
           },
         };
     if (previousSourceStart && !isDeepStrictEqual(previousSourceStart, command)) {
@@ -1491,6 +1588,93 @@ export function attachNodeBinding(
     }
     assertCurrentStartBinding(runId);
     if (allocated) assertAllocationFeature(runId);
+    if (singleTurnRuntime) {
+      if (
+        !SingleTurnTextRuntimeIdSchema.safeParse(run.runtimeId).success ||
+        !binding.supportsExecutionFeature(SINGLE_TURN_TEXT_RUNTIME_FEATURE_V1)
+      ) {
+        throw AppError.conflict("Current node session does not support single-turn text runtimes", {
+          run_id: runId,
+          dispatch: "blocked",
+          reason: "single_turn_feature_unsupported",
+        });
+      }
+      if (binding.isSingleTurnRuntimeReady?.(run.runtimeId) !== true) {
+        throw AppError.conflict("Single-turn CLI connection verification is not ready on the active node session", {
+          run_id: runId,
+          dispatch: "blocked",
+          reason: "single_turn_runtime_unverified",
+        });
+      }
+      if (
+        allocated ||
+        workspaceBranch !== null ||
+        verification ||
+        ownedAssignment ||
+        retainSourceStart ||
+        context.payload?.product_development ||
+        context.payload?.review_subject ||
+        context.payload?.agent_review_subject ||
+        context.payload?.app_delivery ||
+        context.payload?.app_publication ||
+        context.payload?.verification_capabilities ||
+        context.payload?.release_capabilities
+      ) {
+        throw AppError.conflict(
+          "Single-turn text runtimes only allow standalone plain-text runs without branches, verification, goals, or tools",
+          { run_id: runId, dispatch: "blocked", reason: "single_turn_no_tools_only" },
+        );
+      }
+      const [[singleTurnTask], [singleTurnDecision]] = await Promise.all([
+        ctx.db.db
+          .select({
+            goalId: tasks.goalId,
+            sourcePlanId: tasks.sourcePlanId,
+            executionPolicyTaskId: tasks.executionPolicyTaskId,
+            requiredCapabilities: tasks.requiredCapabilities,
+          })
+          .from(tasks)
+          .where(and(eq(tasks.id, run.taskId), eq(tasks.organizationId, ctx.organizationId))),
+        run.schedulerDecisionId
+          ? ctx.db.db
+              .select({
+                mode: schedulerDecisions.mode,
+                selectedAgentInstanceId: schedulerDecisions.selectedAgentInstanceId,
+              })
+              .from(schedulerDecisions)
+              .where(
+                and(
+                  eq(schedulerDecisions.id, run.schedulerDecisionId),
+                  eq(schedulerDecisions.organizationId, ctx.organizationId),
+                ),
+              )
+          : Promise.resolve([]),
+      ]);
+      if (
+        !singleTurnDecision ||
+        singleTurnDecision.mode !== "manual" ||
+        singleTurnDecision.selectedAgentInstanceId !== run.agentInstanceId
+      ) {
+        throw AppError.conflict("Single-turn text runtimes require manual agent-instance targeting", {
+          run_id: runId,
+          dispatch: "blocked",
+          reason: "single_turn_manual_only",
+        });
+      }
+      if (
+        !singleTurnTask ||
+        singleTurnTask.goalId !== null ||
+        singleTurnTask.sourcePlanId !== null ||
+        singleTurnTask.executionPolicyTaskId !== null ||
+        !Array.isArray(singleTurnTask.requiredCapabilities) ||
+        singleTurnTask.requiredCapabilities.length > 0
+      ) {
+        throw AppError.conflict(
+          "Single-turn text runtimes only allow standalone plain-text tasks without goals or tool capabilities",
+          { run_id: runId, dispatch: "blocked", reason: "single_turn_no_tools_only" },
+        );
+      }
+    }
     await requireAuthorizedRun(runId, run);
     if (!(await canDispatchAssistantRun(ctx, run, { context: context.payload, recheckPlanningCapabilities: false })))
       return;
@@ -1500,6 +1684,13 @@ export function attachNodeBinding(
       .from(assistantTurns)
       .where(and(eq(assistantTurns.runId, run.id), eq(assistantTurns.organizationId, ctx.organizationId)))
       .limit(1);
+    if (singleTurnRuntime && assistantTurn) {
+      throw AppError.conflict("Single-turn text runtimes do not support assistant discussions", {
+        run_id: runId,
+        dispatch: "blocked",
+        reason: "single_turn_no_tools_only",
+      });
+    }
     let claimedExposureAt: string | undefined;
     if (assistantTurn && !exposedAssistantRuns.has(run.id)) {
       // Commit possible exposure before touching the transport. A crash here
@@ -1546,6 +1737,13 @@ export function attachNodeBinding(
         if (Boolean(opinion) !== Boolean(context.payload?.agent_review_subject))
           throw AppError.conflict("Artifact opinion dispatch lost its persisted relation");
         if (opinion) {
+          if (singleTurnRuntime) {
+            throw AppError.conflict("Single-turn text runtimes do not support artifact opinion tasks", {
+              run_id: runId,
+              dispatch: "blocked",
+              reason: "single_turn_no_tools_only",
+            });
+          }
           await assertTaskAgentReviewCurrent(ctx, tx, opinion, { lockSource: true });
           await assertTaskAgentReviewRun(ctx, tx, opinion, run);
           if (!binding.supportsDependencyInputs?.())
@@ -1794,6 +1992,102 @@ export function attachNodeBinding(
       )
         return false;
       return !closed && isCurrentBinding() && executionFeatureSet.has(feature);
+    },
+    setCliDiscovery(inventory): void {
+      if (closed || !isCurrentBinding()) return;
+      cliDiscoverySnapshot =
+        inventory === undefined ? undefined : CliDiscoveryInventoryV1Schema.parse(structuredClone(inventory));
+    },
+    getCliDiscovery(): CliDiscoveryInventoryV1 | undefined {
+      if (closed || !isCurrentBinding() || !cliDiscoverySnapshot) return undefined;
+      return structuredClone(cliDiscoverySnapshot);
+    },
+    isSingleTurnRuntimeReady(runtime): boolean {
+      if (
+        closed ||
+        !isCurrentBinding() ||
+        !isSingleTurnTextRuntime(runtime) ||
+        !binding.supportsExecutionFeature(SINGLE_TURN_TEXT_RUNTIME_FEATURE_V1) ||
+        !cliDiscoverySnapshot
+      ) {
+        return false;
+      }
+      return cliDiscoverySnapshot.entries.some(
+        (entry) =>
+          entry.id === runtime &&
+          entry.install_status === "installed" &&
+          entry.execution_status === "ready_single_turn" &&
+          entry.can_dispatch === true,
+      );
+    },
+    async refreshCliDiscovery(): Promise<CliDiscoveryInventoryV1> {
+      if (closed || !isCurrentBinding()) throw AppError.conflict("Execution node is offline");
+      const requestId = ctx.idGen.generate("cli_req");
+      const commandId = ctx.idGen.generate("cmd");
+      const pending = new Promise<CliDiscoveryInventoryV1>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pendingCliRefreshes.delete(requestId);
+          reject(AppError.conflict("Node did not respond to CLI discovery refresh before timeout"));
+        }, 15_000);
+        pendingCliRefreshes.set(requestId, { commandId, resolve, reject, timer });
+      });
+      void pending.catch(() => {});
+      const command: CliDiscoveryRefreshCommand = {
+        kind: "command",
+        id: commandId,
+        idempotency_key: `cli-refresh:${requestId}`,
+        type: "cli.discovery.refresh.v1",
+        payload: { version: 1, request_id: requestId },
+      };
+      try {
+        await transport.send(command);
+        return await pending;
+      } catch (error) {
+        const entry = pendingCliRefreshes.get(requestId);
+        if (entry) {
+          clearTimeout(entry.timer);
+          pendingCliRefreshes.delete(requestId);
+        }
+        throw error;
+      }
+    },
+    async verifyCliConnection(runtime: SingleTurnTextRuntimeId) {
+      if (closed || !isCurrentBinding()) throw AppError.conflict("Execution node is offline");
+      if (!binding.supportsExecutionFeature(SINGLE_TURN_TEXT_RUNTIME_FEATURE_V1)) {
+        throw AppError.conflict("Current node session does not enable single-turn CLI verification");
+      }
+      const requestId = ctx.idGen.generate("cli_req");
+      const commandId = ctx.idGen.generate("cmd");
+      const pending = new Promise<{
+        outcome: CliConnectionVerificationOutcomeV1;
+        cli_discovery: CliDiscoveryInventoryV1 | null;
+      }>((resolve, reject) => {
+        // Exceeds the daemon's 25s verification timeout so structured node outcomes return first.
+        const timer = setTimeout(() => {
+          pendingCliVerifications.delete(requestId);
+          reject(AppError.conflict("Node did not respond to CLI connection verification before timeout"));
+        }, 35_000);
+        pendingCliVerifications.set(requestId, { commandId, runtime, resolve, reject, timer });
+      });
+      void pending.catch(() => {});
+      const command: CliVerifyConnectionCommand = {
+        kind: "command",
+        id: commandId,
+        idempotency_key: `cli-verify:${requestId}`,
+        type: "cli.verify.v1",
+        payload: { version: 1, request_id: requestId, runtime },
+      };
+      try {
+        await transport.send(command);
+        return await pending;
+      } catch (error) {
+        const entry = pendingCliVerifications.get(requestId);
+        if (entry) {
+          clearTimeout(entry.timer);
+          pendingCliVerifications.delete(requestId);
+        }
+        throw error;
+      }
     },
     getOwnedResultProfile(resultProfileId, verifierTemplateId, projectId) {
       if (
@@ -2464,7 +2758,18 @@ export function attachNodeBinding(
 
     close(): void {
       closed = true;
+      cliDiscoverySnapshot = undefined;
       unsubscribe();
+      for (const pending of pendingCliRefreshes.values()) {
+        clearTimeout(pending.timer);
+        pending.reject(AppError.conflict("Node disconnected before CLI discovery refresh completed"));
+      }
+      pendingCliRefreshes.clear();
+      for (const pending of pendingCliVerifications.values()) {
+        clearTimeout(pending.timer);
+        pending.reject(AppError.conflict("Node disconnected before CLI verification completed"));
+      }
+      pendingCliVerifications.clear();
       for (const runId of pendingSourceStarts.keys()) forgetSourceStart(runId);
       for (const pending of pendingResumeRun.values()) clearTimeout(pending.timer);
       pendingResumeRun.clear();

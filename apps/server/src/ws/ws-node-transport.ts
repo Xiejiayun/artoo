@@ -37,6 +37,8 @@ import {
   importedRecoveryValidationReviewResultSchema,
 } from "@artoo/protocol";
 import {
+  cliDiscoverySnapshotMessageSchema,
+  cliVerifyResultMessageSchema,
   commandAckSchema,
   schedulerStartProposalRequestSchema,
   schedulerStartReadyMessageSchema,
@@ -259,6 +261,10 @@ export function parseNodeToServer(data: unknown): NodeToServerMessage | null {
       return ok(applicationPublicationObservationMessageSchema.safeParse(raw));
     case "product.release.health":
       return ok(productReleaseHealthMessageSchema.safeParse(raw));
+    case "cli.discovery.snapshot.v1":
+      return ok(cliDiscoverySnapshotMessageSchema.safeParse(raw));
+    case "cli.verify.result.v1":
+      return ok(cliVerifyResultMessageSchema.safeParse(raw));
     default:
       return null;
   }
