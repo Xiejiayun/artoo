@@ -1,0 +1,2077 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Artoo — Linear 风格全闭环项目工作台 (终版)</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body[data-theme="dark"] {
+      --background: #0b0d12;
+      --sidebar: #101218;
+      --content: #141720;
+      --card: #171b26;
+      --border: #252a38;
+      --card-border: #202532;
+      --foreground: #eef1f6;
+      --muted-foreground: #8c96a8;
+      --placeholder: #626c7d;
+      --code-foreground: #d8e0ec;
+      --primary: #6c77f5;
+      --primary-foreground: #ffffff;
+      --secondary: #1b202d;
+      --secondary-foreground: #e5e9f2;
+      --accent: #6c77f5;
+      --link: #8b95ff;
+      --success: #34d399;
+      --warning: #f59e0b;
+      --error: #f87171;
+      --chart-1: #818cf8;
+      --chart-2: #34d399;
+      --chart-3: #f59e0b;
+    }
+    body[data-theme="light"] {
+      --background: #ffffff;
+      --sidebar: #f7f8fa;
+      --content: #f5f6f8;
+      --card: #ffffff;
+      --border: #e2e6ed;
+      --card-border: #eceff4;
+      --foreground: #14171f;
+      --muted-foreground: #5c6675;
+      --placeholder: #8a94a4;
+      --code-foreground: #232833;
+      --primary: #4f46e5;
+      --primary-foreground: #ffffff;
+      --secondary: #f1f3f6;
+      --secondary-foreground: #1d222b;
+      --accent: #4f46e5;
+      --link: #4f46e5;
+      --success: #15803d;
+      --warning: #b45309;
+      --error: #c62828;
+      --chart-1: #4f46e5;
+      --chart-2: #0d9488;
+      --chart-3: #b45309;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--background);
+      color: var(--foreground);
+      font-size: 13px;
+      line-height: 1.5;
+      letter-spacing: -0.005em;
+      overflow-x: hidden;
+    }
+    .ln-group-hdr {
+      background: color-mix(in srgb, var(--foreground) 3%, var(--background));
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    .ln-row {
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+      transition: background 100ms ease;
+    }
+    .ln-row:hover { background: color-mix(in srgb, var(--foreground) 3.5%, transparent); }
+    .ln-nav {
+      color: var(--muted-foreground);
+      border-radius: 6px;
+      transition: background 100ms ease, color 100ms ease;
+    }
+    .ln-nav:hover {
+      background: color-mix(in srgb, var(--foreground) 5%, transparent);
+      color: var(--foreground);
+    }
+    .ln-nav.active {
+      background: color-mix(in srgb, var(--foreground) 8%, transparent);
+      color: var(--foreground);
+      font-weight: 500;
+    }
+    .ln-tab {
+      color: var(--muted-foreground);
+      border-radius: 6px;
+      transition: background 100ms ease, color 100ms ease;
+    }
+    .ln-tab:hover {
+      color: var(--foreground);
+      background: color-mix(in srgb, var(--foreground) 4%, transparent);
+    }
+    .ln-tab.active {
+      color: var(--foreground);
+      background: color-mix(in srgb, var(--foreground) 9%, transparent);
+      font-weight: 500;
+    }
+    .ln-btn-primary {
+      background: var(--primary);
+      color: var(--primary-foreground);
+      border-radius: 6px;
+      font-weight: 500;
+      transition: filter 100ms ease;
+    }
+    .ln-btn-primary:hover { filter: brightness(1.08); }
+    .ln-btn-primary:disabled { opacity: 0.42; cursor: not-allowed; }
+    .ln-btn {
+      background: color-mix(in srgb, var(--foreground) 4%, transparent);
+      color: var(--foreground);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      transition: background 100ms ease;
+    }
+    .ln-btn:hover { background: color-mix(in srgb, var(--foreground) 8%, transparent); }
+    .ln-btn-ghost {
+      color: var(--muted-foreground);
+      border-radius: 6px;
+      transition: background 100ms ease, color 100ms ease;
+    }
+    .ln-btn-ghost:hover {
+      background: color-mix(in srgb, var(--foreground) 6%, transparent);
+      color: var(--foreground);
+    }
+    .ln-btn-danger {
+      background: color-mix(in srgb, var(--error) 10%, transparent);
+      color: var(--error);
+      border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
+      border-radius: 6px;
+    }
+    .ln-btn-danger:hover { background: color-mix(in srgb, var(--error) 18%, transparent); }
+    .ln-tag {
+      border: 1px solid var(--border);
+      background: color-mix(in srgb, var(--foreground) 3%, transparent);
+      color: var(--muted-foreground);
+      border-radius: 999px;
+    }
+    .ln-tint-primary {
+      background: color-mix(in srgb, var(--primary) 11%, transparent);
+      color: var(--primary);
+      border: 1px solid color-mix(in srgb, var(--primary) 26%, transparent);
+    }
+    .ln-tint-success {
+      background: color-mix(in srgb, var(--success) 11%, transparent);
+      color: var(--success);
+      border: 1px solid color-mix(in srgb, var(--success) 26%, transparent);
+    }
+    .ln-tint-warning {
+      background: color-mix(in srgb, var(--warning) 12%, transparent);
+      color: var(--warning);
+      border: 1px solid color-mix(in srgb, var(--warning) 28%, transparent);
+    }
+    .ln-tint-error {
+      background: color-mix(in srgb, var(--error) 11%, transparent);
+      color: var(--error);
+      border: 1px solid color-mix(in srgb, var(--error) 28%, transparent);
+    }
+    .ln-kbd {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      padding: 0 5px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: color-mix(in srgb, var(--foreground) 4%, transparent);
+      color: var(--muted-foreground);
+    }
+    .diff-add { background: color-mix(in srgb, var(--success) 10%, transparent); }
+    .diff-del { background: color-mix(in srgb, var(--error) 10%, transparent); }
+    .diff-hunk { background: color-mix(in srgb, var(--primary) 8%, transparent); color: var(--primary); }
+    .modal-mask {
+      background: color-mix(in srgb, var(--background) 65%, transparent);
+      backdrop-filter: blur(3px);
+    }
+    .pulse { animation: pulseFade 1.4s ease-in-out infinite; }
+    @keyframes pulseFade { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+    .scroll-thin::-webkit-scrollbar { width: 5px; height: 5px; }
+    .scroll-thin::-webkit-scrollbar-thumb {
+      background: color-mix(in srgb, var(--foreground) 15%, transparent);
+      border-radius: 999px;
+    }
+    .avatar-ring { box-shadow: 0 0 0 2px var(--background); }
+  </style>
+</head>
+<body data-theme="dark" class="bg-[var(--background)] text-[var(--foreground)] antialiased">
+  <div id="app" class="flex min-h-screen w-full"></div>
+  <div id="mobile-nav-root"></div>
+  <div id="modal-root"></div>
+  <div id="drawer-root"></div>
+  <div id="toast-root" class="fixed bottom-4 right-4 z-50 flex flex-col gap-1.5 max-w-xs sm:max-w-sm"></div>
+
+  <script>
+    // =========================================================================
+    // First-Class Dual Theme (Linear Dark & Linear Light) — Always Switchable!
+    // Supports URL ?theme=light|dark, localStorage persistence, header toggle, & 'T' hotkey.
+    // =========================================================================
+    let CURRENT_THEME = "dark";
+    function setTheme(mode, silent = false) {
+      CURRENT_THEME = mode === "light" ? "light" : "dark";
+      if (document.body && document.body.setAttribute) {
+        document.body.setAttribute("data-theme", CURRENT_THEME);
+      }
+      try { if (typeof localStorage !== "undefined") localStorage.setItem("artoo_ui_theme", CURRENT_THEME); } catch (_) {}
+      if (!silent) render();
+    }
+    (function initTheme() {
+      let initial = "dark";
+      try {
+        const qs = typeof window !== "undefined" && window.location && window.location.search ? new URLSearchParams(window.location.search).get("theme") : null;
+        if (qs === "light" || qs === "dark") initial = qs;
+      } catch (_) {}
+      setTheme(initial, true);
+    })();
+
+    // =========================================================================
+    // Icons & Linear Micro-Indicators
+    // =========================================================================
+    const SVG = {
+      logo: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M8 12h8M12 8v8"/></svg>`,
+      menu: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>`,
+      inbox: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>`,
+      search: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>`,
+      plus: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>`,
+      bulb: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>`,
+      cube: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>`,
+      cpu: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/></svg>`,
+      lock: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
+      users: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`,
+      settings: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
+      close: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
+      spark: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 3l1.8 5.4L19 10l-5.2 1.6L12 17l-1.8-5.4L5 10l5.2-1.6L12 3z"/></svg>`,
+      send: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>`,
+      check: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>`,
+      pause: `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>`,
+      stop: `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>`,
+      refresh: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`,
+      rocket: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/></svg>`,
+      returnBack: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>`,
+      chevron: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>`,
+      copy: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
+      back: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>`,
+      shield: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
+      pr: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M6 9v12"/></svg>`,
+      sun: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>`,
+      moon: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`
+    };
+
+    function renderThemeToggle(compact = false) {
+      return `
+        <div class="inline-flex items-center border border-[var(--border)] rounded-md p-0.5 bg-[var(--content)] text-xs" role="group" aria-label="主题切换">
+          <button onclick="setTheme('dark')" title="Linear 深色模式 (快捷键 T)" class="px-1.5 py-0.5 rounded flex items-center gap-1 ${CURRENT_THEME === "dark" ? "ln-tab active" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"}">
+            ${SVG.moon}${compact ? "" : `<span>暗</span>`}
+          </button>
+          <button onclick="setTheme('light')" title="Linear 浅色模式 (快捷键 T)" class="px-1.5 py-0.5 rounded flex items-center gap-1 ${CURRENT_THEME === "light" ? "ln-tab active" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"}">
+            ${SVG.sun}${compact ? "" : `<span>明</span>`}
+          </button>
+        </div>
+      `;
+    }
+
+    const ROLE_META = {
+      architect: { label: "产品架构师", initials: "架", color: "var(--chart-1)" },
+      backend:   { label: "后端研发",   initials: "后", color: "var(--primary)" },
+      frontend:  { label: "前端研发",   initials: "前", color: "var(--chart-2)" },
+      qa:        { label: "测试评审",   initials: "测", color: "var(--success)" },
+      user:      { label: "你",         initials: "我", color: "var(--warning)" }
+    };
+
+    function statusIcon(kind) {
+      if (["done", "merged", "released", "ready_to_ship"].includes(kind)) {
+        return `<svg width="14" height="14" viewBox="0 0 16 16" class="shrink-0" style="color:var(--success)"><circle cx="8" cy="8" r="6.5" fill="currentColor" opacity="0.16"/><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.2 8.2l1.8 1.8 3.8-3.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+      }
+      if (kind === "pr_open") {
+        return `<svg width="14" height="14" viewBox="0 0 16 16" class="shrink-0" style="color:var(--primary)"><circle cx="4.5" cy="4" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="11.5" cy="12" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4.5 5.8v6.2M11.5 10.2V6a2 2 0 0 0-2-2H8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`;
+      }
+      if (kind === "running" || kind === "dev") {
+        return `<svg width="14" height="14" viewBox="0 0 16 16" class="shrink-0" style="color:var(--primary)"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.4" opacity="0.32"/><path d="M8 2 A6 6 0 1 1 2 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="8" r="2.2" fill="currentColor"/></svg>`;
+      }
+      if (kind === "review") {
+        return `<svg width="14" height="14" viewBox="0 0 16 16" class="shrink-0" style="color:var(--warning)"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.4" opacity="0.32"/><path d="M8 2 A6 6 0 1 1 3.2 4.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>`;
+      }
+      if (kind === "blocked" || kind === "failed") {
+        return `<svg width="14" height="14" viewBox="0 0 16 16" class="shrink-0" style="color:var(--error)"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.8v3.6M8 10.8v.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+      }
+      return `<svg width="14" height="14" viewBox="0 0 16 16" class="shrink-0 text-[var(--muted-foreground)]"><circle cx="8" cy="8" r="5.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-dasharray="2.4 2"/></svg>`;
+    }
+
+    function priorityIcon(p) {
+      if (p === "P0") return `<svg width="13" height="13" viewBox="0 0 16 16" class="shrink-0" style="color:var(--error)" title="P0 紧急"><rect x="2" y="2" width="12" height="12" rx="3" fill="currentColor" opacity="0.16"/><path d="M8 4.8v3.8M8 11v.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`;
+      return `<svg width="13" height="13" viewBox="0 0 16 16" class="shrink-0 text-[var(--muted-foreground)]" title="${esc(p || "P1")}"><rect x="2.5" y="10" width="2.2" height="3.5" rx="0.6" fill="currentColor"/><rect x="6.5" y="7" width="2.2" height="6.5" rx="0.6" fill="currentColor"/><rect x="10.5" y="3.5" width="2.2" height="10" rx="0.6" fill="currentColor" opacity="0.3"/></svg>`;
+    }
+
+    function isNarrowViewport() {
+      return typeof window !== "undefined" && window.innerWidth < 1024;
+    }
+
+    // =========================================================================
+    // Unified State — Single Source of Truth for Verification & Delivery Stages
+    // =========================================================================
+    const STATE = {
+      // Narrow screens default to Inbox ("待我处理") so mobile users immediately see what needs them
+      screen: isNarrowViewport() ? "inbox" : "project", // "inbox" | "project" | "resources"
+      selectedProjectId: "p-pay",
+      projectTab: "progress", // "ideas" | "progress" | "work" | "release"
+      ideaMobilePane: "spec", // "spec" (分歧与拆解草案) | "chat" (完整讨论记录)
+      workSubTab: "list", // "list" | "board" | "review"
+      workReqFilter: "all",
+      expandedReqIds: {},
+      selectedIdeaIdByProject: { "p-pay": "idea-2", "p-sdk": "idea-sdk-1" },
+      selectedReviewReqId: "req-02",
+      selectedDiffFile: "src/webhook/signature.ts",
+      selectedInboxIdx: 0,
+      mobileNavOpen: false,
+      drawer: null, // null | { type: "task", taskId } | { type: "projectSettings" } | { type: "teamManager" }
+      modal: null, // null | "newProject" | "newIdea" | "connectNode" | "audit" | "cmd" | "decideIssue"
+      modalPayload: null,
+      connectOs: "windows",
+      autoTimer: null,
+
+      machines: [
+        {
+          id: "m-win", name: "Win-Workstation-01", os: "Windows 11 x64", service: "Task Scheduler", status: "online", cpu: 31, mem: 49, slots: "2/4",
+          prProjects: ["p-pay"], verifiers: ["node-vitest-lint", "e2e-playwright-job"],
+          clis: [
+            { id: "codex", name: "Codex CLI", ver: "0.42.0", tier: "Tier 2 读写", status: "ready", fixHint: "" },
+            { id: "copilot", name: "Copilot CLI", ver: "1.0.109", tier: "Tier 1 只读", status: "auth_expired", fixHint: "凭据已过期，请本机运行 `copilot auth login` 后重验" }
+          ]
+        },
+        {
+          id: "m-mac", name: "MacBook-Pro-M4", os: "macOS 15 arm64", service: "launchd", status: "online", cpu: 38, mem: 45, slots: "1/3",
+          prProjects: [], verifiers: ["node-vitest-lint"],
+          clis: [
+            { id: "claude-code", name: "Claude Code", ver: "2.1.4", tier: "Tier 2 读写", status: "ready", fixHint: "" },
+            { id: "gemini", name: "Gemini CLI", ver: "0.18.2", tier: "Tier 1 只读", status: "ready", fixHint: "" }
+          ]
+        },
+        {
+          id: "m-lin", name: "Ubuntu-Runner-03", os: "Ubuntu 24.04 x64", service: "systemd user", status: "online", cpu: 17, mem: 28, slots: "1/6",
+          prProjects: ["p-pay", "p-sdk"], verifiers: ["node-vitest-lint", "release-artifact-verify"],
+          clis: [
+            { id: "codex", name: "Codex CLI", ver: "0.42.0", tier: "Tier 2 读写", status: "ready", fixHint: "" },
+            { id: "copilot", name: "Copilot CLI", ver: "1.0.109", tier: "Tier 1 只读", status: "ready", fixHint: "" }
+          ]
+        }
+      ],
+
+      // 1 Instance = 1 Project (Strict Memory Isolation)
+      instances: [
+        { id: "inst-pay-arch", name: "pay-架构师",   role: "architect", projectId: "p-pay", machineId: "m-mac", cli: "gemini",      memoryScope: "mem://pay-gateway/arch" },
+        { id: "inst-pay-be",   name: "pay-后端研发", role: "backend",   projectId: "p-pay", machineId: "m-win", cli: "codex",       memoryScope: "mem://pay-gateway/be" },
+        { id: "inst-pay-fe",   name: "pay-前端研发", role: "frontend",  projectId: "p-pay", machineId: "m-mac", cli: "claude-code", memoryScope: "mem://pay-gateway/fe" },
+        { id: "inst-pay-qa",   name: "pay-测试评审", role: "qa",        projectId: "p-pay", machineId: "m-lin", cli: "copilot",     memoryScope: "mem://pay-gateway/qa" },
+        { id: "inst-sdk-arch", name: "sdk-架构师",   role: "architect", projectId: "p-sdk", machineId: "m-mac", cli: "gemini",      memoryScope: "mem://checkout-sdk/arch" },
+        { id: "inst-sdk-fe",   name: "sdk-端研发",   role: "frontend",  projectId: "p-sdk", machineId: "m-mac", cli: "claude-code", memoryScope: "mem://checkout-sdk/fe" },
+        { id: "inst-sdk-qa",   name: "sdk-测试评审", role: "qa",        projectId: "p-sdk", machineId: "m-lin", cli: "copilot",     memoryScope: "mem://checkout-sdk/qa" },
+        { id: "inst-idle-1",   name: "空闲-Codex-Linux", role: "backend", projectId: null, machineId: "m-lin", cli: "codex", memoryScope: "未初始化 (干净记忆)" },
+        { id: "inst-idle-2",   name: "空闲-Copilot-只读", role: "qa",      projectId: null, machineId: "m-lin", cli: "copilot", memoryScope: "未初始化 (干净记忆)" }
+      ],
+
+      projects: [
+        {
+          id: "p-pay",
+          name: "支付网关平台",
+          repo: "acme/artoo-pay-gateway",
+          defaultBranch: "main",
+          defaultVerifier: "node-vitest-lint",
+          maxAutoRepairs: 3,
+          failoverNotice: null,
+          conflictNotice: null,
+
+          ideas: [
+            {
+              id: "idea-2",
+              title: "商户自助对账与异常告警中心",
+              status: "discussing", // discussing | ready_to_split | materialized
+              mode: "auto",
+              round: 2,
+              maxRounds: 6,
+              isTyping: false,
+              typingRole: null,
+              inputDraft: "",
+              scriptIdx: 0,
+              proposalSummary: "将「商户自助对账与异常告警」拆解为 3 个可独立提 PR 的小需求，主库走只读从库流式导出，优先缓解客服工单压力。",
+              // Concrete disagreements instead of fake "consensus %"
+              disagreements: [
+                {
+                  id: "dis-1",
+                  question: "导出下载链接是否必须 15 分钟失效，且强制走只读从库流式生成？",
+                  positions: "测试评审与后端主张强制 15m 过期 + 从库隔离；架构师担忧大文件下载中途链接过期需补续签。",
+                  resolved: false,
+                  resolution: null,
+                  options: [
+                    "强制 15 分钟过期 + 从库流式导出，过期后可一键重新签发链接（推荐）",
+                    "放宽至 24 小时有效，优先减少商户重复点击"
+                  ]
+                }
+              ],
+              messages: [
+                { id: "im-1", roleId: "user", time: "21:10", tag: "想法", text: "商户天天找客服要对账单、问回调为什么丢了。我想补一套自助对账与异常排查能力，你们先自由讨论拆成几个可执行需求。" },
+                { id: "im-2", roleId: "architect", time: "21:11", tag: "拆解", text: "建议拆成 **3 个独立需求**：① **日终对账单异步导出**；② **回调连续失败实时告警**；③ **商户自助排查后台**。" },
+                { id: "im-3", roleId: "backend", time: "21:12", tag: "分歧", quote: "日终对账单异步导出", text: "百万行流水切忌查主库，必须走只读从库 + 流式分片写对象存储，否则拖垮支付主链路。" },
+                { id: "im-4", roleId: "frontend", time: "21:13", tag: "补充", text: "前两项后端优先提 PR 给客服减负，第 3 项管理后台可并行推进。" },
+                { id: "im-5", roleId: "qa", time: "21:14", tag: "风险", quote: "限时下载链接", text: "流水含敏感交易数据，必须要求 **租户隔离校验 + 15 分钟过期签名 URL**，防止越权分享。" }
+              ],
+              scriptedRounds: [[
+                { roleId: "architect", tag: "收敛", quote: "15 分钟过期 + 从库隔离", text: "采纳！过期后页面提供一键重新签发，兼顾安全与体验。当前已无未决分歧，可拆入项目进度。" },
+                { roleId: "qa", tag: "同意", text: "受保护验证用例已同步对齐，可随时确认写入项目路线图。" }
+              ]],
+              splitRequirements: [
+                { title: "日终对账单异步流式导出（从库隔离 + 15m 签名下载）", priority: "P0", ownerRole: "backend", tasksPreview: ["从库流式导出 Worker", "租户隔离与越权单测"], checked: true },
+                { title: "回调连续失败实时告警推送（邮件 / Webhook）", priority: "P1", ownerRole: "backend", tasksPreview: ["失败阈值聚合与防风暴去重", "告警通道发送单测"], checked: true },
+                { title: "商户自助对账与异常排查工作台 UI", priority: "P1", ownerRole: "frontend", tasksPreview: ["账单下载中心 UI", "异常趋势看板 E2E"], checked: true }
+              ]
+            },
+            {
+              id: "idea-1",
+              title: "支付网关 Webhook 可靠性升级",
+              status: "materialized",
+              mode: "auto",
+              round: 3,
+              maxRounds: 6,
+              isTyping: false,
+              typingRole: null,
+              inputDraft: "",
+              scriptIdx: 0,
+              proposalSummary: "已拆解为 PAY-101 与 PAY-102 写入项目进度。",
+              disagreements: [],
+              messages: [
+                { id: "i1-1", roleId: "user", time: "20:05", tag: "想法", text: "支付回调因商户抖动频繁丢单，需要签名验签、自动退避重试与日志查询。" },
+                { id: "i1-2", roleId: "architect", time: "20:08", tag: "已拆解", text: "已无分歧并拆为 `PAY-101` 与 `PAY-102` 进入研发。" }
+              ],
+              scriptedRounds: [],
+              splitRequirements: [
+                { title: "PAY-101 · Webhook 验签与退避重试队列", priority: "P0", ownerRole: "backend", tasksPreview: ["已写入进度"], checked: true },
+                { title: "PAY-102 · 商户投递日志查询与死信重投", priority: "P1", ownerRole: "frontend", tasksPreview: ["已写入进度"], checked: true }
+              ]
+            }
+          ],
+
+          // Single Source of Truth per requirement (verification + exact delivery stage!)
+          // stages: planned | dev | review | ready_to_ship | pr_open | merged | released
+          requirements: [
+            {
+              id: "req-01", code: "PAY-101", title: "Webhook HMAC-SHA256 验签与指数退避重试队列",
+              sourceIdea: "Webhook 可靠性升级", priority: "P0", stage: "dev", ownerRole: "backend",
+              reviewAccepted: false, selectedForRelease: false, deliveryRef: null, updated: "2m",
+              verification: { state: "passed", passed: 24, total: 24, lastRunAt: "20:21", repairAttempt: 0, failingLog: null },
+              reviewerSummary: "核心签名与退避 Worker 单元测试通过，待老商户兼容策略拍板收尾。"
+            },
+            {
+              id: "req-02", code: "PAY-102", title: "商户投递日志查询与死信一键重投后台",
+              sourceIdea: "Webhook 可靠性升级", priority: "P1", stage: "review", ownerRole: "frontend",
+              reviewAccepted: false, selectedForRelease: true, deliveryRef: null, updated: "4m",
+              verification: { state: "passed", passed: 42, total: 42, lastRunAt: "20:25", repairAttempt: 0, failingLog: null },
+              reviewerSummary: "独立只读评审检查 3 个变更文件：常量时间签名比对 `timingSafeEqual`、300s 防重放窗口与死信重投幂等锁均实现正确。"
+            },
+            {
+              id: "req-03", code: "PAY-103", title: "高并发退款对账行级锁与无锁唯一索引修复",
+              sourceIdea: "线上紧急缺陷", priority: "P0", stage: "ready_to_ship", ownerRole: "backend",
+              reviewAccepted: true, selectedForRelease: true, deliveryRef: null, updated: "25m",
+              verification: { state: "passed", passed: 20, total: 20, lastRunAt: "19:55", repairAttempt: 0, failingLog: null },
+              reviewerSummary: "20 并发重复退款压测通过，无锁索引创建安全，已完成人工验收。"
+            },
+            {
+              id: "req-00", code: "PAY-098", title: "商户 API 滑动令牌桶限流重构",
+              sourceIdea: "网关性能优化", priority: "P1", stage: "merged", ownerRole: "backend",
+              reviewAccepted: true, selectedForRelease: false, deliveryRef: "PR #311 · 已合入 main", updated: "昨天",
+              verification: { state: "passed", passed: 36, total: 36, lastRunAt: "昨天 16:28", repairAttempt: 0, failingLog: null },
+              reviewerSummary: "已通过压测并合入主分支 main。"
+            }
+          ],
+
+          tasks: [
+            { id: "t-1", reqId: "req-01", code: "T-01", title: "数据库迁移 0019 与 OpenAPI 契约", status: "done", roleId: "architect", machineId: "m-mac", progress: 100, branch: "artoo/pay-101/t-01", closureState: "进程树已闭合 (exit 0)", blocker: null, logs: ["[20:11] 完成迁移与契约并推送隔离分支"] },
+            { id: "t-2", reqId: "req-01", code: "T-02", title: "HMAC 验签器与 SKIP LOCKED 退避 Worker", status: "running", roleId: "backend", machineId: "m-win", progress: 78, branch: "artoo/pay-101/t-02", closureState: "运行中 · epoch #4 (余 27s)", blocker: null, logs: ["[20:14] Win-Workstation-01 Worktree 启动 (专属记忆 mem://pay-gateway/be)", "[20:21] tool:edit_file retry-worker.ts (+82 -4)", "[20:24] running unit tests..."] },
+            {
+              id: "t-3", reqId: "req-01", code: "T-03", title: "老商户 X-Legacy-Sig 兼容策略确认", status: "blocked", roleId: "backend", machineId: "m-win", progress: 45, branch: "artoo/pay-101/t-03", closureState: "已挂起 · 槽位已释放",
+              blocker: {
+                headline: "是否为 3 家老商户保留 30 天旧签名兼容？",
+                detail: "后端扫描仓库发现 3 家老商户夹具仍使用旧头 `X-Legacy-Sig`，已暂停等待你的决策。",
+                options: [
+                  "仅对白名单老商户保留 30 天限时兼容并打告警日志（推荐）",
+                  "直接切新版 HMAC-SHA256，不保留旧头兼容"
+                ]
+              },
+              logs: ["[20:22] 发现 3 家老商户使用旧 Header，挂起等待项目负责人拍板"]
+            },
+            { id: "t-4", reqId: "req-02", code: "T-04", title: "商户投递日志查询页与死信重投接口", status: "review", roleId: "frontend", machineId: "m-mac", progress: 100, branch: "artoo/pay-102/integration", closureState: "已闭合 · 验证回执已签名", blocker: null, logs: ["[20:25] 隔离合并并完成受保护验证，进入代码评审"] },
+            { id: "t-5", reqId: "req-03", code: "T-05", title: "退款并发锁修复与 20 并发压测", status: "done", roleId: "backend", machineId: "m-lin", progress: 100, branch: "artoo/pay-103/integration", closureState: "已闭合", blocker: null, logs: ["[19:55] 压测通过并验收"] }
+          ],
+
+          diffs: {
+            "src/webhook/signature.ts": [
+              { t: "h", text: "@@ -1,4 +1,11 @@ HMAC-SHA256 验签与 300s 防重放" },
+              { t: "c", o: 1, n: 1, text: "import { createHmac, timingSafeEqual } from 'node:crypto';" },
+              { t: "a", o: "", n: 2, text: "export const MAX_SKEW_SEC = 300;" },
+              { t: "a", o: "", n: 3, text: "export function verifyWebhookSignature(body: Buffer, hdr: string, secret: string): boolean {" },
+              { t: "a", o: "", n: 4, text: "  const p = parseHeader(hdr);" },
+              { t: "a", o: "", n: 5, text: "  if (!p || Math.abs(Date.now() / 1000 - p.ts) > MAX_SKEW_SEC) return false;" },
+              { t: "a", o: "", n: 6, text: "  const exp = createHmac('sha256', secret).update(`${p.ts}.`).update(body).digest();" },
+              { t: "a", o: "", n: 7, text: "  return exp.length === Buffer.from(p.sig, 'hex').length && timingSafeEqual(exp, Buffer.from(p.sig, 'hex'));" },
+              { t: "a", o: "", n: 8, text: "}" }
+            ],
+            "web/WebhookLogPage.tsx": [
+              { t: "h", text: "@@ -1,2 +1,6 @@ 投递记录查询与死信重投" },
+              { t: "a", o: "", n: 1, text: "export function WebhookLogPage({ deliveries, onReplay }: Props) {" },
+              { t: "a", o: "", n: 2, text: "  return deliveries.map(d => <Row key={d.id} status={d.status} onReplay={() => onReplay(d.id)} />);" },
+              { t: "a", o: "", n: 3, text: "}" }
+            ]
+          },
+
+          release: {
+            kind: "git_pr", // git_pr | github_release
+            status: "idle", // idle | releasing | pr_open | merged | released | rolled_back
+            prNumber: 318,
+            prUrl: "https://github.com/acme/artoo-pay-gateway/pull/318",
+            releaseTag: "v2.4.0",
+            activeReqIds: [],
+            ciChecks: [
+              { name: "GitHub Actions / typecheck & build", status: "pending" },
+              { name: "GitHub Actions / unit & integration tests", status: "pending" },
+              { name: "GitHub Actions / security & secret scan", status: "pending" }
+            ],
+            history: [
+              { time: "昨天 16:40", kind: "git_pr", state: "已合并 main", ref: "PR #311", reqs: "PAY-098" }
+            ]
+          },
+
+          activities: [
+            { time: "刚刚", who: "想法讨论", text: "「商户自助对账与异常告警」拟拆 3 需求，剩 1 项过期时间分歧。" },
+            { time: "4m", who: "pay-前端研发", text: "PAY-102 集成代码已提交评审。" },
+            { time: "6m", who: "pay-后端研发", text: "PAY-101 推进中，提出老商户旧签名兼容问题待你拍板。" }
+          ]
+        },
+        {
+          id: "p-sdk",
+          name: "移动端 Checkout SDK",
+          repo: "acme/mobile-checkout-sdk",
+          defaultBranch: "main",
+          defaultVerifier: "node-vitest-lint",
+          maxAutoRepairs: 3,
+          failoverNotice: null,
+          conflictNotice: null,
+          ideas: [
+            {
+              id: "idea-sdk-1", title: "解决 App 弱网并发 401 互踢登出", status: "ready_to_split", mode: "auto", round: 2, maxRounds: 5, isTyping: false, typingRole: null, inputDraft: "", scriptIdx: 0,
+              proposalSummary: "Single-Flight 拦截器彻底根治并发 401 互踢，0 分歧可直接拆入进度。",
+              disagreements: [],
+              messages: [
+                { id: "sm1", roleId: "user", time: "19:40", tag: "想法", text: "弱网并发 401 触发多次刷新导致互踢登出，请团队讨论拆出方案。" },
+                { id: "sm2", roleId: "architect", time: "19:42", tag: "收敛", text: "已无分歧，拆为单飞刷新器 + 10 并发压测单测 2 个需求，等你确认写入进度。" }
+              ],
+              scriptedRounds: [],
+              splitRequirements: [
+                { title: "Single-Flight 并发 401 令牌刷新拦截器", priority: "P0", ownerRole: "frontend", tasksPreview: ["refreshPromise 单例队列", "防死循环重放标记"], checked: true },
+                { title: "10 并发过期与失败登出防抖单测", priority: "P1", ownerRole: "qa", tasksPreview: ["延迟 Mock 并发压测"], checked: true }
+              ]
+            }
+          ],
+          requirements: [
+            {
+              id: "req-s1", code: "SDK-11", title: "现有拦截器并发 401 复现基线",
+              sourceIdea: "弱网排查", priority: "P1", stage: "ready_to_ship", ownerRole: "architect",
+              reviewAccepted: true, selectedForRelease: true, deliveryRef: null, updated: "15m",
+              verification: { state: "passed", passed: 12, total: 12, lastRunAt: "19:45", repairAttempt: 0, failingLog: null },
+              reviewerSummary: "基线复现已验收。"
+            }
+          ],
+          tasks: [
+            { id: "ts-1", reqId: "req-s1", code: "T-01", title: "5 并发 401 复现测试夹具", status: "done", roleId: "architect", machineId: "m-mac", progress: 100, branch: "artoo/sdk-11/t-01", closureState: "已闭合", blocker: null, logs: ["[19:45] 已复现基线"] }
+          ],
+          diffs: { "test/repro.test.ts": [{ t: "h", text: "@@ 并发 401 复现 @@" }, { t: "a", o: "", n: 1, text: "it('reproduces 401 storm', async () => { /* ok */ });" }] },
+          release: { kind: "github_release", status: "idle", prNumber: 84, prUrl: "https://github.com/acme/mobile-checkout-sdk/pull/84", releaseTag: "v1.8.0", activeReqIds: [], ciChecks: [{ name: "SDK Build & Test", status: "pending" }], history: [] },
+          activities: [{ time: "15m", who: "想法讨论", text: "弱网 401 想法已无分歧，拟拆 2 需求待确认。" }]
+        }
+      ]
+    };
+
+    // =========================================================================
+    // Single Source of Truth Selectors (Zero Contradictory Strings!)
+    // =========================================================================
+    function esc(s) { return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+    function nowHM() { const d = new Date(); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); }
+    function getProj(id = STATE.selectedProjectId) { return STATE.projects.find(p => p.id === id) || STATE.projects[0]; }
+    function getIdea(p = getProj()) { return p.ideas.find(i => i.id === STATE.selectedIdeaIdByProject[p.id]) || p.ideas[0]; }
+    function getMachine(id) { return STATE.machines.find(m => m.id === id); }
+    function getProjectInstances(pid) { return STATE.instances.filter(i => i.projectId === pid); }
+    function getIdleInstances() { return STATE.instances.filter(i => i.projectId === null); }
+    function getOtherProjectInstances(pid) { return STATE.instances.filter(i => i.projectId !== null && i.projectId !== pid); }
+
+    function getMemberByRole(p, roleId) {
+      if (roleId === "user") return { name: "你", agent: "Owner", role: "user" };
+      const inst = getProjectInstances(p.id).find(i => i.role === roleId) || getProjectInstances(p.id)[0];
+      if (inst) return { name: inst.name, agent: `${inst.cli} @ ${getMachine(inst.machineId)?.name || ""}`, role: inst.role, inst };
+      return { name: (ROLE_META[roleId] || ROLE_META.architect).label, agent: "待连接专属实例", role: roleId };
+    }
+
+    // Derived verification status text — used EVERYWHERE so Overview, Inbox, Tasks, Review NEVER contradict!
+    function getReqVerifyLabel(req) {
+      const v = req.verification;
+      if (!v || v.total === 0) return "尚未运行验证";
+      if (v.state === "failed") return `验证失败 ${v.passed}/${v.total} · 需返修`;
+      if (v.state === "repairing") return `自动返修中 (第 ${v.repairAttempt} 轮)`;
+      if (v.state === "verifying") return "验证运行中...";
+      return `验证通过 ${v.passed}/${v.total}`;
+    }
+
+    // Honest delivery stage label — strictly separates 已提 PR / 已合并 main / 已发布 Release!
+    function getReqStageLabel(req) {
+      if (req.verification?.state === "failed") return { text: `验证失败 ${req.verification.passed}/${req.verification.total}`, icon: "failed", tone: "ln-tint-error" };
+      if (req.verification?.state === "repairing") return { text: `自动返修中`, icon: "dev", tone: "ln-tint-warning" };
+      const map = {
+        planned:       { text: "待启动",         icon: "todo",          tone: "ln-tag" },
+        dev:           { text: "研发中",         icon: "dev",           tone: "ln-tint-primary" },
+        review:        { text: "待你验收",       icon: "review",        tone: "ln-tint-warning" },
+        ready_to_ship: { text: "已验收 · 待提 PR", icon: "ready_to_ship", tone: "ln-tint-success" },
+        pr_open:       { text: req.deliveryRef || "已提 PR", icon: "pr_open", tone: "ln-tint-primary" },
+        merged:        { text: "已合并 main",    icon: "merged",        tone: "ln-tint-success" },
+        released:      { text: req.deliveryRef || "已发布 Release", icon: "released", tone: "ln-tint-success" }
+      };
+      return map[req.stage] || { text: req.stage, icon: "todo", tone: "ln-tag" };
+    }
+
+    function calcReqPct(p, req) {
+      if (req.stage === "released" || req.stage === "merged") return 100;
+      if (req.stage === "pr_open") return 95;
+      if (req.stage === "ready_to_ship") return 90;
+      if (req.verification?.state === "failed") return 60;
+      const list = p.tasks.filter(t => t.reqId === req.id);
+      if (!list.length) return req.stage === "planned" ? 0 : 25;
+      return Math.min(88, Math.round(list.reduce((s, t) => s + t.progress, 0) / list.length));
+    }
+
+    function calcProjPct(p) {
+      if (!p.requirements.length) return 0;
+      return Math.round(p.requirements.reduce((s, r) => s + calcReqPct(p, r), 0) / p.requirements.length);
+    }
+
+    function getOpenDisagreements(idea) {
+      return (idea.disagreements || []).filter(d => !d.resolved);
+    }
+
+    // Unified Action Inbox — prioritized: 1. Blockers/Failed Tests -> 2. Pending Review -> 3. Disagreements / Ready to Split -> 4. Ready to Ship
+    function collectInbox() {
+      const items = [];
+      STATE.projects.forEach(p => {
+        if (getProjectInstances(p.id).length === 0) {
+          items.push({ priority: 0, icon: "blocked", projectId: p.id, projectName: p.name, code: "TEAM", title: "新项目尚未连接专属成员", detail: "为防记忆混淆，请先为本项目连接专属 Agent 实例。", cta: "连接专属团队", tab: "ideas" });
+        }
+        p.tasks.filter(t => t.status === "blocked" && t.blocker).forEach(t => {
+          const req = p.requirements.find(r => r.id === t.reqId);
+          items.push({ priority: 1, icon: "blocked", projectId: p.id, projectName: p.name, code: req ? req.code : t.code, title: t.blocker.headline, detail: t.blocker.detail, cta: "查看方案", tab: "progress", taskId: t.id });
+        });
+        p.requirements.filter(r => r.verification?.state === "failed").forEach(r => {
+          items.push({ priority: 1, icon: "failed", projectId: p.id, projectName: p.name, code: r.code, title: `${r.title} · ${getReqVerifyLabel(r)}`, detail: "受保护验证发现失败用例，请启动自动返修或拉回讨论室修订。", cta: "处理失败用例", tab: "work", subTab: "review", reqId: r.id });
+        });
+        p.requirements.filter(r => r.stage === "review" && !r.reviewAccepted && r.verification?.state === "passed").forEach(r => {
+          items.push({ priority: 2, icon: "review", projectId: p.id, projectName: p.name, code: r.code, title: `${r.title} · ${getReqVerifyLabel(r)}，等你验收`, detail: r.reviewerSummary, cta: "看 Diff 验收", tab: "work", subTab: "review", reqId: r.id });
+        });
+        p.ideas.filter(i => i.status !== "materialized").forEach(i => {
+          const openD = getOpenDisagreements(i);
+          if (openD.length > 0) {
+            items.push({ priority: 3, icon: "review", projectId: p.id, projectName: p.name, code: "分歧", title: openD[0].question, detail: `议题「${i.title}」拟拆 ${i.splitRequirements.length} 个需求，剩 ${openD.length} 个分歧等你参与决定。`, cta: "参与决定", tab: "ideas", ideaId: i.id });
+          } else {
+            items.push({ priority: 3, icon: "done", projectId: p.id, projectName: p.name, code: "拆解", title: `「${i.title}」已无分歧，拟拆 ${i.splitRequirements.filter(x => x.checked).length} 个需求`, detail: i.proposalSummary, cta: "确认写入进度", tab: "ideas", ideaId: i.id });
+          }
+        });
+        const ready = p.requirements.filter(r => r.stage === "ready_to_ship");
+        if (ready.length) {
+          items.push({ priority: 4, icon: "pr_open", projectId: p.id, projectName: p.name, code: "交付", title: `${ready.length} 项已验收需求待提 PR / 发布 (${ready.map(r => r.code).join(", ")})`, detail: "可单选提 PR 或多选打包发版本 Release。", cta: "前往交付", tab: "release" });
+        }
+      });
+      return items.sort((a, b) => a.priority - b.priority);
+    }
+
+    function hasInfraAlert() { return STATE.machines.some(m => m.status !== "online" || m.clis.some(c => c.status === "auth_expired")); }
+
+    function avatar(roleId, size = "w-5 h-5 text-xs", title = "") {
+      const rm = ROLE_META[roleId] || ROLE_META.architect;
+      return `<span class="${size} rounded-full inline-flex items-center justify-center font-medium shrink-0" style="background:color-mix(in srgb, ${rm.color} 16%, transparent); color:${rm.color}; border:1px solid color-mix(in srgb, ${rm.color} 32%, transparent)" title="${esc(title || rm.label)}">${rm.initials}</span>`;
+    }
+
+    function toast(title, desc = "", tone = "info") {
+      const root = document.getElementById("toast-root");
+      const el = document.createElement("div");
+      const cls = tone === "success" ? "ln-tint-success" : tone === "warning" ? "ln-tint-warning" : tone === "error" ? "ln-tint-error" : "bg-[var(--card)] border border-[var(--border)]";
+      el.className = `${cls} rounded-lg px-3 py-2 shadow-lg text-xs`;
+      el.innerHTML = `<div class="font-medium">${esc(title)}</div>${desc ? `<div class="opacity-80 mt-0.5">${esc(desc)}</div>` : ""}`;
+      root.appendChild(el);
+      setTimeout(() => { el.style.opacity = "0"; setTimeout(() => el.remove(), 200); }, 3200);
+    }
+
+    function formatMd(txt) {
+      return esc(txt)
+        .replace(/\n/g, "<br/>")
+        .replace(/\*\*(.+?)\*\*/g, "<strong class='font-semibold text-[var(--foreground)]'>$1</strong>")
+        .replace(/`(.+?)`/g, `<code class="font-mono px-1 py-0.5 rounded bg-[var(--card)] border border-[var(--border)] text-[var(--foreground)]">$1</code>`);
+    }
+
+    // =========================================================================
+    // Sidebar Content (Shared between Desktop Fixed Rail & 390px Mobile Drawer!)
+    // =========================================================================
+    function renderSidebarInner(inbox) {
+      const onlineNodes = STATE.machines.filter(m => m.status === "online").length;
+      const infraWarn = hasInfraAlert();
+
+      return `
+        <div class="p-2.5 space-y-4 overflow-y-auto scroll-thin flex-1">
+          <div class="flex items-center justify-between px-1.5 h-8">
+            <div class="flex items-center gap-2 font-semibold text-xs tracking-tight">
+              <span class="w-5 h-5 rounded ln-tint-primary inline-flex items-center justify-center">${SVG.logo}</span>
+              <span>Artoo</span>
+            </div>
+            <div class="flex items-center gap-0.5">
+              <button onclick="STATE.mobileNavOpen=false; openModal('cmd');" title="命令面板 (Ctrl+K)" class="ln-btn-ghost p-1.5">${SVG.search}</button>
+              <button onclick="STATE.mobileNavOpen=false; openModal('newProject');" title="新建项目" class="ln-btn-ghost p-1.5">${SVG.plus}</button>
+            </div>
+          </div>
+
+          <button onclick="STATE.screen='inbox'; STATE.mobileNavOpen=false; render();" class="ln-nav ${STATE.screen === "inbox" ? "active" : ""} w-full h-8 px-2 flex items-center justify-between text-xs">
+            <span class="flex items-center gap-2">${SVG.inbox} <span>待我处理</span></span>
+            ${inbox.length > 0 ? `<span class="font-mono text-xs px-1.5 rounded ln-tint-warning">${inbox.length}</span>` : `<span class="text-xs opacity-50">0</span>`}
+          </button>
+
+          <div class="space-y-1">
+            <div class="px-2 flex items-center justify-between text-xs text-[var(--muted-foreground)]">
+              <span>项目</span>
+              <button onclick="STATE.mobileNavOpen=false; openModal('newProject');" class="ln-btn-ghost p-0.5" title="新建项目">${SVG.plus}</button>
+            </div>
+            <div class="space-y-0.5">
+              ${STATE.projects.map(p => {
+                const active = STATE.screen === "project" && p.id === STATE.selectedProjectId;
+                const teamCnt = getProjectInstances(p.id).length;
+                const pend = inbox.filter(i => i.projectId === p.id && i.priority <= 2).length;
+                return `
+                  <button onclick="selectProject('${p.id}')" class="ln-nav ${active ? "active" : ""} w-full h-8 px-2 flex items-center justify-between gap-2 text-xs">
+                    <span class="flex items-center gap-2 min-w-0">
+                      ${SVG.cube}
+                      <span class="truncate">${esc(p.name)}</span>
+                    </span>
+                    <span class="flex items-center gap-1.5 shrink-0">
+                      ${teamCnt === 0 ? `<span class="ln-tint-warning px-1 rounded text-xs">待组队</span>` : pend > 0 ? `<span class="font-mono text-xs px-1.5 rounded ln-tint-error">${pend}</span>` : ""}
+                    </span>
+                  </button>
+                `;
+              }).join("")}
+            </div>
+          </div>
+        </div>
+
+        <div class="p-2 border-t border-[var(--border)]">
+          <button onclick="STATE.screen = STATE.screen === 'resources' ? 'project' : 'resources'; STATE.mobileNavOpen=false; render();" class="ln-nav ${STATE.screen === "resources" ? "active" : ""} w-full h-8 px-2 flex items-center justify-between text-xs">
+            <span class="flex items-center gap-2 min-w-0">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:${infraWarn ? "var(--warning)" : "var(--success)"}"></span>
+              <span class="truncate">算力与实例 (${onlineNodes}/${STATE.machines.length})</span>
+            </span>
+            ${SVG.cpu}
+          </button>
+        </div>
+      `;
+    }
+
+    // =========================================================================
+    // Main Responsive Render (Desktop Fixed Sidebar / 390px Collapsible Drawer!)
+    // =========================================================================
+    function render() {
+      const app = document.getElementById("app");
+      const inbox = collectInbox();
+
+      app.innerHTML = `
+        <!-- Desktop Fixed Sidebar (Hidden below lg so 390px gets 100% width!) -->
+        <aside class="hidden lg:flex w-56 shrink-0 bg-[var(--sidebar)] border-r border-[var(--border)] flex-col justify-between select-none">
+          ${renderSidebarInner(inbox)}
+        </aside>
+
+        <!-- Main Column (Full 100% width on 390px mobile!) -->
+        <div class="flex-1 min-w-0 flex flex-col bg-[var(--background)]">
+          ${STATE.screen === "inbox" ? renderInboxSplit(inbox)
+            : STATE.screen === "resources" ? renderResources()
+            : renderProjectWorkspace(getProj(), inbox)}
+        </div>
+      `;
+
+      renderMobileNav(inbox);
+      renderModal();
+      renderDrawer();
+    }
+
+    function renderMobileNav(inbox) {
+      const root = document.getElementById("mobile-nav-root");
+      if (!STATE.mobileNavOpen) { root.innerHTML = ""; return; }
+      root.innerHTML = `
+        <div onclick="if(event.target===this){STATE.mobileNavOpen=false; render();}" class="modal-mask fixed inset-0 z-40 flex lg:hidden">
+          <aside class="w-64 max-w-[82vw] h-full bg-[var(--sidebar)] border-r border-[var(--border)] flex flex-col justify-between shadow-2xl">
+            ${renderSidebarInner(inbox)}
+          </aside>
+        </div>
+      `;
+    }
+
+    // =========================================================================
+    // SCREEN A: 待我处理 Inbox (Responsive: Single List on 390px, Split on Desktop)
+    // =========================================================================
+    function renderInboxSplit(inbox) {
+      const idx = Math.min(STATE.selectedInboxIdx, Math.max(0, inbox.length - 1));
+      const active = inbox[idx];
+      return `
+        <header class="h-11 shrink-0 border-b border-[var(--border)] px-3 lg:px-4 flex items-center justify-between gap-2">
+          <div class="flex items-center gap-2 text-xs font-medium">
+            <button onclick="STATE.mobileNavOpen=true; render();" class="lg:hidden ln-btn-ghost p-1.5" aria-label="打开菜单">${SVG.menu}</button>
+            ${SVG.inbox} <span>待我处理</span>
+            <span class="text-[var(--muted-foreground)] font-mono">${inbox.length}</span>
+          </div>
+          <div class="flex items-center gap-2">
+            ${renderThemeToggle(true)}
+            <button onclick="selectProject(STATE.selectedProjectId)" class="ln-btn h-7 px-2.5 text-xs">进入当前项目 →</button>
+          </div>
+        </header>
+
+        ${inbox.length === 0 ? `
+          <div class="flex-1 flex flex-col items-center justify-center p-10 text-center space-y-2">
+            <div class="text-sm font-medium" style="color:var(--success)">✓ 待处理事项已清空</div>
+            <p class="text-xs text-[var(--muted-foreground)]">团队正在各台电脑上自动推进，无需你介入。</p>
+          </div>
+        ` : `
+          <div class="flex-1 grid grid-cols-1 lg:grid-cols-12 min-h-0">
+            <div class="lg:col-span-5 lg:border-r border-[var(--border)] overflow-y-auto scroll-thin">
+              ${inbox.map((it, i) => `
+                <div onclick="STATE.selectedInboxIdx=${i}; render();" class="ln-row cursor-pointer px-4 py-3 space-y-1.5 ${i === idx ? "bg-[var(--content)]" : ""}">
+                  <div class="flex items-start justify-between gap-2">
+                    <div class="flex items-start gap-2 min-w-0">
+                      <span class="mt-0.5">${statusIcon(it.icon)}</span>
+                      <div class="min-w-0">
+                        <div class="font-mono text-xs text-[var(--muted-foreground)]">${esc(it.code)} · ${esc(it.projectName)}</div>
+                        <div class="text-[14px] font-medium leading-snug mt-0.5">${esc(it.title)}</div>
+                      </div>
+                    </div>
+                  </div>
+                  <p class="pl-6 text-xs text-[var(--muted-foreground)] leading-relaxed">${esc(it.detail)}</p>
+                  <div class="pl-6 pt-0.5 lg:hidden">
+                    <button onclick="event.stopPropagation(); jumpFromInbox('${it.projectId}','${it.tab}','${it.ideaId || ""}','${it.subTab || ""}','${it.taskId || ""}','${it.reqId || ""}')" class="ln-btn-primary h-7 px-3 text-xs">${esc(it.cta)} →</button>
+                  </div>
+                </div>
+              `).join("")}
+            </div>
+
+            <div class="hidden lg:block lg:col-span-7 p-6 overflow-y-auto scroll-thin">
+              ${active ? `
+                <div class="max-w-xl space-y-4">
+                  <div class="text-xs text-[var(--muted-foreground)]">${esc(active.projectName)} › <span class="font-mono">${esc(active.code)}</span></div>
+                  <h2 class="text-base font-semibold leading-snug">${esc(active.title)}</h2>
+                  <p class="text-xs text-[var(--muted-foreground)] border-l-2 border-[var(--border)] pl-3 leading-relaxed">${esc(active.detail)}</p>
+                  <button onclick="jumpFromInbox('${active.projectId}','${active.tab}','${active.ideaId || ""}','${active.subTab || ""}','${active.taskId || ""}','${active.reqId || ""}')" class="ln-btn-primary h-8 px-4 text-xs">${esc(active.cta)} →</button>
+                </div>
+              ` : ""}
+            </div>
+          </div>
+        `}
+      `;
+    }
+
+    // =========================================================================
+    // SCREEN B: Project Workspace Header (44px Desktop / Clean 2-row on 390px)
+    // =========================================================================
+    function renderProjectWorkspace(p) {
+      const team = getProjectInstances(p.id);
+      const openDisagreementsCount = p.ideas.filter(i => i.status !== "materialized").reduce((s, i) => s + getOpenDisagreements(i).length, 0);
+      const hasWorkAlert = p.tasks.some(t => t.status === "blocked") || p.requirements.some(r => r.verification?.state === "failed");
+      const readyShipCnt = p.requirements.filter(r => r.stage === "ready_to_ship").length;
+
+      return `
+        <header class="shrink-0 border-b border-[var(--border)] bg-[var(--background)] sticky top-0 z-20">
+          <!-- Row 1: Mobile menu + Project Name + Actions -->
+          <div class="h-11 px-3 lg:px-4 flex items-center justify-between gap-2">
+            <div class="flex items-center gap-2 min-w-0">
+              <button onclick="STATE.mobileNavOpen=true; render();" class="lg:hidden ln-btn-ghost p-1.5" aria-label="打开项目菜单">${SVG.menu}</button>
+              <span class="hidden sm:inline text-[var(--muted-foreground)]">${SVG.cube}</span>
+              <span class="text-sm font-semibold truncate">${esc(p.name)}</span>
+            </div>
+
+            <!-- Desktop Inline Tabs -->
+            <nav class="hidden lg:flex items-center gap-1">
+              ${renderProjectTabButtons(p, openDisagreementsCount, hasWorkAlert, readyShipCnt)}
+            </nav>
+
+            <div class="flex items-center gap-1.5 shrink-0">
+              ${renderThemeToggle(false)}
+              <button onclick="openTeamDrawer()" class="${team.length === 0 ? "ln-tint-warning" : "ln-btn-ghost"} h-7 px-2 rounded-md flex items-center gap-1.5 text-xs" title="管理本项目专属实例（单项目记忆隔离）">
+                ${team.length === 0 ? `${SVG.users}<span>待组队</span>` : `<span class="flex -space-x-1">${team.slice(0, 3).map(inst => avatar(inst.role, "w-4 h-4 text-xs avatar-ring", inst.name)).join("")}</span><span class="hidden sm:inline">${team.length} 专属</span>`}
+              </button>
+              <button onclick="openProjectSettings()" class="ln-btn-ghost h-7 px-1.5" title="项目设置">${SVG.settings}</button>
+              <button onclick="openModal('newIdea')" class="ln-btn-primary h-7 px-2.5 text-xs flex items-center gap-1">${SVG.plus}<span class="hidden sm:inline">新想法</span></button>
+            </div>
+          </div>
+
+          <!-- Mobile Horizontal Scrollable Tabs (< lg) -->
+          <nav class="flex lg:hidden items-center gap-1 px-3 pb-2 overflow-x-auto scroll-thin">
+            ${renderProjectTabButtons(p, openDisagreementsCount, hasWorkAlert, readyShipCnt)}
+          </nav>
+        </header>
+
+        <div class="flex-1 min-h-0 flex flex-col overflow-hidden">
+          ${team.length === 0 ? renderProjectTeamOnboarding(p)
+            : STATE.projectTab === "ideas" ? renderLinearIdeas(p)
+            : STATE.projectTab === "progress" ? renderLinearProgress(p)
+            : STATE.projectTab === "work" ? renderLinearWork(p)
+            : renderLinearRelease(p)}
+        </div>
+      `;
+    }
+
+    function renderProjectTabButtons(p, openDisCnt, hasWorkAlert, readyShipCnt) {
+      return [
+        { id: "ideas",    label: "1. 想法讨论", dot: openDisCnt > 0 ? "var(--warning)" : null },
+        { id: "progress", label: "2. 项目进度", count: p.requirements.length },
+        { id: "work",     label: "3. 任务评审", dot: hasWorkAlert ? "var(--error)" : null },
+        { id: "release",  label: "4. 交付发布", dot: readyShipCnt > 0 ? "var(--success)" : null }
+      ].map(t => `
+        <button onclick="STATE.projectTab='${t.id}'; render();" class="ln-tab ${STATE.projectTab === t.id ? "active" : ""} h-7 px-2.5 text-xs whitespace-nowrap flex items-center gap-1.5">
+          <span>${t.label}</span>
+          ${t.dot ? `<span class="w-1.5 h-1.5 rounded-full" style="background:${t.dot}"></span>` : ""}
+          ${t.count !== undefined ? `<span class="text-[var(--muted-foreground)] font-mono">${t.count}</span>` : ""}
+        </button>
+      `).join("");
+    }
+
+    // =========================================================================
+    // Post-Creation Empty Team Gate (1 Instance = 1 Project)
+    // =========================================================================
+    function renderProjectTeamOnboarding(p) {
+      const idle = getIdleInstances();
+      const occupied = getOtherProjectInstances(p.id);
+      return `
+        <div class="flex-1 overflow-y-auto scroll-thin p-4 lg:p-6">
+          <div class="max-w-3xl mx-auto space-y-6">
+            <div class="space-y-2 border-b border-[var(--border)] pb-4">
+              <div class="inline-flex items-center gap-1.5 ln-tint-primary px-2 py-0.5 rounded text-xs">${SVG.shield} <span>单项目专属实例隔离 · 防跨项目记忆混淆</span></div>
+              <h2 class="text-base font-semibold">为「${esc(p.name)}」连接专属团队成员</h2>
+              <p class="text-xs text-[var(--muted-foreground)] leading-relaxed">同一个 Agent 实例只独占服务 1 个项目，避免上下文与记忆交叉污染。请一键派生专属实例或认领空闲实例。</p>
+            </div>
+            <div class="border border-[var(--border)] rounded-lg p-4 bg-[var(--content)] flex flex-wrap items-center justify-between gap-3">
+              <div class="text-xs space-y-1">
+                <div class="font-semibold">一键派生 4 个独立记忆空间的专属实例</div>
+                <div class="text-[var(--muted-foreground)]">自动在在线电脑上分配独立工作区与 <code class="font-mono">mem://${esc(p.id)}/*</code></div>
+              </div>
+              <button onclick="provisionFullTeam('${p.id}')" class="ln-btn-primary h-8 px-3.5 text-xs flex items-center gap-1.5">${SVG.spark} <span>一键组建并开始讨论 →</span></button>
+            </div>
+            <div class="space-y-2">
+              <div class="text-xs font-medium">认领空闲实例 (${idle.length})</div>
+              <div class="border border-[var(--border)] rounded-lg divide-y divide-[var(--border)]">
+                ${idle.length === 0 ? `<div class="p-3 text-xs text-[var(--muted-foreground)]">无空闲实例</div>` : idle.map(inst => `
+                  <div class="px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span class="flex items-center gap-2">${avatar(inst.role)} <span class="font-medium">${esc(inst.name)}</span> <span class="font-mono text-[var(--muted-foreground)]">${inst.cli}</span></span>
+                    <button onclick="claimIdle('${p.id}','${inst.id}')" class="ln-btn h-7 px-2.5 text-xs">独占认领</button>
+                  </div>
+                `).join("")}
+              </div>
+            </div>
+            <div class="space-y-2">
+              <div class="text-xs text-[var(--muted-foreground)] flex items-center gap-1.5">${SVG.lock} <span>其他项目已独占实例（不可直接复用）</span></div>
+              <div class="border border-[var(--border)] rounded-lg divide-y divide-[var(--border)]">
+                ${occupied.slice(0, 4).map(inst => `
+                  <div class="px-3.5 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--muted-foreground)]">
+                    <span class="flex items-center gap-2">${SVG.lock} <span>${esc(inst.name)}</span> <span class="ln-tag px-1.5 py-0">${esc(getProj(inst.projectId)?.name || "")}</span></span>
+                    <button onclick="cloneFresh('${p.id}','${inst.id}')" class="ln-btn h-6 px-2 text-xs">同机派生新实例</button>
+                  </div>
+                `).join("")}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // =========================================================================
+    // TAB 1: ① 想法与讨论（彻底移除共识百分比 -> 突出具体分歧 + 390px 双视图切换!）
+    // =========================================================================
+    function renderLinearIdeas(p) {
+      const idea = getIdea(p);
+      const openD = getOpenDisagreements(idea);
+      const pickedCnt = idea.splitRequirements.filter(x => x.checked).length;
+
+      return `
+        <!-- Mobile Sub-Tab Switcher (390px cleanly toggles Spec/Disagreements vs Full Chat!) -->
+        <div class="flex lg:hidden items-center justify-between gap-2 px-3 py-2 border-b border-[var(--border)] bg-[var(--content)] text-xs">
+          <div class="flex items-center gap-1 border border-[var(--border)] rounded-md p-0.5 bg-[var(--background)]">
+            <button onclick="STATE.ideaMobilePane='spec'; render();" class="px-2.5 py-1 rounded ${STATE.ideaMobilePane === "spec" ? "ln-tab active" : "text-[var(--muted-foreground)]"}">
+              分歧与草案 ${openD.length > 0 ? `(${openD.length})` : ""}
+            </button>
+            <button onclick="STATE.ideaMobilePane='chat'; render();" class="px-2.5 py-1 rounded ${STATE.ideaMobilePane === "chat" ? "ln-tab active" : "text-[var(--muted-foreground)]"}">
+              讨论记录 (${idea.messages.length})
+            </button>
+          </div>
+          <select onchange="openIdea('${p.id}', this.value)" class="max-w-[140px] bg-[var(--background)] border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--foreground)]">
+            ${p.ideas.map(it => `<option value="${it.id}" ${it.id === idea.id ? "selected" : ""}>${esc(it.title)}</option>`).join("")}
+          </select>
+        </div>
+
+        <div class="flex-1 grid grid-cols-1 lg:grid-cols-12 min-h-0 overflow-hidden">
+          <!-- Desktop Left Topic Rail -->
+          <aside class="hidden lg:flex lg:col-span-3 xl:col-span-2 border-r border-[var(--border)] overflow-y-auto scroll-thin flex-col">
+            <div class="h-9 px-3 border-b border-[var(--border)] flex items-center justify-between text-xs text-[var(--muted-foreground)]">
+              <span>想法议题</span>
+              <button onclick="openModal('newIdea')" class="ln-btn-ghost p-1" title="发起新想法">${SVG.plus}</button>
+            </div>
+            <div class="divide-y divide-[var(--border)]">
+              ${p.ideas.map(it => {
+                const active = it.id === idea.id;
+                const dCnt = getOpenDisagreements(it).length;
+                return `
+                  <button onclick="openIdea('${p.id}','${it.id}')" class="w-full text-left px-3 py-2.5 space-y-1 ${active ? "bg-[var(--content)]" : "hover:bg-[var(--content)]/50"}">
+                    <div class="flex items-start gap-1.5 text-xs">
+                      <span class="mt-0.5 shrink-0">${statusIcon(it.status === "materialized" || dCnt === 0 ? "done" : "review")}</span>
+                      <span class="${active ? "font-medium text-[var(--foreground)]" : "text-[var(--muted-foreground)]"} leading-snug">${esc(it.title)}</span>
+                    </div>
+                    <div class="pl-5 text-xs text-[var(--muted-foreground)]">
+                      ${it.status === "materialized" ? "已拆入进度" : dCnt > 0 ? `拟拆 ${it.splitRequirements.length} 需求 · 剩 ${dCnt} 分歧` : `拟拆 ${it.splitRequirements.length} 需求 · 无分歧`}
+                    </div>
+                  </button>
+                `;
+              }).join("")}
+            </div>
+          </aside>
+
+          <!-- Center/Right on Desktop: Spec & Disagreement First on Mobile, Side-by-Side on Desktop -->
+          <!-- Pane A: Disagreements & Split Requirements Draft (Top Priority!) -->
+          <section class="${STATE.ideaMobilePane === "spec" ? "flex" : "hidden"} lg:flex lg:order-3 lg:col-span-4 flex-col overflow-y-auto scroll-thin p-4 space-y-4 bg-[var(--content)]/30">
+            <!-- Concrete Disagreement Decision Card (REPLACES fake Consensus %) -->
+            ${openD.length > 0 ? openD.map(dis => `
+              <div class="p-3.5 rounded-lg ln-tint-warning space-y-2.5">
+                <div class="text-xs font-medium">拟拆 ${idea.splitRequirements.length} 个需求 · 剩 ${openD.length} 个分歧待决定</div>
+                <div class="text-[14px] font-semibold leading-snug text-[var(--foreground)]">${esc(dis.question)}</div>
+                <p class="text-xs text-[var(--muted-foreground)] leading-relaxed">${esc(dis.positions)}</p>
+                <div class="space-y-1.5 pt-1">
+                  ${dis.options.map((opt, idx) => `
+                    <button onclick="resolveDisagreement('${idea.id}', '${dis.id}', ${idx})" class="${idx === 0 ? "ln-btn-primary" : "ln-btn"} w-full text-left px-3 py-1.5 text-xs">
+                      ${idx === 0 ? "参与决定：" : ""}${esc(opt)}
+                    </button>
+                  `).join("")}
+                </div>
+              </div>
+            `).join("") : `
+              <div class="p-3 rounded-lg ln-tint-success text-xs font-medium flex items-center gap-2">
+                ${SVG.check} <span>${idea.status === "materialized" ? "已拆解并写入项目进度" : `拟拆 ${pickedCnt} 个需求 · 0 个未决分歧，可确认写入项目进度`}</span>
+              </div>
+            `}
+
+            <div class="space-y-1">
+              <div class="text-xs font-medium text-[var(--muted-foreground)]">方案摘要</div>
+              <p class="text-xs leading-relaxed text-[var(--foreground)]/90">${esc(idea.proposalSummary)}</p>
+            </div>
+
+            <div class="space-y-1.5">
+              <div class="flex justify-between text-xs">
+                <span class="font-medium">拆解出的需求清单</span>
+                <span class="text-[var(--muted-foreground)] font-mono">已选 ${pickedCnt}/${idea.splitRequirements.length}</span>
+              </div>
+              <div class="border border-[var(--border)] rounded-lg overflow-hidden divide-y divide-[var(--border)] bg-[var(--background)]">
+                ${idea.splitRequirements.map((sr, idx) => `
+                  <label class="block px-3 py-2.5 hover:bg-[var(--content)] cursor-pointer space-y-1">
+                    <div class="flex items-start justify-between gap-2">
+                      <span class="flex items-start gap-2 text-[14px] font-medium leading-snug">
+                        <input type="checkbox" ${sr.checked ? "checked" : ""} ${idea.status === "materialized" ? "disabled" : ""} onchange="toggleSplitReq(${idx})" class="mt-1 accent-[var(--primary)]" />
+                        <span>${esc(sr.title)}</span>
+                      </span>
+                      ${priorityIcon(sr.priority)}
+                    </div>
+                    <div class="pl-5 text-xs text-[var(--muted-foreground)]">${esc(getMemberByRole(p, sr.ownerRole).name)} · ${sr.tasksPreview.join(" / ")}</div>
+                  </label>
+                `).join("")}
+              </div>
+            </div>
+
+            <button onclick="materializeIdea()" ${pickedCnt === 0 || idea.status === "materialized" ? "disabled" : ""} class="ln-btn-primary w-full py-2 text-xs flex items-center justify-center gap-1.5">
+              ${SVG.check} <span>${idea.status === "materialized" ? "已写入项目进度" : `确认拆解，写入 ${pickedCnt} 个需求到项目进度 →`}</span>
+            </button>
+          </section>
+
+          <!-- Pane B: Full Multi-Agent Discussion Thread (Second Layer Context) -->
+          <section class="${STATE.ideaMobilePane === "chat" ? "flex" : "hidden"} lg:flex lg:order-2 lg:col-span-5 xl:col-span-6 lg:border-r border-[var(--border)] flex-col min-h-0">
+            <div class="h-10 shrink-0 px-4 border-b border-[var(--border)] flex items-center justify-between gap-2 text-xs">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="font-medium truncate">${esc(idea.title)}</span>
+                <span class="font-mono text-[var(--muted-foreground)] shrink-0">第 ${idea.round}/${idea.maxRounds} 轮</span>
+              </div>
+              <div class="flex items-center gap-1.5 shrink-0">
+                ${idea.isTyping ? `<button onclick="pauseIdea()" class="ln-btn-danger h-6 px-2 text-xs flex items-center gap-1">${SVG.pause} 暂停</button>` : `<button onclick="runIdea()" class="ln-btn-primary h-6 px-2.5 text-xs flex items-center gap-1">${SVG.spark} 自主讨论</button>`}
+                ${openD.length > 0 ? `<button onclick="forceConverge()" class="ln-btn h-6 px-2 text-xs">收敛分歧</button>` : ""}
+              </div>
+            </div>
+
+            <div id="idea-stream" class="flex-1 overflow-y-auto scroll-thin divide-y divide-[var(--border)]">
+              ${idea.messages.map(msg => {
+                const mem = getMemberByRole(p, msg.roleId);
+                const tagCls = ["分歧", "风险", "回流"].includes(msg.tag) ? "ln-tint-warning" : ["同意", "收敛", "已拍板"].includes(msg.tag) ? "ln-tint-success" : "ln-tag";
+                return `
+                  <div class="px-4 py-3 space-y-1.5 ${msg.roleId === "user" ? "bg-[var(--content)]/60" : ""}">
+                    <div class="flex items-center justify-between gap-2 text-xs">
+                      <div class="flex items-center gap-2 min-w-0">
+                        ${avatar(msg.roleId)}
+                        <span class="font-medium truncate">${esc(mem.name)}</span>
+                        <span class="${tagCls} px-1.5 py-0 rounded text-xs shrink-0">${esc(msg.tag)}</span>
+                      </div>
+                      <span class="font-mono text-[var(--muted-foreground)] shrink-0">${esc(msg.time)}</span>
+                    </div>
+                    <div class="pl-7 text-xs leading-relaxed space-y-1">
+                      ${msg.quote ? `<div class="border-l-2 border-[var(--border)] pl-2.5 text-[var(--muted-foreground)]">引用：${esc(msg.quote)}</div>` : ""}
+                      <div>${formatMd(msg.text)}</div>
+                    </div>
+                  </div>
+                `;
+              }).join("")}
+              ${idea.isTyping ? `<div class="px-4 py-3 flex items-center gap-2 text-xs text-[var(--muted-foreground)]">${avatar(idea.typingRole || "architect")}<span class="pulse">${esc(getMemberByRole(p, idea.typingRole || "architect").name)} 正在审阅前文并回应...</span></div>` : ""}
+            </div>
+
+            <div class="p-3 border-t border-[var(--border)] bg-[var(--content)]/40 space-y-2">
+              <div class="flex items-center gap-1.5 flex-wrap text-xs">
+                <button onclick="quickSteer('第一期先做导出和告警，管理后台延后到二期。')" class="ln-tag px-2 py-0.5 hover:border-[var(--primary)]">先做导出和告警，砍掉后台</button>
+              </div>
+              <form onsubmit="sendSteer(event)" class="flex items-center gap-2">
+                <input type="text" value="${esc(idea.inputDraft)}" oninput="getIdea().inputDraft=this.value" placeholder="随时插话提出要求或修正拆解方向..." class="flex-1 bg-[var(--background)] border border-[var(--border)] rounded-md px-3 py-1.5 text-xs text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)]" />
+                <button type="submit" class="ln-btn-primary h-7 px-3 text-xs flex items-center gap-1">${SVG.send}</button>
+              </form>
+            </div>
+          </section>
+        </div>
+      `;
+    }
+
+    // =========================================================================
+    // TAB 2: ② 项目进度（首屏先回答“团队在等我做什么” + 单一真相源 + 14-15px 层级！）
+    // =========================================================================
+    function renderLinearProgress(p) {
+      const pct = calcProjPct(p);
+      const team = getProjectInstances(p.id);
+      const heroBlocker = p.tasks.find(t => t.status === "blocked" && t.blocker);
+      const heroBlockerReq = heroBlocker ? p.requirements.find(r => r.id === heroBlocker.reqId) : null;
+      const failedReqs = p.requirements.filter(r => r.verification?.state === "failed");
+      const pendingReviewReqs = p.requirements.filter(r => r.stage === "review" && !r.reviewAccepted && r.verification?.state === "passed");
+
+      // Honest, separated groups: never conflate PR open with Merged or Released!
+      const groups = [
+        { key: "active",   title: "研发与修复中", icon: "dev",           items: p.requirements.filter(r => r.stage === "dev" || r.stage === "planned" || r.verification?.state === "failed" || r.verification?.state === "repairing") },
+        { key: "review",   title: "待你验收",     icon: "review",        items: p.requirements.filter(r => r.stage === "review" && r.verification?.state === "passed") },
+        { key: "ready",    title: "已验收 · 待提 PR", icon: "ready_to_ship", items: p.requirements.filter(r => r.stage === "ready_to_ship") },
+        { key: "pr_open",  title: "已提 PR (待合入)", icon: "pr_open",    items: p.requirements.filter(r => r.stage === "pr_open") },
+        { key: "shipped",  title: "已合并 main / 已发布", icon: "merged", items: p.requirements.filter(r => r.stage === "merged" || r.stage === "released") }
+      ].filter(g => g.items.length > 0);
+
+      return `
+        <div class="flex-1 grid grid-cols-1 lg:grid-cols-12 min-h-0 overflow-hidden">
+          <!-- Main Column -->
+          <div class="lg:col-span-9 overflow-y-auto scroll-thin">
+            ${p.failoverNotice ? `<div class="px-4 py-2 border-b border-[var(--border)] ln-tint-warning flex justify-between gap-2 text-xs"><span>⚡ 故障转移：${esc(p.failoverNotice)}</span><button onclick="getProj().failoverNotice=null; render();" class="underline shrink-0">关闭</button></div>` : ""}
+            ${p.conflictNotice ? `<div class="px-4 py-2 border-b border-[var(--border)] ln-tint-primary flex justify-between gap-2 text-xs"><span>🔀 冲突自愈：${esc(p.conflictNotice)}</span><button onclick="getProj().conflictNotice=null; render();" class="underline shrink-0">关闭</button></div>` : ""}
+
+            <!-- HERO SECTION: Answer "What is the team waiting on ME for?" FIRST! -->
+            ${(heroBlocker || failedReqs.length || pendingReviewReqs.length) ? `
+              <section class="px-4 py-4 border-b border-[var(--border)] bg-[var(--content)]/45 space-y-3">
+                <div class="text-xs font-medium text-[var(--muted-foreground)]">团队正在等你处理</div>
+
+                <!-- #1 Priority: Concrete Blocking Question OR Failed Verification -->
+                ${heroBlocker ? `
+                  <div class="p-3.5 rounded-lg border border-[var(--border)] bg-[var(--background)] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div class="space-y-1 min-w-0">
+                      <div class="flex items-center gap-2 flex-wrap text-xs">
+                        <span class="ln-tint-error px-1.5 py-0.5 rounded font-medium">阻塞待拍板</span>
+                        ${heroBlockerReq ? `<span class="font-mono text-[var(--muted-foreground)]">影响 ${heroBlockerReq.code}</span>` : ""}
+                      </div>
+                      <div class="text-[15px] font-semibold leading-snug">${esc(heroBlocker.blocker.headline)}</div>
+                      <p class="text-xs text-[var(--muted-foreground)] leading-relaxed">${esc(heroBlocker.blocker.detail)}</p>
+                    </div>
+                    <button onclick="openTaskDrawer('${heroBlocker.id}')" class="ln-btn-primary h-8 px-3.5 text-xs shrink-0 self-start sm:self-center">查看方案</button>
+                  </div>
+                ` : ""}
+
+                ${failedReqs.map(req => `
+                  <div class="p-3.5 rounded-lg ln-tint-error flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div class="space-y-0.5 min-w-0">
+                      <div class="flex items-center gap-2 text-xs font-mono"><span>${req.code}</span><span>·</span><span>${getReqVerifyLabel(req)}</span></div>
+                      <div class="text-[14px] font-semibold text-[var(--foreground)]">${esc(req.title)}</div>
+                      <div class="text-xs text-[var(--muted-foreground)]">受保护验证未通过，需启动自动返修或拉回讨论室修订方案。</div>
+                    </div>
+                    <button onclick="STATE.selectedReviewReqId='${req.id}'; STATE.workSubTab='review'; STATE.projectTab='work'; render();" class="ln-btn-primary h-8 px-3.5 text-xs shrink-0 self-start sm:self-center">查看报错并返修</button>
+                  </div>
+                `).join("")}
+
+                <!-- #2 Priority: Secondary Pending Review Strip (Strictly Derived from Real Verification!) -->
+                ${pendingReviewReqs.map(req => `
+                  <div class="px-3.5 py-2.5 rounded-lg border border-[var(--border)] bg-[var(--background)]/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                    <div class="flex items-center gap-2 min-w-0 flex-wrap">
+                      ${statusIcon("review")}
+                      <span class="font-mono text-[var(--muted-foreground)]">${req.code}</span>
+                      <span class="text-[14px] font-medium truncate">${esc(req.title)}</span>
+                      <span class="text-[var(--muted-foreground)]">· ${getReqVerifyLabel(req)}</span>
+                    </div>
+                    <button onclick="STATE.selectedReviewReqId='${req.id}'; STATE.workSubTab='review'; STATE.projectTab='work'; render();" class="ln-btn h-7 px-3 text-xs shrink-0 self-start sm:self-center">去验收 Diff</button>
+                  </div>
+                `).join("")}
+              </section>
+            ` : `
+              <div class="px-4 py-3 border-b border-[var(--border)] text-xs flex items-center justify-between" style="color:var(--success)">
+                <span>✓ 当前没有卡住团队的决策项，所有研发平稳推进中。</span>
+              </div>
+            `}
+
+            <!-- Clean Hairline Grouped Requirements List (14px Title + 12px Muted Meta) -->
+            ${groups.map(grp => `
+              <div>
+                <div class="ln-group-hdr h-9 px-4 flex items-center gap-2 text-xs font-medium">
+                  ${statusIcon(grp.icon)} <span>${grp.title}</span> <span class="text-[var(--muted-foreground)] font-mono font-normal">${grp.items.length}</span>
+                </div>
+                <div>
+                  ${grp.items.map(req => {
+                    const st = getReqStageLabel(req);
+                    const sub = p.tasks.filter(t => t.reqId === req.id);
+                    const exp = !!STATE.expandedReqIds[req.id];
+                    return `
+                      <div class="ln-row">
+                        <div onclick="toggleExpand('${req.id}')" class="cursor-pointer px-4 py-2.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2">
+                          <div class="flex items-start sm:items-center gap-2.5 min-w-0 flex-1">
+                            <span class="text-[var(--muted-foreground)] mt-1 sm:mt-0 transition-transform ${exp ? "rotate-90" : ""}">${SVG.chevron}</span>
+                            <span class="mt-0.5 sm:mt-0">${priorityIcon(req.priority)}</span>
+                            <div class="min-w-0 flex-1">
+                              <div class="flex items-center gap-2 flex-wrap">
+                                <span class="font-mono text-xs text-[var(--muted-foreground)]">${req.code}</span>
+                                <span class="text-[14px] font-medium leading-snug">${esc(req.title)}</span>
+                              </div>
+                              <div class="text-xs text-[var(--muted-foreground)] mt-0.5 flex items-center gap-2 flex-wrap">
+                                <span>${getReqVerifyLabel(req)}</span>
+                                <span>·</span>
+                                <span>${sub.length} 个任务</span>
+                                ${req.deliveryRef ? `<span>·</span><span class="font-mono">${esc(req.deliveryRef)}</span>` : ""}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div class="flex items-center gap-2.5 shrink-0 pl-7 sm:pl-0">
+                            <span class="${st.tone} px-2 py-0.5 rounded text-xs">${esc(st.text)}</span>
+                            ${avatar(req.ownerRole)}
+                          </div>
+                        </div>
+
+                        ${exp ? `
+                          <div class="bg-[var(--content)]/45 border-t border-[var(--border)] pl-8 sm:pl-12 pr-4 py-2 divide-y divide-[var(--border)]/50">
+                            ${sub.map(t => `
+                              <div onclick="openTaskDrawer('${t.id}')" class="cursor-pointer py-2 px-2 -mx-2 rounded hover:bg-[var(--content)] flex flex-wrap items-center justify-between gap-2 text-xs">
+                                <div class="flex items-center gap-2 min-w-0">
+                                  ${statusIcon(t.status)}
+                                  <span class="font-mono text-[var(--muted-foreground)]">${t.code}</span>
+                                  <span class="font-medium">${esc(t.title)}</span>
+                                </div>
+                                <div class="flex items-center gap-2 text-[var(--muted-foreground)] font-mono">
+                                  <span>${esc(getMachine(t.machineId)?.name || "")}</span>
+                                  <span>${t.progress}%</span>
+                                </div>
+                              </div>
+                            `).join("")}
+                          </div>
+                        ` : ""}
+                      </div>
+                    `;
+                  }).join("")}
+                </div>
+              </div>
+            `).join("")}
+          </div>
+
+          <!-- Right Inspector (Desktop): Single Overall Progress + Dedicated Team + Normal Discussions/Activity -->
+          <aside class="hidden lg:block lg:col-span-3 border-l border-[var(--border)] overflow-y-auto scroll-thin p-4 space-y-5 bg-[var(--content)]/20 text-xs">
+            <div class="space-y-2.5">
+              <div class="font-medium text-[var(--muted-foreground)]">项目属性</div>
+              <div class="space-y-2">
+                <div class="flex justify-between"><span class="text-[var(--muted-foreground)]">推进概览</span><span class="font-mono font-medium">${pct}%</span></div>
+                <div class="flex justify-between"><span class="text-[var(--muted-foreground)]">托管仓库</span><span class="font-mono truncate max-w-[140px]">${esc(p.repo)}</span></div>
+                <div class="flex justify-between"><span class="text-[var(--muted-foreground)]">验证规则</span><span class="font-mono">${esc(p.defaultVerifier)}</span></div>
+              </div>
+            </div>
+
+            <div class="border-t border-[var(--border)] pt-4 space-y-2">
+              <div class="flex justify-between">
+                <span class="font-medium text-[var(--muted-foreground)]">专属成员 (独立记忆)</span>
+                <button onclick="openTeamDrawer()" class="underline text-[var(--muted-foreground)] hover:text-[var(--foreground)]">管理</button>
+              </div>
+              <div class="space-y-1.5">
+                ${team.map(inst => `
+                  <div class="flex items-center justify-between gap-2 py-0.5">
+                    <span class="flex items-center gap-2 min-w-0">${avatar(inst.role, "w-4 h-4 text-xs")} <span class="truncate font-medium">${esc(inst.name)}</span></span>
+                    <span class="font-mono text-[var(--muted-foreground)] shrink-0">${inst.cli}</span>
+                  </div>
+                `).join("")}
+              </div>
+            </div>
+
+            <div class="border-t border-[var(--border)] pt-4 space-y-2.5">
+              <div class="font-medium text-[var(--muted-foreground)]">团队动态与讨论进展</div>
+              <div class="space-y-2.5">
+                ${p.activities.slice(0, 5).map(a => `<div class="space-y-0.5"><div class="flex justify-between"><span class="font-medium">${esc(a.who)}</span><span class="font-mono text-[var(--muted-foreground)]">${esc(a.time)}</span></div><p class="text-[var(--muted-foreground)] leading-snug">${esc(a.text)}</p></div>`).join("")}
+              </div>
+            </div>
+          </aside>
+        </div>
+      `;
+    }
+
+    // =========================================================================
+    // TAB 3: ③ 任务与评审（验证结果单一真相源 + 逆风演练 + 逆向回流）
+    // =========================================================================
+    function renderLinearWork(p) {
+      const tasks = STATE.workReqFilter === "all" ? p.tasks : p.tasks.filter(t => t.reqId === STATE.workReqFilter);
+      const anyFailed = p.requirements.some(r => r.verification?.state === "failed");
+
+      return `
+        <div class="shrink-0 border-b border-[var(--border)] px-3 lg:px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div class="flex items-center gap-2 flex-wrap">
+            <div class="flex items-center gap-0.5 border border-[var(--border)] rounded-md p-0.5">
+              ${[["list","任务列表"],["board","看板"],["review", anyFailed ? "评审 (测试失败)" : "代码评审与测试"]].map(([k,l]) => `<button onclick="STATE.workSubTab='${k}'; render();" class="px-2 py-0.5 rounded text-xs ${STATE.workSubTab === k ? "ln-tab active" : "text-[var(--muted-foreground)]"}">${l}</button>`).join("")}
+            </div>
+            ${STATE.workSubTab !== "review" ? `<select onchange="STATE.workReqFilter=this.value; render();" class="bg-[var(--background)] border border-[var(--border)] rounded-md px-2 py-1 text-xs text-[var(--foreground)]"><option value="all" ${STATE.workReqFilter === "all" ? "selected" : ""}>全部需求 (${p.tasks.length})</option>${p.requirements.map(r => `<option value="${r.id}" ${STATE.workReqFilter === r.id ? "selected" : ""}>${r.code}</option>`).join("")}</select>` : ""}
+          </div>
+          <div class="flex items-center gap-1.5 flex-wrap text-xs">
+            <button onclick="drillTestFailure()" class="ln-btn h-6 px-2 text-xs">单测失败→返修</button>
+            <button onclick="drillGitConflict()" class="ln-btn h-6 px-2 text-xs">冲突自愈</button>
+            <button onclick="drillNodeFailover()" class="ln-btn h-6 px-2 text-xs">断网接管</button>
+          </div>
+        </div>
+        <div class="flex-1 overflow-y-auto scroll-thin">
+          ${STATE.workSubTab === "list" ? renderLinearTaskList(p, tasks) : STATE.workSubTab === "board" ? renderLinearBoard(p, tasks) : renderLinearReview(p)}
+        </div>
+      `;
+    }
+
+    function renderLinearTaskList(p, tasks) {
+      const groups = [
+        { k: "blocked", title: "阻塞待拍板", list: tasks.filter(t => t.status === "blocked") },
+        { k: "running", title: "进行中",     list: tasks.filter(t => t.status === "running") },
+        { k: "review",  title: "评审与验证", list: tasks.filter(t => t.status === "review") },
+        { k: "todo",    title: "待开始",     list: tasks.filter(t => t.status === "todo" || t.status === "stopped") },
+        { k: "done",    title: "已完成",     list: tasks.filter(t => t.status === "done") }
+      ].filter(g => g.list.length > 0);
+
+      return groups.length === 0 ? `<div class="p-8 text-center text-xs text-[var(--muted-foreground)]">暂无任务</div>` : groups.map(g => `
+        <div>
+          <div class="ln-group-hdr h-8 px-4 flex items-center gap-2 text-xs font-medium">${statusIcon(g.k)} <span>${g.title}</span> <span class="font-mono text-[var(--muted-foreground)] font-normal">${g.list.length}</span></div>
+          ${g.list.map(t => {
+            const req = p.requirements.find(r => r.id === t.reqId);
+            const vBadge = (t.status === "review" && req) ? getReqVerifyLabel(req) : "";
+            return `
+              <div onclick="openTaskDrawer('${t.id}')" class="ln-row cursor-pointer px-4 py-2.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 text-xs">
+                <div class="flex items-center gap-2.5 min-w-0 flex-1">
+                  ${statusIcon(req?.verification?.state === "failed" && t.status === "review" ? "failed" : t.status)}
+                  <span class="font-mono text-[var(--muted-foreground)] shrink-0">${t.code}</span>
+                  <span class="text-[14px] font-medium truncate">${esc(t.title)}</span>
+                  ${req ? `<span class="ln-tag px-1.5 py-0 font-mono hidden sm:inline shrink-0">${req.code}</span>` : ""}
+                </div>
+                <div class="flex items-center gap-2.5 shrink-0 text-[var(--muted-foreground)] pl-6 sm:pl-0">
+                  ${vBadge ? `<span class="${req.verification.state === "failed" ? "ln-tint-error" : "ln-tag"} px-1.5 py-0 rounded">${esc(vBadge)}</span>` : ""}
+                  <span class="hidden md:inline font-mono">${esc(getMachine(t.machineId)?.name || "")}</span>
+                  <span class="font-mono">${t.progress}%</span>
+                  ${avatar(t.roleId)}
+                </div>
+              </div>
+            `;
+          }).join("")}
+        </div>
+      `).join("");
+    }
+
+    function renderLinearBoard(p, tasks) {
+      const cols = [["todo","待开始"],["running","进行中"],["blocked","需拍板"],["review","待验收"],["done","已完成"]];
+      return `<div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 h-full divide-y md:divide-y-0 md:divide-x divide-[var(--border)]">${cols.map(([k, title]) => {
+        const list = tasks.filter(t => t.status === k);
+        return `<div class="p-2.5 space-y-2"><div class="px-1.5 py-1 flex justify-between text-xs font-medium"><span class="flex items-center gap-1.5">${statusIcon(k)} ${title}</span><span class="font-mono text-[var(--muted-foreground)]">${list.length}</span></div>${list.map(t => `<div onclick="openTaskDrawer('${t.id}')" class="cursor-pointer p-2.5 rounded-lg border border-[var(--border)] bg-[var(--card)] hover:border-[var(--primary)] space-y-1.5"><div class="font-mono text-xs text-[var(--muted-foreground)]">${t.code}</div><div class="text-[14px] font-medium leading-snug">${esc(t.title)}</div><div class="flex justify-between pt-1 text-xs">${avatar(t.roleId)}<span class="font-mono text-[var(--muted-foreground)]">${t.progress}%</span></div></div>`).join("")}</div>`;
+      }).join("")}</div>`;
+    }
+
+    function renderLinearReview(p) {
+      const reqs = p.requirements.filter(r => !["merged", "released"].includes(r.stage));
+      const activeReq = reqs.find(r => r.id === STATE.selectedReviewReqId) || reqs[0] || p.requirements[0];
+      const v = activeReq ? activeReq.verification : { state: "none", passed: 0, total: 0, lastRunAt: "--", repairAttempt: 0, failingLog: null };
+      const files = Object.keys(p.diffs);
+      const activeFile = files.includes(STATE.selectedDiffFile) ? STATE.selectedDiffFile : files[0];
+      const lines = p.diffs[activeFile] || [];
+
+      return `
+        <div>
+          ${activeReq ? `
+            <div class="px-4 py-2 border-b border-[var(--border)] flex flex-wrap items-center gap-1.5 text-xs bg-[var(--content)]/40">
+              <span class="text-[var(--muted-foreground)]">审阅需求：</span>
+              ${reqs.map(r => `<button onclick="STATE.selectedReviewReqId='${r.id}'; render();" class="px-2 py-0.5 rounded-md ${r.id === activeReq.id ? "ln-tint-primary font-medium" : "ln-btn-ghost"}">${r.code} ${esc(r.title)}</button>`).join("")}
+            </div>
+          ` : ""}
+
+          ${v.state === "failed" || v.state === "repairing" ? `
+            <div class="px-4 py-3 border-b border-[var(--border)] ${v.state === "repairing" ? "ln-tint-warning" : "ln-tint-error"} space-y-2 text-xs">
+              <div class="flex flex-wrap justify-between gap-2">
+                <span class="font-medium">${v.state === "repairing" ? `自动返修进行中（第 ${v.repairAttempt}/${p.maxAutoRepairs} 轮）...` : `${activeReq.code} 受保护验证失败 (${v.passed}/${v.total})`}</span>
+                ${v.state === "failed" ? `
+                  <div class="flex gap-1.5 flex-wrap">
+                    <button onclick="triggerAutoRepair('${activeReq.id}')" class="ln-btn-primary h-7 px-3 text-xs">启动自动返修</button>
+                    <button onclick="sendBackToIdea('${activeReq.code} 受保护验证失败（${v.passed}/${v.total}），拉回想法讨论室修订方案。')" class="ln-btn h-7 px-2.5 text-xs flex items-center gap-1">${SVG.returnBack} 拉回讨论室</button>
+                  </div>
+                ` : ""}
+              </div>
+              ${v.failingLog ? `<pre class="p-2.5 rounded bg-[var(--background)] border border-[var(--border)] font-mono text-xs overflow-x-auto text-[var(--foreground)]">${esc(v.failingLog)}</pre>` : ""}
+            </div>
+          ` : ""}
+
+          <div class="grid grid-cols-1 lg:grid-cols-12">
+            <div class="lg:col-span-8 lg:border-r border-[var(--border)]">
+              <div class="h-9 px-3 border-b border-[var(--border)] flex items-center gap-1 overflow-x-auto">${files.map(f => `<button onclick="STATE.selectedDiffFile='${f}'; render();" class="px-2 py-1 rounded text-xs font-mono ${f === activeFile ? "ln-tab active" : "ln-btn-ghost"}">${esc(f)}</button>`).join("")}</div>
+              <div class="font-mono text-xs overflow-x-auto scroll-thin">${lines.map(l => l.t === "h" ? `<div class="diff-hunk px-4 py-1">${esc(l.text)}</div>` : `<div class="${l.t === "a" ? "diff-add" : l.t === "d" ? "diff-del" : ""} flex leading-6 border-b border-[var(--border)]/30"><span class="w-8 shrink-0 text-right pr-2 text-[var(--muted-foreground)] opacity-60">${l.o}</span><span class="w-8 shrink-0 text-right pr-2 text-[var(--muted-foreground)] opacity-60 border-r border-[var(--border)]">${l.n}</span><span class="w-5 shrink-0 text-center font-bold" style="color:${l.t === "a" ? "var(--success)" : l.t === "d" ? "var(--error)" : "var(--muted-foreground)"}">${l.t === "a" ? "+" : l.t === "d" ? "-" : " "}</span><span class="pr-4 whitespace-pre">${esc(l.text)}</span></div>`).join("")}</div>
+            </div>
+
+            <div class="lg:col-span-4 p-4 space-y-4 bg-[var(--content)]/20 text-xs border-t lg:border-t-0 border-[var(--border)]">
+              <div class="space-y-2 pb-3 border-b border-[var(--border)]">
+                <div class="flex justify-between font-medium"><span>受保护测试验证</span><span style="color:${v.state === "passed" ? "var(--success)" : "var(--error)"}">${v.passed}/${v.total}</span></div>
+                <div class="text-[var(--muted-foreground)] font-mono">${esc(p.defaultVerifier)} · ${esc(v.lastRunAt)}</div>
+                <button onclick="rerunTests('${activeReq.id}')" class="ln-btn w-full py-1.5 text-xs flex items-center justify-center gap-1">${SVG.refresh} 重跑受保护验证</button>
+              </div>
+              <div class="space-y-2.5">
+                <div class="flex justify-between font-medium"><span>独立只读评审</span><span style="color:var(--success)">建议通过</span></div>
+                <p class="text-[var(--muted-foreground)] leading-relaxed">${esc(activeReq?.reviewerSummary || "")}</p>
+                ${activeReq ? `<button onclick="acceptReq('${activeReq.id}')" ${v.state !== "passed" ? "disabled" : ""} class="ln-btn-primary w-full py-2 text-xs">${activeReq.reviewAccepted ? `✓ ${activeReq.code} 已验收 · 去交付 →` : v.state !== "passed" ? "验证未通过，禁止验收" : `验收 ${activeReq.code}，进入待提 PR 池`}</button>` : ""}
+                <button onclick="sendBackToIdea('代码评审发现设计边界问题，拉回讨论室修订。')" class="ln-btn w-full py-1.5 text-xs flex items-center justify-center gap-1">${SVG.returnBack} 方案有问题 · 拉回讨论室</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // =========================================================================
+    // TAB 4: ④ 交付与发布（严格区分：已验收待提 PR -> 已提 PR -> 已合并 main -> 已发布 Release）
+    // =========================================================================
+    function renderLinearRelease(p) {
+      const rel = p.release;
+      const readyReqs = p.requirements.filter(r => r.stage === "ready_to_ship" && r.verification?.state === "passed");
+      const openPrReqs = p.requirements.filter(r => r.stage === "pr_open");
+      const picked = readyReqs.filter(r => r.selectedForRelease);
+      const prNodes = STATE.machines.filter(m => m.status === "online" && m.prProjects.includes(p.id));
+      const hasPr = prNodes.length > 0;
+
+      return `
+        <div class="flex-1 overflow-y-auto scroll-thin p-4 lg:p-6">
+          <div class="max-w-3xl mx-auto space-y-5">
+            ${!hasPr ? `<div class="p-3 rounded-lg ln-tint-error flex flex-wrap items-center justify-between gap-2 text-xs"><span>无在线节点持有 ${esc(p.name)} 的 Git PR 推送权限。</span><button onclick="STATE.screen='resources'; render();" class="ln-btn-primary h-7 px-2.5 text-xs">算力设置</button></div>` : ""}
+
+            <!-- 1. Ready to Ship Pool -->
+            <div class="space-y-2">
+              <div class="flex justify-between items-center text-xs">
+                <span class="font-medium">已验收待交付需求（单选提 PR · 多选打包发版）</span>
+                <button onclick="openModal('audit')" class="ln-btn-ghost px-2 py-1 text-xs">审计 JSON</button>
+              </div>
+              <div class="border border-[var(--border)] rounded-lg overflow-hidden divide-y divide-[var(--border)]">
+                ${readyReqs.length === 0 ? `
+                  <div class="p-4 text-xs text-[var(--muted-foreground)] flex flex-wrap justify-between items-center gap-2">
+                    <span>暂无「已验收待交付」需求</span>
+                    <button onclick="STATE.workSubTab='review'; STATE.projectTab='work'; render();" class="ln-btn-primary h-7 px-3 text-xs">去验收需求 →</button>
+                  </div>
+                ` : readyReqs.map(r => `
+                  <label class="px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 hover:bg-[var(--content)] cursor-pointer text-xs">
+                    <span class="flex items-center gap-2.5">
+                      <input type="checkbox" ${r.selectedForRelease ? "checked" : ""} onchange="toggleReleaseReq('${r.id}')" class="accent-[var(--primary)]" />
+                      ${statusIcon("ready_to_ship")}
+                      <span class="font-mono text-[var(--muted-foreground)]">${r.code}</span>
+                      <span class="text-[14px] font-medium">${esc(r.title)}</span>
+                    </span>
+                    <span class="text-[var(--muted-foreground)]">${getReqVerifyLabel(r)}</span>
+                  </label>
+                `).join("")}
+              </div>
+            </div>
+
+            <!-- 2. Delivery Executor -->
+            <div class="border border-[var(--border)] rounded-lg p-4 space-y-3 bg-[var(--content)]/30 text-xs">
+              <div class="flex flex-wrap justify-between items-center gap-2">
+                <span class="font-medium">受保护执行节点：${hasPr ? esc(prNodes[0].name) : "无在线节点"}</span>
+                <div class="flex gap-1 border border-[var(--border)] rounded-md p-0.5">
+                  <button onclick="getProj().release.kind='git_pr'; render();" class="px-2 py-0.5 rounded ${rel.kind === "git_pr" ? "ln-tab active" : "text-[var(--muted-foreground)]"}">git_pr (创建 PR)</button>
+                  <button onclick="getProj().release.kind='github_release'; render();" class="px-2 py-0.5 rounded ${rel.kind === "github_release" ? "ln-tab active" : "text-[var(--muted-foreground)]"}">github_release (${rel.releaseTag})</button>
+                </div>
+              </div>
+              <div class="flex flex-wrap justify-between items-center gap-3">
+                <span class="text-[var(--muted-foreground)] font-mono">${esc(p.repo)} · ${picked.length ? picked.map(r => r.code).join(" + ") : "未勾选"}</span>
+                <button onclick="executeRelease()" ${(!hasPr || !picked.length || rel.status === "releasing") ? "disabled" : ""} class="ln-btn-primary h-7 px-3 text-xs flex items-center gap-1">
+                  ${SVG.rocket} ${rel.status === "releasing" ? "执行中..." : rel.kind === "git_pr" ? `审批并创建 PR (${picked.length})` : `审批并发布 ${rel.releaseTag} (${picked.length})`}
+                </button>
+              </div>
+            </div>
+
+            <!-- 3. Active Open PR Status (Strictly distinct from Merged / Deployed!) -->
+            ${(rel.status === "pr_open" || rel.status === "releasing" || openPrReqs.length > 0) ? `
+              <div class="border border-[var(--border)] rounded-lg p-4 space-y-3 text-xs">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <span class="font-semibold flex items-center gap-2">
+                    ${statusIcon("pr_open")}
+                    <span>${rel.status === "releasing" ? "正在推送隔离分支并创建 PR..." : `已提 PR #${rel.prNumber}（尚未合入 main，未部署上线）`}</span>
+                  </span>
+                  <span class="font-mono underline">${esc(rel.prUrl)}</span>
+                </div>
+                <div class="divide-y divide-[var(--border)] border border-[var(--border)] rounded-md bg-[var(--background)]">
+                  ${rel.ciChecks.map(c => `<div class="px-3 py-1.5 flex justify-between"><span>${esc(c.name)}</span><span class="font-mono" style="color:${c.status === "pass" ? "var(--success)" : c.status === "running" ? "var(--primary)" : "var(--muted-foreground)"}">${c.status === "pass" ? "PASS" : c.status === "running" ? "running..." : "queued"}</span></div>`).join("")}
+                </div>
+                ${rel.status === "pr_open" ? `
+                  <div class="flex flex-wrap justify-end gap-2 pt-1">
+                    <button onclick="rollbackRelease()" class="ln-btn-danger h-7 px-3 text-xs">撤回并关闭 PR</button>
+                    <button onclick="confirmPrMerged()" class="ln-btn-primary h-7 px-3 text-xs">模拟 PR #${rel.prNumber} 已合入 main →</button>
+                  </div>
+                ` : ""}
+              </div>
+            ` : ""}
+
+            <!-- 4. Honest Delivery History -->
+            <div class="space-y-1.5 text-xs">
+              <div class="text-[var(--muted-foreground)] font-medium">交付记录（严格区分已提 PR / 已合并 main / 已发布 Release）</div>
+              <div class="border border-[var(--border)] rounded-lg divide-y divide-[var(--border)]">
+                ${rel.history.map(h => `
+                  <div class="px-3.5 py-2 flex flex-wrap justify-between gap-2">
+                    <span class="flex items-center gap-2"><span class="font-mono text-[var(--muted-foreground)]">${h.time}</span><span class="font-medium">${esc(h.ref)}</span><span class="text-[var(--muted-foreground)]">${esc(h.reqs)}</span></span>
+                    <span class="${h.state.includes("回滚") ? "ln-tint-error" : h.state.includes("PR") ? "ln-tint-primary" : "ln-tint-success"} px-2 py-0 rounded">${esc(h.state)}</span>
+                  </div>
+                `).join("")}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // =========================================================================
+    // SCREEN C: 算力电脑与单项目专属实例隔离
+    // =========================================================================
+    function renderResources() {
+      return `
+        <header class="h-11 shrink-0 border-b border-[var(--border)] px-3 lg:px-4 flex items-center justify-between text-xs">
+          <div class="flex items-center gap-2">
+            <button onclick="STATE.mobileNavOpen=true; render();" class="lg:hidden ln-btn-ghost p-1.5">${SVG.menu}</button>
+            <button onclick="STATE.screen='project'; render();" class="hidden lg:inline-flex ln-btn-ghost h-7 px-2 items-center gap-1">${SVG.back} 返回</button>
+            <span class="font-medium truncate">算力与专属实例 (1 实例 = 1 项目)</span>
+          </div>
+          <div class="flex items-center gap-2">
+            ${renderThemeToggle(true)}
+            <button onclick="openModal('connectNode')" class="ln-btn-primary h-7 px-2.5 text-xs flex items-center gap-1">${SVG.plus} 连接电脑</button>
+          </div>
+        </header>
+        <div class="flex-1 overflow-y-auto scroll-thin divide-y divide-[var(--border)]">
+          ${STATE.machines.map(m => {
+            const hosted = STATE.instances.filter(i => i.machineId === m.id);
+            return `
+              <div class="px-4 lg:px-5 py-4 space-y-3 text-xs">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="w-2 h-2 rounded-full" style="background:${m.status === "online" ? "var(--success)" : "var(--error)"}"></span>
+                    <span class="text-[14px] font-semibold">${esc(m.name)}</span>
+                    <span class="text-[var(--muted-foreground)]">${esc(m.os)} · CPU ${m.cpu}% · ${m.slots}</span>
+                  </div>
+                  <button onclick="toggleNode('${m.id}')" class="ln-btn h-6 px-2 text-xs">${m.status === "online" ? "模拟离线" : "恢复上线"}</button>
+                </div>
+                <div class="pl-3 space-y-1">
+                  ${m.clis.map(c => `
+                    <div class="flex flex-wrap items-center justify-between gap-2 py-1">
+                      <span class="flex items-center gap-2 flex-wrap">${statusIcon(c.status === "ready" ? "done" : "blocked")}<span class="font-medium">${esc(c.name)}</span><span class="font-mono text-[var(--muted-foreground)]">v${c.ver} · ${c.tier}</span>${c.status === "auth_expired" ? `<span style="color:var(--warning)">${esc(c.fixHint)}</span>` : ""}</span>
+                      ${c.status === "auth_expired" ? `<button onclick="reverify('${m.id}','${c.id}')" class="ln-btn-primary h-6 px-2 text-xs">重新验证</button>` : `<span class="text-[var(--muted-foreground)]">就绪</span>`}
+                    </div>
+                  `).join("")}
+                </div>
+                <div class="pl-3 space-y-1">
+                  <div class="text-[var(--muted-foreground)]">本机隔离实例 (${hosted.length})</div>
+                  <div class="border border-[var(--border)] rounded-md divide-y divide-[var(--border)]">
+                    ${hosted.map(inst => `
+                      <div class="px-3 py-2 flex flex-wrap items-center justify-between gap-2 bg-[var(--content)]/30">
+                        <span class="flex items-center gap-2">${avatar(inst.role, "w-4 h-4 text-xs")}<span class="font-medium">${esc(inst.name)}</span><span class="font-mono text-[var(--muted-foreground)]">${inst.cli}</span></span>
+                        <span class="${inst.projectId ? "ln-tint-primary" : "ln-tag"} px-2 py-0 rounded">${inst.projectId ? `专属：${esc(getProj(inst.projectId)?.name || "")}` : "空闲可认领"}</span>
+                      </div>
+                    `).join("")}
+                  </div>
+                </div>
+              </div>
+            `;
+          }).join("")}
+        </div>
+      `;
+    }
+
+    // =========================================================================
+    // Drawers & Modals
+    // =========================================================================
+    function renderDrawer() {
+      const root = document.getElementById("drawer-root");
+      if (!STATE.drawer) { root.innerHTML = ""; return; }
+      const p = getProj();
+
+      if (STATE.drawer.type === "teamManager") {
+        const current = getProjectInstances(p.id), idle = getIdleInstances(), occupied = getOtherProjectInstances(p.id);
+        root.innerHTML = `
+          <div onclick="if(event.target===this) closeDrawer()" class="modal-mask fixed inset-0 z-40 flex justify-end">
+            <div class="bg-[var(--background)] border-l border-[var(--border)] w-full max-w-lg h-full p-4 overflow-y-auto scroll-thin flex flex-col justify-between gap-4 shadow-2xl text-xs">
+              <div class="space-y-4">
+                <div class="flex justify-between items-start pb-3 border-b border-[var(--border)]">
+                  <div><div class="font-semibold text-sm">专属团队成员 · ${esc(p.name)}</div><div class="text-[var(--muted-foreground)] mt-0.5">单实例独占单项目，防跨项目记忆混淆</div></div>
+                  <button onclick="closeDrawer()" class="ln-btn-ghost p-1">${SVG.close}</button>
+                </div>
+                <div class="space-y-1.5">
+                  <div class="font-medium">已连接专属实例 (${current.length})</div>
+                  <div class="border border-[var(--border)] rounded-lg divide-y divide-[var(--border)]">
+                    ${current.map(inst => `<div class="px-3 py-2 flex items-center justify-between gap-2"><span class="flex items-center gap-2 min-w-0">${avatar(inst.role)}<span class="truncate"><strong>${esc(inst.name)}</strong> <span class="font-mono text-[var(--muted-foreground)]">${inst.cli}</span></span></span><button onclick="detachInst('${inst.id}')" class="ln-btn-ghost px-2 py-0.5">释放</button></div>`).join("") || `<div class="p-3 text-[var(--muted-foreground)]">空团队</div>`}
+                  </div>
+                </div>
+                <div class="space-y-1.5">
+                  <div class="font-medium">新建本项目专属隔离实例</div>
+                  <div class="p-2.5 rounded-lg border border-[var(--border)] bg-[var(--content)] grid grid-cols-2 gap-2">
+                    <select id="tm-role" class="bg-[var(--background)] border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--foreground)]"><option value="architect">产品架构师</option><option value="backend">后端研发</option><option value="frontend">前端研发</option><option value="qa">测试评审</option></select>
+                    <select id="tm-machine" class="bg-[var(--background)] border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--foreground)]">${STATE.machines.filter(m => m.status === "online").map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join("")}</select>
+                    <select id="tm-cli" class="bg-[var(--background)] border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--foreground)]"><option value="codex">Codex CLI</option><option value="claude-code">Claude Code</option><option value="gemini">Gemini CLI</option><option value="copilot">Copilot CLI (只读)</option></select>
+                    <button onclick="createDedicated('${p.id}')" class="ln-btn-primary py-1 px-2 text-xs">+ 新建专属实例</button>
+                  </div>
+                </div>
+                ${idle.length ? `<div class="space-y-1.5"><div class="font-medium">认领空闲实例</div><div class="border border-[var(--border)] rounded-lg divide-y divide-[var(--border)]">${idle.map(inst => `<div class="px-3 py-2 flex justify-between items-center"><span>${esc(inst.name)} (${inst.cli})</span><button onclick="claimIdle('${p.id}','${inst.id}')" class="ln-btn h-6 px-2">独占加入</button></div>`).join("")}</div></div>` : ""}
+                <div class="space-y-1.5">
+                  <div class="text-[var(--muted-foreground)] flex items-center gap-1">${SVG.lock} 其他项目已独占（不可复用）</div>
+                  <div class="border border-[var(--border)] rounded-lg divide-y divide-[var(--border)] opacity-85">
+                    ${occupied.map(inst => `<div class="px-3 py-2 flex justify-between items-center gap-2"><span class="truncate text-[var(--muted-foreground)]">${esc(inst.name)} · ${esc(getProj(inst.projectId)?.name || "")}</span><button onclick="cloneFresh('${p.id}','${inst.id}')" class="ln-btn h-6 px-2 shrink-0">派生新实例</button></div>`).join("")}
+                  </div>
+                </div>
+              </div>
+              <div class="pt-3 border-t border-[var(--border)] flex justify-end"><button onclick="closeDrawer()" class="ln-btn-primary h-7 px-3.5">完成</button></div>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      if (STATE.drawer.type === "projectSettings") {
+        const verifiers = [...new Set(STATE.machines.flatMap(m => m.verifiers))];
+        root.innerHTML = `
+          <div onclick="if(event.target===this) closeDrawer()" class="modal-mask fixed inset-0 z-40 flex justify-end">
+            <div class="bg-[var(--background)] border-l border-[var(--border)] w-full max-w-sm h-full p-4 flex flex-col justify-between shadow-2xl text-xs">
+              <div class="space-y-4">
+                <div class="flex justify-between items-center pb-2.5 border-b border-[var(--border)]"><span class="font-semibold">项目设置 · ${esc(p.name)}</span><button onclick="closeDrawer()" class="ln-btn-ghost p-1">${SVG.close}</button></div>
+                <label class="block space-y-1"><span class="text-[var(--muted-foreground)]">托管 Git 仓库</span><input value="${esc(p.repo)}" onchange="getProj().repo=this.value; render();" class="w-full bg-[var(--content)] border border-[var(--border)] rounded-md px-2.5 py-1.5 font-mono text-xs text-[var(--foreground)]" /></label>
+                <label class="block space-y-1"><span class="text-[var(--muted-foreground)]">受保护验证 Profile</span><select onchange="getProj().defaultVerifier=this.value; render();" class="w-full bg-[var(--content)] border border-[var(--border)] rounded-md px-2.5 py-1.5 text-xs text-[var(--foreground)]">${verifiers.map(v => `<option value="${v}" ${v === p.defaultVerifier ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></label>
+              </div>
+              <button onclick="closeDrawer(); toast('已保存设置','','success');" class="ln-btn-primary w-full py-1.5 text-xs">保存</button>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      const t = p.tasks.find(x => x.id === STATE.drawer.taskId);
+      if (!t) { root.innerHTML = ""; return; }
+      const req = p.requirements.find(r => r.id === t.reqId);
+      const mem = getMemberByRole(p, t.roleId);
+      root.innerHTML = `
+        <div onclick="if(event.target===this) closeDrawer()" class="modal-mask fixed inset-0 z-40 flex justify-end">
+          <div class="bg-[var(--background)] border-l border-[var(--border)] w-full max-w-md h-full p-4 overflow-y-auto scroll-thin flex flex-col justify-between gap-4 shadow-2xl text-xs">
+            <div class="space-y-4">
+              <div class="flex items-start justify-between gap-2 pb-2.5 border-b border-[var(--border)]">
+                <div>
+                  <div class="flex items-center gap-2 font-mono text-[var(--muted-foreground)]">${statusIcon(t.status)} <span>${req ? req.code + " / " : ""}${t.code}</span></div>
+                  <h3 class="text-[15px] font-semibold mt-1">${esc(t.title)}</h3>
+                </div>
+                <button onclick="closeDrawer()" class="ln-btn-ghost p-1">${SVG.close}</button>
+              </div>
+
+              ${t.blocker ? `
+                <div class="p-3.5 rounded-lg ln-tint-error space-y-2.5">
+                  <div class="text-[14px] font-semibold text-[var(--foreground)]">${esc(t.blocker.headline)}</div>
+                  <div class="text-[var(--muted-foreground)]">${esc(t.blocker.detail)}</div>
+                  ${t.blocker.options.map((opt, idx) => `<button onclick="resolveBlocker('${t.id}', ${idx})" class="${idx === 0 ? "ln-btn-primary" : "ln-btn"} w-full text-left px-3 py-2 text-xs">${esc(opt)}</button>`).join("")}
+                  <button onclick="closeDrawer(); sendBackToIdea('${t.blocker.headline}（来自 ${req ? req.code : t.code} 阻塞回流）');" class="ln-btn w-full text-left px-3 py-1.5 text-xs flex items-center gap-1">${SVG.returnBack} 属于方案问题 · 拉回讨论室</button>
+                </div>
+              ` : ""}
+
+              <div class="space-y-2">
+                <div class="flex justify-between"><span class="text-[var(--muted-foreground)]">专属执行实例</span><span>${esc(mem.name)} (${esc(mem.agent)})</span></div>
+                <div class="flex justify-between items-center"><span class="text-[var(--muted-foreground)]">执行节点</span><select onchange="switchMachine('${t.id}', this.value)" class="bg-[var(--content)] border border-[var(--border)] rounded px-2 py-0.5 text-xs text-[var(--foreground)]">${STATE.machines.map(n => `<option value="${n.id}" ${n.id === t.machineId ? "selected" : ""}>${esc(n.name)}</option>`).join("")}</select></div>
+                <div class="flex justify-between"><span class="text-[var(--muted-foreground)]">隔离分支</span><span class="font-mono">${esc(t.branch)}</span></div>
+                <div class="flex justify-between"><span class="text-[var(--muted-foreground)]">进程闭合</span><span>${esc(t.closureState)}</span></div>
+              </div>
+
+              <div class="space-y-1.5">
+                <div class="flex justify-between text-[var(--muted-foreground)]"><span>实时日志</span>${t.status === "running" ? `<button onclick="appendLog('${t.id}')" class="underline">追加输出</button>` : ""}</div>
+                <div class="p-2.5 rounded-md bg-[var(--content)] border border-[var(--border)] font-mono space-y-1 max-h-44 overflow-y-auto">${t.logs.map(l => `<div>${esc(l)}</div>`).join("")}${t.status === "running" ? `<div class="pulse" style="color:var(--primary)">● streaming...</div>` : ""}</div>
+              </div>
+            </div>
+            <div class="flex justify-between pt-3 border-t border-[var(--border)]">
+              ${t.status === "running" ? `<button onclick="stopTask('${t.id}')" class="ln-btn-danger h-7 px-2.5 text-xs flex items-center gap-1">${SVG.stop} 紧急停止 (确认闭合)</button>` : `<button onclick="retryTask('${t.id}')" class="ln-btn h-7 px-2.5 text-xs flex items-center gap-1">${SVG.refresh} 重跑</button>`}
+              <button onclick="closeDrawer()" class="ln-btn-primary h-7 px-3 text-xs">关闭</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderModal() {
+      const root = document.getElementById("modal-root");
+      if (!STATE.modal) { root.innerHTML = ""; return; }
+      const p = getProj();
+      let html = "";
+
+      if (STATE.modal === "cmd") {
+        html = `
+          <div class="bg-[var(--background)] border border-[var(--border)] rounded-xl max-w-md w-full overflow-hidden shadow-2xl text-xs">
+            <div class="px-3.5 py-2.5 border-b border-[var(--border)] flex justify-between text-[var(--muted-foreground)]"><span>快速命令</span><span class="ln-kbd">Esc</span></div>
+            <div class="p-1.5 space-y-0.5">
+              ${[
+                ["新建项目（建项后再连接专属团队）", "openModal('newProject')"],
+                ["管理当前项目专属团队成员", "closeModal(); openTeamDrawer();"],
+                ["进入 待我处理 Inbox", "STATE.screen='inbox'; closeModal(); render();"],
+                ["1. 想法讨论", "STATE.screen='project'; STATE.projectTab='ideas'; closeModal(); render();"],
+                ["2. 项目进度", "STATE.screen='project'; STATE.projectTab='progress'; closeModal(); render();"],
+                ["3. 任务评审", "STATE.screen='project'; STATE.projectTab='work'; closeModal(); render();"],
+                ["4. 交付发布", "STATE.screen='project'; STATE.projectTab='release'; closeModal(); render();"],
+                ["打开 算力与实例设置", "STATE.screen='resources'; closeModal(); render();"]
+              ].map(([lbl, act]) => `<button onclick="${act}" class="ln-nav w-full text-left px-3 py-2">${lbl}</button>`).join("")}
+            </div>
+          </div>
+        `;
+      } else if (STATE.modal === "newProject") {
+        html = `
+          <div class="bg-[var(--background)] border border-[var(--border)] rounded-xl max-w-md w-full p-4 space-y-3 shadow-2xl text-xs">
+            <div class="flex justify-between items-center"><span class="font-semibold">新建项目（创建后再连接专属成员）</span><button onclick="closeModal()" class="ln-btn-ghost p-1">${SVG.close}</button></div>
+            <input id="np-name" value="AI 客服知识库" class="w-full bg-[var(--content)] border border-[var(--border)] rounded-md px-3 py-1.5 text-xs text-[var(--foreground)]" />
+            <input id="np-repo" value="acme/ai-support-kb" class="w-full bg-[var(--content)] border border-[var(--border)] rounded-md px-3 py-1.5 font-mono text-xs text-[var(--foreground)]" />
+            <textarea id="np-idea" rows="2" class="w-full bg-[var(--content)] border border-[var(--border)] rounded-md px-3 py-1.5 text-xs text-[var(--foreground)]">支持导入 PDF/Notion 文档自动答复客户工单，请团队讨论拆解 MVP。</textarea>
+            <div class="flex justify-end gap-1.5"><button onclick="closeModal()" class="ln-btn h-7 px-3">取消</button><button onclick="createNewProject()" class="ln-btn-primary h-7 px-3">创建项目 → 去连接专属团队</button></div>
+          </div>
+        `;
+      } else if (STATE.modal === "newIdea") {
+        html = `
+          <div class="bg-[var(--background)] border border-[var(--border)] rounded-xl max-w-md w-full p-4 space-y-3 shadow-2xl text-xs">
+            <div class="flex justify-between items-center"><span class="font-semibold">抛一个新想法</span><button onclick="closeModal()" class="ln-btn-ghost p-1">${SVG.close}</button></div>
+            <input id="ni-title" value="支持多币种结算与汇率自动同步" class="w-full bg-[var(--content)] border border-[var(--border)] rounded-md px-3 py-1.5 text-xs text-[var(--foreground)]" />
+            <textarea id="ni-desc" rows="3" class="w-full bg-[var(--content)] border border-[var(--border)] rounded-md px-3 py-1.5 text-xs text-[var(--foreground)]">出海商户需要支持 USD/EUR/JPY 结算，请团队自由讨论拆成独立需求。</textarea>
+            <div class="flex justify-end gap-1.5"><button onclick="closeModal()" class="ln-btn h-7 px-3">取消</button><button onclick="createNewIdea()" class="ln-btn-primary h-7 px-3">开始讨论</button></div>
+          </div>
+        `;
+      } else if (STATE.modal === "connectNode") {
+        const cmd = STATE.connectOs === "windows"
+          ? `npx -y @jiayunxie/artood@0.2.0 connect --server https://artoo.acme.dev --code K7M4-P9QX`
+          : `npx -y @jiayunxie/artood@0.2.0 connect --server https://artoo.acme.dev --code K7M4-P9QX && ~/.artoo/daemon/artood service install`;
+        html = `
+          <div class="bg-[var(--background)] border border-[var(--border)] rounded-xl max-w-lg w-full p-4 space-y-3 shadow-2xl text-xs">
+            <div class="flex justify-between items-center"><span class="font-semibold">连接新电脑 (npm-daemon)</span><button onclick="closeModal()" class="ln-btn-ghost p-1">${SVG.close}</button></div>
+            <div class="flex gap-1.5">${[["windows","Windows"],["macos","macOS"],["linux","Linux"]].map(([k,l]) => `<button onclick="STATE.connectOs='${k}'; renderModal();" class="px-2.5 py-1 rounded-md border ${STATE.connectOs === k ? "ln-tint-primary font-medium" : "border-[var(--border)]"}">${l}</button>`).join("")}</div>
+            <pre id="cmd-pre" class="p-2.5 rounded-md bg-[var(--content)] border border-[var(--border)] font-mono whitespace-pre-wrap break-all">${esc(cmd)}</pre>
+            <div class="flex justify-between"><button onclick="copyEl('cmd-pre')" class="ln-btn h-7 px-2.5 flex items-center gap-1">${SVG.copy} 复制</button><button onclick="addNode()" class="ln-btn-primary h-7 px-3">模拟上线</button></div>
+          </div>
+        `;
+      } else if (STATE.modal === "audit") {
+        const out = JSON.stringify({
+          schema: "artoo.project.audit.v1", project: p.name, repo: p.repo,
+          dedicated_instances: getProjectInstances(p.id).map(i => ({ id: i.id, memory: i.memoryScope })),
+          requirements: p.requirements.map(r => ({ code: r.code, stage: r.stage, verification: getReqVerifyLabel(r), delivery: r.deliveryRef }))
+        }, null, 2);
+        html = `
+          <div class="bg-[var(--background)] border border-[var(--border)] rounded-xl max-w-md w-full p-4 space-y-3 shadow-2xl text-xs">
+            <div class="flex justify-between items-center"><span class="font-semibold">签名交付审计包</span><button onclick="closeModal()" class="ln-btn-ghost p-1">${SVG.close}</button></div>
+            <pre id="aud-pre" class="p-2.5 rounded-md bg-[var(--content)] border border-[var(--border)] font-mono max-h-64 overflow-auto">${esc(out)}</pre>
+            <div class="flex justify-end gap-1.5"><button onclick="copyEl('aud-pre')" class="ln-btn h-7 px-2.5">复制</button><button onclick="closeModal()" class="ln-btn-primary h-7 px-3">关闭</button></div>
+          </div>
+        `;
+      }
+
+      root.innerHTML = `<div onclick="if(event.target===this) closeModal()" class="modal-mask fixed inset-0 z-40 flex items-center justify-center p-4">${html}</div>`;
+    }
+
+    // =========================================================================
+    // Actions (All State Mutations Maintain Strict Cross-View Consistency!)
+    // =========================================================================
+    function selectProject(pid) {
+      STATE.selectedProjectId = pid; STATE.screen = "project"; STATE.mobileNavOpen = false;
+      STATE.projectTab = getProj(pid).requirements.length === 0 ? "ideas" : "progress";
+      STATE.workReqFilter = "all"; render();
+    }
+    function openIdea(pid, iid) { STATE.selectedProjectId = pid; STATE.selectedIdeaIdByProject[pid] = iid; STATE.screen = "project"; STATE.projectTab = "ideas"; render(); }
+    function toggleExpand(rid) { STATE.expandedReqIds[rid] = !STATE.expandedReqIds[rid]; render(); }
+    function openModal(m) { STATE.modal = m; renderModal(); }
+    function closeModal() { STATE.modal = null; renderModal(); }
+    function openTaskDrawer(taskId) { STATE.drawer = { type: "task", taskId }; renderDrawer(); }
+    function openProjectSettings() { STATE.drawer = { type: "projectSettings" }; renderDrawer(); }
+    function openTeamDrawer() { STATE.drawer = { type: "teamManager" }; renderDrawer(); }
+    function closeDrawer() { STATE.drawer = null; renderDrawer(); }
+    function copyEl(id) { const el = document.getElementById(id); if (el && navigator.clipboard) navigator.clipboard.writeText(el.textContent).catch(() => {}); toast("已复制", "", "success"); }
+    function scrollIdea() { setTimeout(() => { const el = document.getElementById("idea-stream"); if (el) el.scrollTop = el.scrollHeight; }, 25); }
+
+    function jumpFromInbox(pid, tab, ideaId, subTab, taskId, reqId) {
+      STATE.selectedProjectId = pid; STATE.screen = "project"; STATE.projectTab = tab;
+      if (ideaId) STATE.selectedIdeaIdByProject[pid] = ideaId;
+      if (subTab) STATE.workSubTab = subTab;
+      if (reqId) STATE.selectedReviewReqId = reqId;
+      render();
+      if (taskId) openTaskDrawer(taskId);
+    }
+
+    // Dedicated 1:1 Team Isolation Actions
+    function provisionFullTeam(pid) {
+      const p = getProj(pid), slug = p.repo.split("/").pop() || pid;
+      [{ role: "architect", m: "m-mac", cli: "gemini" }, { role: "backend", m: "m-win", cli: "codex" }, { role: "frontend", m: "m-mac", cli: "claude-code" }, { role: "qa", m: "m-lin", cli: "copilot" }].forEach((sp, i) => {
+        STATE.instances.push({ id: `inst-${pid}-${sp.role}-${Date.now()}-${i}`, name: `${slug.slice(0, 6)}-${ROLE_META[sp.role].label}`, role: sp.role, projectId: pid, machineId: sp.m, cli: sp.cli, memoryScope: `mem://${slug}/${sp.role}` });
+      });
+      STATE.projectTab = "ideas"; toast("已派生 4 个专属隔离实例", "", "success"); render();
+    }
+    function createDedicated(pid) {
+      const p = getProj(pid), slug = p.repo.split("/").pop() || pid;
+      const role = document.getElementById("tm-role")?.value || "backend", machineId = document.getElementById("tm-machine")?.value || "m-win", cli = document.getElementById("tm-cli")?.value || "codex";
+      STATE.instances.push({ id: `inst-${Date.now()}`, name: `${slug.slice(0, 6)}-${ROLE_META[role].label}`, role, projectId: pid, machineId, cli, memoryScope: `mem://${slug}/${role}` });
+      toast("已新建专属隔离实例", "", "success"); render();
+    }
+    function claimIdle(pid, instId) {
+      const p = getProj(pid), inst = STATE.instances.find(i => i.id === instId); if (!inst || inst.projectId !== null) return;
+      const slug = p.repo.split("/").pop() || pid;
+      inst.projectId = pid; inst.name = `${slug.slice(0, 6)}-${ROLE_META[inst.role].label}`; inst.memoryScope = `mem://${slug}/${inst.role}`;
+      toast(`已独占认领 ${inst.name}`, "", "success"); render();
+    }
+    function cloneFresh(pid, srcId) {
+      const p = getProj(pid), src = STATE.instances.find(i => i.id === srcId); if (!src) return;
+      const slug = p.repo.split("/").pop() || pid;
+      STATE.instances.push({ id: `inst-c-${Date.now()}`, name: `${slug.slice(0, 6)}-${ROLE_META[src.role].label}`, role: src.role, projectId: pid, machineId: src.machineId, cli: src.cli, memoryScope: `mem://${slug}/${src.role}-fresh` });
+      toast("已同机派生全新隔离实例", "记忆与目录完全独立", "success"); render();
+    }
+    function detachInst(instId) {
+      const inst = STATE.instances.find(i => i.id === instId); if (!inst) return;
+      inst.projectId = null; inst.memoryScope = "已重置 (干净记忆)";
+      toast(`已释放 ${inst.name}`, "", "warning"); render();
+    }
+
+    // Disagreement-Driven Discussion Actions
+    function resolveDisagreement(ideaId, disId, optIdx) {
+      const p = getProj(), idea = p.ideas.find(i => i.id === ideaId); if (!idea) return;
+      const dis = idea.disagreements.find(d => d.id === disId); if (!dis) return;
+      dis.resolved = true; dis.resolution = dis.options[optIdx];
+      idea.messages.push({ id: "ud-" + Date.now(), roleId: "user", time: nowHM(), tag: "已拍板", quote: dis.question, text: `决定采用：${dis.resolution}` });
+      idea.status = getOpenDisagreements(idea).length === 0 ? "ready_to_split" : "discussing";
+      p.activities.unshift({ time: "刚刚", who: "你", text: `拍板分歧：${dis.resolution}` });
+      toast("分歧已解决", "现在可以直接确认拆解写入项目进度", "success");
+      render(); scrollIdea();
+    }
+    function pauseIdea() { if (STATE.autoTimer) { clearTimeout(STATE.autoTimer); STATE.autoTimer = null; } const i = getIdea(); i.isTyping = false; i.typingRole = null; render(); }
+    function runIdea() {
+      const p = getProj(), idea = getIdea(p); if (idea.isTyping) return;
+      if (idea.round >= idea.maxRounds) { toast("已达轮次上限，请点击收敛分歧", "", "warning"); return; }
+      const script = idea.scriptedRounds[idea.scriptIdx] || [{ roleId: "architect", tag: "收敛", text: "团队已对齐边界，剩余分歧已关闭，可确认写入项目进度。" }];
+      if (idea.scriptIdx < idea.scriptedRounds.length) idea.scriptIdx++;
+      idea.round++; idea.isTyping = true; idea.typingRole = script[0].roleId; render(); scrollIdea();
+      let step = 0;
+      function next() {
+        if (!idea.isTyping) return;
+        const m = script[step++];
+        idea.messages.push({ id: "m-" + Date.now() + "-" + step, roleId: m.roleId, time: nowHM(), tag: m.tag, quote: m.quote || null, text: m.text });
+        if (step < script.length) { idea.typingRole = script[step].roleId; render(); scrollIdea(); STATE.autoTimer = setTimeout(next, 650); }
+        else { idea.isTyping = false; idea.typingRole = null; idea.disagreements.forEach(d => d.resolved = true); idea.status = "ready_to_split"; toast("已无未决分歧", "可一键确认拆解写入项目进度", "success"); render(); scrollIdea(); }
+      }
+      STATE.autoTimer = setTimeout(next, 600);
+    }
+    function forceConverge() { pauseIdea(); const i = getIdea(); i.disagreements.forEach(d => d.resolved = true); i.status = "ready_to_split"; i.messages.push({ id: "fc-" + Date.now(), roleId: "architect", time: nowHM(), tag: "收敛", text: "已收敛剩余分歧并锁定拆解草案。" }); render(); scrollIdea(); }
+    function quickSteer(t) { getIdea().inputDraft = t; sendSteer({ preventDefault() {} }); }
+    function sendSteer(e) {
+      e.preventDefault(); const i = getIdea(), txt = (i.inputDraft || "").trim(); if (!txt) return;
+      i.inputDraft = ""; i.messages.push({ id: "u-" + Date.now(), roleId: "user", time: nowHM(), tag: "引导", text: txt });
+      i.isTyping = true; i.typingRole = "architect"; render(); scrollIdea();
+      STATE.autoTimer = setTimeout(() => {
+        if (txt.includes("砍掉后台") && i.splitRequirements.length >= 3) i.splitRequirements[2].checked = false;
+        i.messages.push({ id: "a-" + Date.now(), roleId: "architect", time: nowHM(), tag: "收敛", quote: txt.slice(0, 22), text: "已按你的指示更新拆解草案。" });
+        i.isTyping = false; i.typingRole = null; i.disagreements.forEach(d => d.resolved = true); i.status = "ready_to_split"; render(); scrollIdea();
+      }, 600);
+    }
+    function toggleSplitReq(idx) { const sr = getIdea().splitRequirements[idx]; if (sr) sr.checked = !sr.checked; render(); }
+    function materializeIdea() {
+      const p = getProj(), idea = getIdea(p), picked = idea.splitRequirements.filter(x => x.checked); if (!picked.length) return;
+      const base = 104 + p.requirements.length;
+      picked.forEach((sr, idx) => {
+        const rid = "req-" + Date.now() + "-" + idx, code = "PAY-" + (base + idx);
+        p.requirements.unshift({
+          id: rid, code, title: sr.title, sourceIdea: idea.title, priority: sr.priority, stage: idx === 0 ? "dev" : "planned",
+          ownerRole: sr.ownerRole, reviewAccepted: false, selectedForRelease: false, deliveryRef: null, updated: "刚刚",
+          verification: { state: "none", passed: 0, total: 0, lastRunAt: "--", repairAttempt: 0, failingLog: null },
+          reviewerSummary: "待开发完成后执行独立评审。"
+        });
+        sr.tasksPreview.forEach((tt, ti) => p.tasks.unshift({ id: "t-" + Date.now() + "-" + idx + "-" + ti, reqId: rid, code: `T-${p.tasks.length + 1}`, title: tt, status: idx === 0 && ti === 0 ? "running" : "todo", roleId: sr.ownerRole, machineId: getMemberByRole(p, sr.ownerRole).inst?.machineId || "m-win", progress: idx === 0 && ti === 0 ? 25 : 0, branch: `artoo/${code.toLowerCase()}/t-${ti + 1}`, closureState: idx === 0 && ti === 0 ? "运行中" : "已入队", blocker: null, logs: [`[${nowHM()}] 由想法拆解生成`] }));
+      });
+      idea.status = "materialized"; STATE.projectTab = "progress";
+      toast(`已将 ${picked.length} 个需求写入项目进度`, "", "success"); render();
+    }
+    function sendBackToIdea(reason) {
+      const p = getProj(), iid = "idea-rev-" + Date.now();
+      p.ideas.unshift({
+        id: iid, title: "方案修订（执行/评审回流）", status: "discussing", mode: "auto", round: 1, maxRounds: 5, isTyping: false, typingRole: null, inputDraft: "", scriptIdx: 0,
+        proposalSummary: reason,
+        disagreements: [{ id: "dr-" + Date.now(), question: reason, positions: "需负责人与架构师确认修订边界。", resolved: false, options: ["拆出专项修复需求并补全边界单测（推荐）", "暂缓该需求，先交付其他需求"] }],
+        messages: [{ id: "rb-" + Date.now(), roleId: "user", time: nowHM(), tag: "回流", text: reason }],
+        scriptedRounds: [], splitRequirements: [{ title: "专项方案修订与回归补丁", priority: "P0", ownerRole: "backend", tasksPreview: ["修订边界", "补回归单测"], checked: true }]
+      });
+      STATE.selectedIdeaIdByProject[p.id] = iid; STATE.projectTab = "ideas"; STATE.ideaMobilePane = "spec";
+      toast("已拉回想法讨论室", "", "warning"); render();
+    }
+
+    // Single Source of Truth Verification & Delivery Transitions
+    function drillTestFailure() {
+      const p = getProj();
+      const targetReq = p.requirements.find(r => r.id === STATE.selectedReviewReqId) || p.requirements.find(r => r.stage === "review") || p.requirements[0];
+      if (!targetReq) return;
+      targetReq.reviewAccepted = false;
+      targetReq.stage = "review";
+      targetReq.verification = {
+        state: "failed", passed: 39, total: 42, lastRunAt: nowHM(), repairAttempt: targetReq.verification?.repairAttempt || 0,
+        failingLog: "FAIL test/webhook.test.ts\n  × 拒绝超过 300 秒的重放签名 (ms/sec unit mismatch)\n  × 死信记录幂等重投并发校验 (expected 1, got 2)\n  × 白名单过期自动拒收 (TypeError)"
+      };
+      STATE.selectedReviewReqId = targetReq.id;
+      STATE.workSubTab = "review";
+      p.activities.unshift({ time: "刚刚", who: "受保护验证器", text: `${targetReq.code} 验证失败 (39/42)，总览与待处理已同步标红。` });
+      toast(`${targetReq.code} 验证失败 (39/42)`, "总览、待我处理与评审页已同步更新，绝无矛盾状态", "error");
+      render();
+    }
+
+    function triggerAutoRepair(reqId) {
+      const p = getProj(), req = p.requirements.find(r => r.id === reqId); if (!req) return;
+      req.verification.state = "repairing"; req.verification.repairAttempt++;
+      render();
+      setTimeout(() => {
+        req.verification = { state: "passed", passed: 42, total: 42, lastRunAt: nowHM(), repairAttempt: req.verification.repairAttempt, failingLog: null };
+        p.activities.unshift({ time: "刚刚", who: "后端研发", text: `${req.code} 第 ${req.verification.repairAttempt} 轮自动返修完成，复测 42/42 全通过。` });
+        toast(`${req.code} 自动返修通过 42/42`, "所有视图已同步恢复待验收状态", "success");
+        render();
+      }, 950);
+    }
+
+    function rerunTests(reqId) {
+      const p = getProj(), req = p.requirements.find(r => r.id === reqId); if (!req) return;
+      req.verification.state = "verifying"; render();
+      setTimeout(() => {
+        req.verification = { state: "passed", passed: 42, total: 42, lastRunAt: nowHM(), repairAttempt: req.verification.repairAttempt, failingLog: null };
+        toast(`${req.code} 受保护验证通过 42/42`, "", "success"); render();
+      }, 700);
+    }
+
+    function acceptReq(reqId) {
+      const p = getProj(), r = p.requirements.find(x => x.id === reqId);
+      if (!r || r.verification?.state !== "passed") return;
+      if (r.reviewAccepted) { STATE.projectTab = "release"; render(); return; }
+      r.reviewAccepted = true; r.stage = "ready_to_ship"; r.selectedForRelease = true;
+      p.tasks.filter(t => t.reqId === reqId && t.status === "review").forEach(t => t.status = "done");
+      p.activities.unshift({ time: "刚刚", who: "你", text: `已验收 ${r.code} (${getReqVerifyLabel(r)})，进入待提 PR 池。` });
+      toast(`${r.code} 已验收`, "可在「4. 交付发布」提 PR 或打版本 Release", "success");
+      render();
+    }
+
+    function toggleReleaseReq(rid) { const r = getProj().requirements.find(x => x.id === rid); if (r) { r.selectedForRelease = !r.selectedForRelease; render(); } }
+
+    // Strictly truthful delivery: git_pr -> pr_open ("已提 PR", NOT "已交付上线"!), github_release -> released!
+    function executeRelease() {
+      const p = getProj(), rel = p.release;
+      const picked = p.requirements.filter(r => r.stage === "ready_to_ship" && r.selectedForRelease && r.verification?.state === "passed");
+      if (!picked.length) return;
+      rel.status = "releasing"; rel.activeReqIds = picked.map(r => r.id);
+      rel.ciChecks.forEach(c => c.status = "running");
+      render();
+
+      setTimeout(() => { rel.ciChecks[0].status = "pass"; render(); }, 450);
+      setTimeout(() => { if (rel.ciChecks[1]) rel.ciChecks[1].status = "pass"; render(); }, 900);
+      setTimeout(() => {
+        rel.ciChecks.forEach(c => c.status = "pass");
+        const codes = picked.map(r => r.code).join(" + ");
+        if (rel.kind === "git_pr") {
+          rel.status = "pr_open";
+          picked.forEach(r => { r.stage = "pr_open"; r.selectedForRelease = false; r.deliveryRef = `PR #${rel.prNumber} · CI 已绿`; });
+          rel.history.unshift({ time: "刚刚", kind: "git_pr", state: "已提 PR (未合入)", ref: `PR #${rel.prNumber}`, reqs: codes });
+          p.activities.unshift({ time: "刚刚", who: "交付执行器", text: `已为 ${codes} 创建 PR #${rel.prNumber}，CI 已绿待合入 main。` });
+          toast(`已创建 PR #${rel.prNumber}`, "需求状态已更新为「已提 PR」（合入 main 前不标记为已上线）", "success");
+        } else {
+          rel.status = "released";
+          picked.forEach(r => { r.stage = "released"; r.selectedForRelease = false; r.deliveryRef = `Release ${rel.releaseTag}`; });
+          rel.history.unshift({ time: "刚刚", kind: "github_release", state: "已发布 Release", ref: rel.releaseTag, reqs: codes });
+          p.activities.unshift({ time: "刚刚", who: "交付执行器", text: `已发布版本 ${rel.releaseTag} (${codes}) 并核验资产摘要。` });
+          toast(`已发布 ${rel.releaseTag}`, "资产摘要校验通过", "success");
+        }
+        render();
+      }, 1350);
+    }
+
+    function confirmPrMerged() {
+      const p = getProj(), rel = p.release;
+      const openReqs = p.requirements.filter(r => r.stage === "pr_open");
+      const codes = openReqs.map(r => r.code).join(" + ");
+      openReqs.forEach(r => { r.stage = "merged"; r.deliveryRef = `PR #${rel.prNumber} · 已合入 main`; });
+      rel.status = "merged";
+      rel.history.unshift({ time: "刚刚", kind: "git_pr", state: "已合并 main", ref: `PR #${rel.prNumber}`, reqs: codes || "--" });
+      p.activities.unshift({ time: "刚刚", who: "Git Remote", text: `PR #${rel.prNumber} 已正式合入 main (${codes})。` });
+      toast(`PR #${rel.prNumber} 已合入 main`, "对应需求已诚实推进至「已合并 main」", "success");
+      render();
+    }
+
+    function rollbackRelease() {
+      const p = getProj(), rel = p.release;
+      const affected = p.requirements.filter(r => r.stage === "pr_open");
+      affected.forEach(r => { r.stage = "ready_to_ship"; r.deliveryRef = null; r.selectedForRelease = true; });
+      rel.status = "rolled_back";
+      rel.history.unshift({ time: "刚刚", kind: rel.kind, state: "已回滚关闭", ref: `PR #${rel.prNumber}`, reqs: affected.map(r => r.code).join(" + ") || "--" });
+      toast("已撤回并关闭 PR", "相关需求已退回待交付池", "error");
+      render();
+    }
+
+    function drillGitConflict() { getProj().conflictNotice = "并行分支合并冲突已自动在隔离 Worktree 解决并复测通过。"; STATE.projectTab = "progress"; render(); }
+    function drillNodeFailover() { const p = getProj(), mac = getMachine("m-mac"), t = p.tasks.find(x => x.status === "running") || p.tasks[0]; if (mac) { mac.status = "offline"; mac.cpu = 0; } if (t) { t.machineId = "m-lin"; t.closureState = "已由 Ubuntu-Runner-03 接管"; } p.failoverNotice = "MacBook-Pro-M4 离线，运行中任务已自动转移至 Ubuntu-Runner-03 续跑。"; STATE.projectTab = "progress"; render(); }
+    function resolveBlocker(tid, idx) { const p = getProj(), t = p.tasks.find(x => x.id === tid); if (!t || !t.blocker) return; const chosen = t.blocker.options[idx]; t.blocker = null; t.status = "done"; t.progress = 100; t.closureState = "已闭合"; t.logs.push(`[${nowHM()}] 负责人拍板：${chosen}`); p.activities.unshift({ time: "刚刚", who: "你", text: `拍板解除阻塞：${chosen}` }); closeDrawer(); toast("阻塞已解除", "", "success"); render(); }
+    function appendLog(tid) { const t = getProj().tasks.find(x => x.id === tid); if (t) { t.progress = Math.min(96, t.progress + 10); t.logs.push(`[${nowHM()}] passed 22/24 tests...`); render(); } }
+    function stopTask(tid) { const t = getProj().tasks.find(x => x.id === tid); if (!t) return; t.closureState = "等待 OS 进程树确认退出..."; renderDrawer(); setTimeout(() => { t.status = "stopped"; t.closureState = "已确认 0 残留子进程 · 槽位释放"; toast("已安全停止", "", "warning"); render(); }, 650); }
+    function retryTask(tid) { const t = getProj().tasks.find(x => x.id === tid); if (t) { t.status = "running"; t.progress = 30; t.closureState = "运行中 · 新授权"; render(); } }
+    function switchMachine(tid, mid) { const t = getProj().tasks.find(x => x.id === tid); if (t) { t.machineId = mid; render(); } }
+    function toggleNode(id) { const m = getMachine(id); if (m) { m.status = m.status === "online" ? "offline" : "online"; render(); } }
+    function reverify(mid, cid) { const c = getMachine(mid)?.clis.find(x => x.id === cid); if (c) { c.status = "ready"; c.fixHint = ""; toast("验证通过", "", "success"); render(); } }
+    function addNode() { STATE.machines.push({ id: "m-" + Date.now(), name: STATE.connectOs + "-Node-04", os: STATE.connectOs, service: "常驻服务", status: "online", cpu: 12, mem: 21, slots: "0/4", prProjects: ["p-pay"], verifiers: ["node-vitest-lint"], clis: [{ id: "codex", name: "Codex CLI", ver: "0.42.0", tier: "Tier 2 读写", status: "ready", fixHint: "" }] }); closeModal(); toast("新电脑已上线", "", "success"); render(); }
+
+    function createNewIdea() {
+      const p = getProj(), title = document.getElementById("ni-title").value.trim() || "新想法", desc = document.getElementById("ni-desc").value.trim() || "请讨论拆分需求。";
+      const iid = "idea-" + Date.now();
+      p.ideas.unshift({
+        id: iid, title, status: "discussing", mode: "auto", round: 1, maxRounds: 6, isTyping: false, typingRole: null, inputDraft: "", scriptIdx: 0, proposalSummary: desc,
+        disagreements: [{ id: "dn-" + Date.now(), question: "汇率是否锁定下单时刻快照，还是按结算日实时汇率？", positions: "后端建议下单快照防金额漂移；财务视角需确认。", resolved: false, options: ["锁定下单时刻汇率快照（推荐）", "按结算日实时汇率折算"] }],
+        messages: [{ id: "m1", roleId: "user", time: nowHM(), tag: "想法", text: desc }, { id: "m2", roleId: "architect", time: nowHM(), tag: "拆解", text: "收到！建议先拆成核心引擎与展示 UI 两个独立需求。" }],
+        scriptedRounds: [[{ roleId: "qa", tag: "同意", text: "精度与汇率边界单测已对齐，无未决分歧。" }]],
+        splitRequirements: [
+          { title: "多币种汇率定时同步与快照引擎", priority: "P0", ownerRole: "backend", tasksPreview: ["汇率缓存", "精度单测"], checked: true },
+          { title: "多币种结算账单展示 UI", priority: "P1", ownerRole: "frontend", tasksPreview: ["币种格式化", "报表导出"], checked: true }
+        ]
+      });
+      STATE.selectedIdeaIdByProject[p.id] = iid; STATE.projectTab = "ideas"; STATE.ideaMobilePane = "spec"; closeModal(); render();
+    }
+
+    function createNewProject() {
+      const name = document.getElementById("np-name").value.trim() || "新项目", repo = document.getElementById("np-repo").value.trim() || "acme/new-repo", ideaTxt = document.getElementById("np-idea").value.trim() || "讨论 MVP";
+      const pid = "p-" + Date.now(), iid = "idea-" + Date.now();
+      STATE.projects.unshift({
+        id: pid, name, repo, defaultBranch: "main", defaultVerifier: "node-vitest-lint", maxAutoRepairs: 3, failoverNotice: null, conflictNotice: null,
+        ideas: [{
+          id: iid, title: `${name} MVP 初始想法`, status: "discussing", mode: "auto", round: 1, maxRounds: 6, isTyping: false, typingRole: null, inputDraft: "", scriptIdx: 0, proposalSummary: ideaTxt,
+          disagreements: [{ id: "dp-" + Date.now(), question: "首版先支持 PDF 单格式，还是同时支持 Notion 同步？", positions: "建议先做 PDF 尽快上线验证。", resolved: false, options: ["首版仅做 PDF，Notion 放二期（推荐）", "PDF 与 Notion 同步首版全做"] }],
+          messages: [{ id: "pm1", roleId: "user", time: nowHM(), tag: "想法", text: ideaTxt }],
+          scriptedRounds: [[{ roleId: "qa", tag: "同意", text: "MVP 验收标准已对齐。" }]],
+          splitRequirements: [
+            { title: "文档解析与向量检索 API", priority: "P0", ownerRole: "backend", tasksPreview: ["解析管线", "检索单测"], checked: true },
+            { title: "客服问答工作台 UI", priority: "P1", ownerRole: "frontend", tasksPreview: ["对话页", "来源高亮"], checked: true }
+          ]
+        }],
+        requirements: [], tasks: [], diffs: { "README.md": [{ t: "h", text: "@@ 初始化 @@" }] },
+        release: { kind: "git_pr", status: "idle", prNumber: 1, prUrl: `https://github.com/${repo}/pull/1`, releaseTag: "v0.1.0", activeReqIds: [], ciChecks: [{ name: "CI Build", status: "pending" }], history: [] },
+        activities: [{ time: "刚刚", who: "你", text: `创建了项目「${name}」（待连接专属团队成员）。` }]
+      });
+      STATE.selectedProjectId = pid; STATE.selectedIdeaIdByProject[pid] = iid; STATE.screen = "project"; STATE.projectTab = "ideas"; closeModal();
+      toast(`项目「${name}」已创建`, "请先连接本项目专属的 Agent 实例", "success"); render();
+    }
+
+    window.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openModal("cmd"); return; }
+      if (e.key === "Escape") { STATE.mobileNavOpen = false; closeModal(); closeDrawer(); render(); return; }
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
+      if (STATE.screen === "project" && !STATE.modal && !STATE.drawer) {
+        if (e.key === "1") { STATE.projectTab = "ideas"; render(); }
+        else if (e.key === "2") { STATE.projectTab = "progress"; render(); }
+        else if (e.key === "3") { STATE.projectTab = "work"; render(); }
+        else if (e.key === "4") { STATE.projectTab = "release"; render(); }
+        else if (e.key.toLowerCase() === "t") { setTheme(CURRENT_THEME === "dark" ? "light" : "dark"); }
+      }
+    });
+
+    render();
+  </script>
+</body>
+</html>

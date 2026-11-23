@@ -9,7 +9,7 @@
 
 | 主题 | 入口与范围 |
 | --- | --- |
-| 总体架构 | [产品设计](../design.md)、[Agent Team 开发](agent-team-development.md)、[Windows 原生执行](windows-native-development.md) |
+| 总体架构 | [产品设计](../design.md)、[Agent Team 开发](agent-team-development.md)、[Windows 原生执行](windows-native-development.md)、[端到端闭环设计总纲（2026-11-23）](artoo-closed-loop-plan-2026-11-23.zh-CN.md) 与 [Linear 交互原型](prototypes/artoo-linear-final.html) |
 | 团队与工作 | [项目 Squad](project-squads.md)、[Agent 规划](agent-planning.md)、[手动计划与草稿](plan-drafts.md)、[资源生命周期](resource-lifecycle.md)、[Agent 历史](agent-history.md) |
 | 协作与数据边界 | [跨客户端同步](cross-client-sync.md)、[AI 数据共享](ai-data-sharing.md)、[内容治理](content-moderation.md)、[内联提及](inline-mentions.md) |
 | 查询与证据 | [服务端搜索](server-search.md)、[消息对账](message-reconciliation.md)、[Skill 发现](skills-discovery.md)、[审计签名](audit-signing.md) |
